@@ -5,25 +5,45 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+mongoose.set('strictQuery', true);
+
+// Cache a single connection across serverless invocations.
+// Without this each function call would open a new connection,
+// quickly hitting the Atlas free tier's connection limit.
+const globalKey = '__almtech_mongo_cache__';
+const cache = global[globalKey] || (global[globalKey] = { conn: null, promise: null });
+
 export async function connectDB() {
+  if (cache.conn) return cache.conn;
+
   let uri = process.env.MONGO_URI;
   const isProd = process.env.NODE_ENV === 'production';
-  mongoose.set('strictQuery', true);
 
-  // Production must have a real MONGO_URI (MongoDB Atlas, etc.)
+  // Production must have a real MONGO_URI (e.g. MongoDB Atlas)
   if (isProd) {
     if (!uri || uri === 'embedded') {
       throw new Error(
         'MONGO_URI must be a real connection string in production. ' +
-        'Set it to your MongoDB Atlas URI in the platform environment variables.'
+        'Set it as an environment variable in your hosting platform (Vercel, Fly.io, etc.)'
       );
     }
-    await mongoose.connect(uri);
-    console.log(`MongoDB connected (production): ${mongoose.connection.host}`);
-    return;
+    if (!cache.promise) {
+      cache.promise = mongoose
+        .connect(uri, {
+          // Serverless-friendly connection options.
+          maxPoolSize: 10,
+          serverSelectionTimeoutMS: 8000,
+        })
+        .then((m) => {
+          console.log(`MongoDB connected: ${m.connection.host}`);
+          return m;
+        });
+    }
+    cache.conn = await cache.promise;
+    return cache.conn;
   }
 
-  // Dev: allow "embedded" (default) or a real URI for local testing
+  // Dev: allow "embedded" (default) or a real URI
   if (!uri || uri === 'embedded') {
     const { MongoMemoryServer } = await import('mongodb-memory-server');
     const dataDir = path.resolve(__dirname, '../../data');
@@ -36,6 +56,7 @@ export async function connectDB() {
     console.log(`Embedded MongoDB running. Data persisted at: ${dataDir}`);
   }
 
-  await mongoose.connect(uri);
+  cache.conn = await mongoose.connect(uri);
   console.log(`MongoDB connected: ${mongoose.connection.host}/${mongoose.connection.name}`);
+  return cache.conn;
 }
