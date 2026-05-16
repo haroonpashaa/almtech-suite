@@ -1,0 +1,35 @@
+# ALMTech Business Suite — Fly.io configuration
+# Edit `app` once you create the app via `fly launch` or `fly apps create`.
+
+app = "almtech-suite"
+primary_region = "bom"  # Mumbai — closest to Pakistan for low latency
+
+[build]
+  # Uses the Dockerfile in the repo root.
+
+[env]
+  NODE_ENV = "production"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"      # never sleep — always-on for staff
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/api/health"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512

@@ -1,0 +1,12 @@
+**/node_modules
+**/.env
+**/dist
+**/data
+**/backups
+**/.git
+**/*.log
+.tools
+docs
+*.md
+trim-logo.mjs
+build-guide.mjs
