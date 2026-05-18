@@ -33,6 +33,15 @@ export function createApp({ serveFrontend = true } = {}) {
   app.use(express.json({ limit: '5mb' }));
   if (process.env.NODE_ENV !== 'production') app.use(morgan('dev'));
 
+  // Vercel's experimentalServices strips the routePrefix (/api) before
+  // forwarding requests. Re-add it so our existing /api/* routes still match.
+  if (process.env.VERCEL) {
+    app.use((req, _res, next) => {
+      if (!req.url.startsWith('/api')) req.url = '/api' + req.url;
+      next();
+    });
+  }
+
   app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'almtech-suite-api' }));
 
   app.use('/api/auth', authRoutes);
