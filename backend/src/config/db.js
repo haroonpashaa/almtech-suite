@@ -16,7 +16,12 @@ const cache = global[globalKey] || (global[globalKey] = { conn: null, promise: n
 export async function connectDB() {
   if (cache.conn) return cache.conn;
 
-  let uri = process.env.MONGO_URI;
+  // Accept any of the common env var names Vercel / Atlas / users might set.
+  let uri =
+    process.env.MONGO_URI ||
+    process.env.MONGODB_URI ||
+    process.env.STORAGE_MONGODB_URI ||
+    process.env.DATABASE_URL;
   const isProd = process.env.NODE_ENV === 'production';
 
   // Production must have a real MONGO_URI (e.g. MongoDB Atlas)
