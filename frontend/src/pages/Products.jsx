@@ -6,6 +6,7 @@ import { money } from '../lib/format.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
+import { Badge } from '../components/ui.jsx';
 
 export default function Products() {
   const { has } = useAuth();
@@ -27,44 +28,52 @@ export default function Products() {
       <PageHeader
         title="Inventory"
         subtitle="Products, stock levels, and pricing"
-        actions={
-          has('admin', 'stock') && (
-            <Link to="/products/new" className="btn-primary">+ New Product</Link>
-          )
-        }
+        icon={<svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7l9-4 9 4-9 4-9-4zm0 0v10l9 4 9-4V7M12 11v10" /></svg>}
+        actions={has('admin', 'stock') && (
+          <Link to="/products/new" className="btn-primary-gradient">
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+            New Product
+          </Link>
+        )}
       />
-      <div className="p-6">
+      <div className="p-6 sm:p-8">
         <div className="flex flex-wrap items-center gap-3 mb-4">
-          <input
-            className="input max-w-xs"
-            placeholder="Search by name, SKU, brand..."
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
-          <label className="flex items-center gap-2 text-sm text-slate-600">
-            <input type="checkbox" checked={lowStock} onChange={(e) => setLowStock(e.target.checked)} />
+          <div className="field-search max-w-xs w-full">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
+            <input className="input" placeholder="Search by name, SKU, brand…" value={q} onChange={(e) => setQ(e.target.value)} />
+          </div>
+          <button
+            onClick={() => setLowStock((v) => !v)}
+            className={`btn-sm border ${lowStock ? 'bg-amber-50 border-amber-200 text-amber-700' : 'bg-white border-ink-200 text-ink-600 hover:bg-ink-50'}`}
+          >
+            <span className={`dot ${lowStock ? 'bg-amber-500' : 'bg-ink-300'}`} />
             Low stock only
-          </label>
-          <span className="text-sm text-slate-500 ml-auto">{data?.total ?? 0} products</span>
+          </button>
+          <span className="text-sm text-ink-400 ml-auto">{data?.total ?? 0} products</span>
         </div>
         <Table
-          empty={isLoading ? 'Loading…' : 'No products'}
+          loading={isLoading}
+          empty="No products match your filters"
           columns={[
             { key: 'name', label: 'Name', render: (p) => (
-                <Link to={`/products/${p._id}/edit`} className="text-brand-600 hover:underline font-medium">
-                  {p.name}
-                </Link>
+                has('admin') ? (
+                  <Link to={`/products/${p._id}/edit`} className="text-ink-900 hover:text-brand-700 font-medium">{p.name}</Link>
+                ) : (
+                  <span className="text-ink-900 font-medium">{p.name}</span>
+                )
               ) },
-            { key: 'sku', label: 'SKU' },
-            { key: 'category', label: 'Category' },
-            { key: 'brand', label: 'Brand' },
+            { key: 'sku', label: 'SKU', render: (p) => <span className="font-mono text-[12px] text-ink-400">{p.sku}</span> },
+            { key: 'category', label: 'Category', render: (p) => p.category || <span className="text-ink-300">—</span> },
+            { key: 'brand', label: 'Brand', render: (p) => p.brand || <span className="text-ink-300">—</span> },
             { key: 'stock', label: 'Stock', className: 'text-right', render: (p) => (
-                <span className={p.stock <= p.lowStockThreshold ? 'text-amber-600 font-medium' : ''}>
-                  {p.stock}
+                <span className="num">
+                  {p.stock <= p.lowStockThreshold ? (
+                    <Badge tone={p.stock === 0 ? 'danger' : 'warning'} dot>{p.stock}</Badge>
+                  ) : p.stock}
                 </span>
               ) },
-            { key: 'purchasePrice', label: 'Cost', className: 'text-right', render: (p) => money(p.purchasePrice, currency) },
-            { key: 'sellingPrice', label: 'Price', className: 'text-right', render: (p) => money(p.sellingPrice, currency) },
+            { key: 'purchasePrice', label: 'Cost', className: 'text-right num', render: (p) => money(p.purchasePrice, currency) },
+            { key: 'sellingPrice', label: 'Price', className: 'text-right num font-medium text-ink-900', render: (p) => money(p.sellingPrice, currency) },
           ]}
           rows={data?.items || []}
         />

@@ -4,6 +4,8 @@ import Customer from '../models/Customer.js';
 import Supplier from '../models/Supplier.js';
 import Product from '../models/Product.js';
 import StockMovement from '../models/StockMovement.js';
+import Account from '../models/Account.js';
+import Expense from '../models/Expense.js';
 
 function dateRange(from, to) {
   const f = from ? new Date(from) : new Date(Date.now() - 30 * 86400000);
@@ -11,7 +13,7 @@ function dateRange(from, to) {
   return { $gte: f, $lte: t };
 }
 
-export const dashboard = asyncHandler(async (_req, res) => {
+export const dashboard = asyncHandler(async (req, res) => {
   const now = new Date();
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const startOfWeek = new Date(now);
@@ -69,6 +71,32 @@ export const dashboard = asyncHandler(async (_req, res) => {
       ]),
     ]);
 
+  // Account balances are financial data, so they follow the same rule as the
+  // profit-loss and monthly-summary reports: admin only. Other roles get the exact
+  // dashboard payload they got before, with the key absent.
+  const accounts =
+    req.user?.role === 'admin'
+      ? await Account.find({ active: true }).select('name type currentBalance').sort('sortOrder name')
+      : undefined;
+
+  // Expense figures follow the same admin-only visibility rule as account balances.
+  let expensesToday = 0;
+  let expensesMonth = 0;
+  if (req.user?.role === 'admin') {
+    const [todayAgg, monthAgg] = await Promise.all([
+      Expense.aggregate([
+        { $match: { status: 'posted', date: { $gte: startOfDay } } },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]),
+      Expense.aggregate([
+        { $match: { status: 'posted', date: { $gte: startOfMonth } } },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]),
+    ]);
+    expensesToday = todayAgg[0]?.total || 0;
+    expensesMonth = monthAgg[0]?.total || 0;
+  }
+
   res.json({
     salesToday: { total: salesToday[0]?.total || 0, count: salesToday[0]?.count || 0 },
     salesWeek: salesWeek[0]?.total || 0,
@@ -79,6 +107,16 @@ export const dashboard = asyncHandler(async (_req, res) => {
     recentInvoices,
     topProducts,
     dailySeries,
+    ...(accounts
+      ? {
+          accounts,
+          accountsTotal: accounts.reduce((s, a) => s + a.currentBalance, 0),
+          expensesToday,
+          expensesMonth,
+          // Money owed to the business minus money it owes. Not profit.
+          netPosition: (receivables[0]?.total || 0) - (payables[0]?.total || 0),
+        }
+      : {}),
   });
 });
 
@@ -114,16 +152,39 @@ export const profitAndLoss = asyncHandler(async (req, res) => {
       },
     },
   ];
-  const [result] = await Invoice.aggregate(pipeline);
+  // Operating expenses come from Expense records only — never from the ledger. Each
+  // expense has exactly one FinancialTransaction, so summing both would double-count
+  // it. `cost` above is cost-of-goods-sold from invoice lines and does not overlap
+  // with operating expenses, so gross profit is unchanged from before Change 4.
+  const [[result], expenseAgg, expenseByCategory] = await Promise.all([
+    Invoice.aggregate(pipeline),
+    Expense.aggregate([
+      { $match: { status: 'posted', date: issuedAt } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]),
+    Expense.aggregate([
+      { $match: { status: 'posted', date: issuedAt } },
+      { $group: { _id: '$category', total: { $sum: '$amount' } } },
+      { $sort: { total: -1 } },
+    ]),
+  ]);
+
   const revenue = result?.revenue || 0;
   const cost = result?.cost || 0;
+  const grossProfit = revenue - cost;
+  const expenses = expenseAgg[0]?.total || 0;
+
   res.json({
     from: issuedAt.$gte,
     to: issuedAt.$lte,
     revenue,
     cost,
-    grossProfit: revenue - cost,
+    grossProfit,
     margin: revenue ? Math.round(((revenue - cost) / revenue) * 10000) / 100 : 0,
+    expenses,
+    expensesByCategory: expenseByCategory.map((c) => ({ category: c._id, total: c.total })),
+    netProfit: grossProfit - expenses,
+    netMargin: revenue ? Math.round(((grossProfit - expenses) / revenue) * 10000) / 100 : 0,
   });
 });
 

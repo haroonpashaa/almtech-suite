@@ -4,6 +4,38 @@ import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
 import Supplier from '../models/Supplier.js';
 import Settings from '../models/Settings.js';
+import Account from '../models/Account.js';
+
+// Demo data (sample users with known passwords, sample products/customers/suppliers) is a
+// convenience for local work. It must never appear in production, so seedAll() is only
+// called when demo seeding is explicitly enabled — see server.js.
+//
+// Production instead gets `ensureAccounts()` (the Cash/bank accounts payments require) and,
+// optionally, a single real admin created from environment variables via bootstrapAdmin().
+
+// The three accounts ALMTech operates today. This runs on every startup, not just
+// the first-run seed, so existing installations get their accounts without a manual
+// migration — and it only ever inserts what is missing, so balances and any
+// additional accounts the user creates later are never touched.
+//
+// These names are seed data, not architecture: nothing in the codebase branches on
+// them, and more accounts can be added at runtime via POST /api/accounts.
+const DEFAULT_ACCOUNTS = [
+  { name: 'Cash', type: 'cash', sortOrder: 0 },
+  { name: 'Bank of Punjab', type: 'bank', bankName: 'Bank of Punjab', sortOrder: 1 },
+  { name: 'Soneri Bank', type: 'bank', bankName: 'Soneri Bank', sortOrder: 2 },
+];
+
+export async function ensureAccounts() {
+  const created = [];
+  for (const a of DEFAULT_ACCOUNTS) {
+    if (!(await Account.findOne({ name: a.name }))) {
+      await Account.create({ ...a, openingBalance: 0, currentBalance: 0 });
+      created.push(a.name);
+    }
+  }
+  return created;
+}
 
 export async function seedAll({ force = false } = {}) {
   if (!force) {
@@ -63,4 +95,35 @@ export async function seedAll({ force = false } = {}) {
   }
 
   return { skipped: false };
+}
+
+
+// Creates the first real administrator from environment variables, for a production
+// database that has no users yet. The password is read from the environment, hashed by the
+// User model's existing pre-save hook, and never logged, echoed or returned by any API.
+//
+//   BOOTSTRAP_ADMIN_EMAIL     e.g. owner@yourcompany.com
+//   BOOTSTRAP_ADMIN_PASSWORD  a strong password you choose
+//   BOOTSTRAP_ADMIN_NAME      optional, defaults to "Administrator"
+//
+// It is a no-op once any user exists, so leaving the variables set is harmless — but
+// removing them after first boot is cleaner.
+export async function bootstrapAdmin() {
+  const email = process.env.BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
+  const password = process.env.BOOTSTRAP_ADMIN_PASSWORD;
+  if (!email || !password) return { created: false, reason: 'not configured' };
+
+  if (await User.countDocuments()) return { created: false, reason: 'users already exist' };
+
+  if (password.length < 10) {
+    return { created: false, reason: 'BOOTSTRAP_ADMIN_PASSWORD must be at least 10 characters' };
+  }
+  await User.create({
+    name: process.env.BOOTSTRAP_ADMIN_NAME?.trim() || 'Administrator',
+    email,
+    password,
+    role: 'admin',
+  });
+  // Deliberately logs the address only — never the password.
+  return { created: true, email };
 }

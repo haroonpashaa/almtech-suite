@@ -4,9 +4,38 @@ export function notFound(req, res, next) {
 }
 
 export function errorHandler(err, _req, res, _next) {
-  const status = res.statusCode && res.statusCode !== 200 ? res.statusCode : 500;
+  // A controller that already set a status has chosen its own message deliberately —
+  // those are safe, user-facing texts and are passed through untouched. Anything that
+  // reaches here without a status is an unhandled fault, and its raw message may carry
+  // database or driver internals, so it is classified and sanitised below.
+  const explicit = res.statusCode && res.statusCode !== 200;
+  let status = explicit ? res.statusCode : 500;
+  let message = err.message;
+
+  if (!explicit) {
+    if (err.name === 'CastError') {
+      // e.g. an id typed into the URL by hand — a client mistake, not a server fault.
+      status = 400;
+      message = `Invalid ${err.path === '_id' ? 'id' : err.path || 'value'}`;
+    } else if (err.name === 'ValidationError') {
+      status = 400;
+      message = Object.values(err.errors || {}).map((e) => e.message).join('; ') || 'Validation failed';
+    } else if (err.code === 11000) {
+      const field = Object.keys(err.keyPattern || {})[0] || 'value';
+      status = 409;
+      message = `A record with this ${field} already exists`;
+    } else {
+      // Genuine server fault: never hand the client the internal message.
+      status = 500;
+      message = 'Something went wrong. Please try again, or contact support if it persists.';
+    }
+  }
+
   res.status(status).json({
-    message: err.message,
-    stack: process.env.NODE_ENV === 'production' ? undefined : err.stack,
+    message,
+    // Stack traces are opt-in and only for local development. Note this is an explicit
+    // allow (NODE_ENV === 'development') rather than "anything except production", so an
+    // unset NODE_ENV on a server never leaks internals.
+    stack: process.env.NODE_ENV === 'development' ? err.stack : undefined,
   });
 }

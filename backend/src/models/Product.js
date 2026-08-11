@@ -32,6 +32,15 @@ const productSchema = new mongoose.Schema(
 
 productSchema.index({ name: 'text', sku: 'text', brand: 'text', model: 'text' });
 
+// Barcodes are optional, but must be unique when present.
+// The partial filter `{ $gt: '' }` is type-bracketed, so it indexes only documents
+// whose barcode is a non-empty string — products with a missing, null, or empty
+// barcode are left out of the index entirely and can therefore coexist freely.
+productSchema.index(
+  { barcode: 1 },
+  { unique: true, partialFilterExpression: { barcode: { $gt: '' } }, name: 'barcode_unique_when_present' }
+);
+
 productSchema.virtual('isLowStock').get(function () {
   return this.stock <= this.lowStockThreshold;
 });

@@ -9,15 +9,19 @@ import {
   adjustStock,
   stockLedger,
   importProducts,
+  lookupByBarcode,
 } from '../controllers/product.controller.js';
 
 const r = Router();
 r.use(protect);
 r.get('/', listProducts);
+// Must be declared before '/:id', otherwise "barcode" is swallowed as an id.
+r.get('/barcode', lookupByBarcode);
 r.get('/:id', getProduct);
 r.get('/:id/ledger', stockLedger);
 r.post('/', requireRole('admin', 'stock'), createProduct);
-r.patch('/:id', requireRole('admin', 'stock'), updateProduct);
+// Editing product information (including the barcode) is admin-only.
+r.patch('/:id', requireRole('admin'), updateProduct);
 r.delete('/:id', requireRole('admin'), deleteProduct);
 r.post('/:id/adjust', requireRole('admin', 'stock'), adjustStock);
 r.post('/import', requireRole('admin'), importProducts);

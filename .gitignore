@@ -8,3 +8,4 @@ backups/
 backend/data/
 .tools/
 /tmp/
+.vercel

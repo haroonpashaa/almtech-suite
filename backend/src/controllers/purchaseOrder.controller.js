@@ -5,6 +5,8 @@ import Supplier from '../models/Supplier.js';
 import StockMovement from '../models/StockMovement.js';
 import { nextNumber } from '../utils/numbering.js';
 import { logActivity } from '../utils/activity.js';
+import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting } from '../utils/ledger.js';
+import { resolvePayment, requireReason, assertReversible, postReversal } from '../services/paymentReversal.js';
 
 export const listPOs = asyncHandler(async (req, res) => {
   const { supplier, status } = req.query;
@@ -120,26 +122,123 @@ export const receiveItems = asyncHandler(async (req, res) => {
 });
 
 export const recordSupplierPayment = asyncHandler(async (req, res) => {
-  const { amount, method = 'bank', reference } = req.body;
+  const { amount, method = 'bank', reference, account: accountId, idempotencyKey } = req.body;
   if (!(amount > 0)) {
     res.status(400);
     throw new Error('Amount must be > 0');
   }
+  const account = await resolveAccount(res, accountId);
   const po = await PurchaseOrder.findById(req.params.id);
   if (!po) {
     res.status(404);
     throw new Error('Purchase order not found');
   }
-  const cappedAmount = Math.min(amount, po.balance);
-  po.payments.push({ amount: cappedAmount, method, reference, recordedBy: req.user._id });
-  po.paid += cappedAmount;
-  po.balance = Math.max(0, po.total - po.paid);
-  await po.save();
-  const supplier = await Supplier.findById(po.supplier);
-  if (supplier) {
-    supplier.payable = Math.max(0, supplier.payable - cappedAmount);
-    await supplier.save();
+  if (po.balance <= 0) {
+    res.status(400);
+    throw new Error('This purchase order is already settled');
   }
-  await logActivity(req, 'supplier_payment', { entity: 'PurchaseOrder', entityId: po._id, meta: { amount: cappedAmount } });
+  const cappedAmount = Math.min(amount, po.balance);
+
+  // PO paid/balance and Supplier.payable behave exactly as before — the supplier
+  // payable data preserved in Change 1 remains the payables source of truth. The
+  // addition is the money-out ledger row against the paying account.
+  try {
+    await postPaymentAtomically(
+      {
+        account: account._id,
+        amount: cappedAmount,
+        direction: 'out',
+        type: 'supplier_payment',
+        method,
+        reference,
+        description: `Payment on purchase order ${po.number}`,
+        purchaseOrder: po._id,
+        supplier: po.supplier,
+        createdBy: req.user._id,
+        idempotencyKey,
+      },
+      async (session, posted) => {
+        po.payments.push({
+          amount: cappedAmount,
+          method,
+          reference,
+          recordedBy: req.user._id,
+          account: account._id,
+          transaction: posted._id,
+        });
+        po.paid += cappedAmount;
+        po.balance = Math.max(0, po.total - po.paid);
+        await po.save({ session });
+
+        await Supplier.updateOne(
+          { _id: po.supplier },
+          [{ $set: { payable: { $max: [0, { $subtract: ['$payable', cappedAmount] }] } } }],
+          session ? { session } : {}
+        );
+      }
+    );
+  } catch (e) {
+    rethrowDuplicatePosting(e, res);
+  }
+
+  await logActivity(req, 'supplier_payment', {
+    entity: 'PurchaseOrder',
+    entityId: po._id,
+    meta: { amount: cappedAmount, account: account.name },
+  });
+  res.json(po);
+});
+
+// ---------------------------------------------------------------------------
+// Reverse a previously recorded supplier payment (admin only).
+//
+// Mirror image of the invoice reversal: the money goes back INTO the paying account,
+// the purchase order's paid amount drops, and Supplier.payable is restored.
+// ---------------------------------------------------------------------------
+export const reverseSupplierPayment = asyncHandler(async (req, res) => {
+  const reason = requireReason(res, req.body?.reason);
+
+  const po = await PurchaseOrder.findById(req.params.id);
+  if (!po) {
+    res.status(404);
+    throw new Error('Purchase order not found');
+  }
+  if (po.status === 'cancelled') {
+    res.status(409);
+    throw new Error('This purchase order is cancelled, so its payments can no longer be reversed');
+  }
+
+  const { payment, index } = resolvePayment(res, po.payments, req.params.paymentId);
+  const original = await assertReversible(res, payment);
+  const amount = original.amount;
+
+  const reversal = await postReversal(res, {
+    original,
+    payment,
+    index,
+    reason,
+    user: req.user,
+    description: `Reversal of payment on purchase order ${po.number} — ${reason}`,
+    links: { purchaseOrder: po._id, supplier: po.supplier },
+    applyDocumentUpdates: async (session) => {
+      po.paid = Math.max(0, po.paid - amount);
+      po.balance = Math.max(0, po.total - po.paid);
+      // PO status tracks goods receipt, not payment — recordSupplierPayment never
+      // touches it, so neither does the reversal.
+      await po.save({ session });
+
+      await Supplier.updateOne(
+        { _id: po.supplier },
+        { $inc: { payable: amount } },
+        session ? { session } : {}
+      );
+    },
+  });
+
+  await logActivity(req, 'supplier_payment_reversed', {
+    entity: 'PurchaseOrder',
+    entityId: po._id,
+    meta: { amount, reason, payment: index, reversalTransaction: reversal._id.toString() },
+  });
   res.json(po);
 });

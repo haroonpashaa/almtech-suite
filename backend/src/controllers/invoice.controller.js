@@ -8,6 +8,58 @@ import { nextNumber } from '../utils/numbering.js';
 import { computeItemTotals, applyTax } from '../utils/totals.js';
 import { logActivity } from '../utils/activity.js';
 import { streamInvoicePDF } from '../utils/pdf.js';
+import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting } from '../utils/ledger.js';
+import { resolvePayment, requireReason, assertReversible, postReversal } from '../services/paymentReversal.js';
+
+// Single implementation of "money received against an invoice", shared by the POS
+// initial payment and by later payments on the invoice detail screen.
+//
+// The invoice/customer maths is exactly what it was before Change 3 — capped at the
+// outstanding balance, paid/balance/status recomputed, customer receivable reduced.
+// What is new is that the same operation also posts a ledger row into the selected
+// financial account, and the two are tied together (payment line -> transaction).
+export async function applyInvoicePayment({ invoice, account, amount, method, reference, user, type, idempotencyKey }) {
+  const cappedAmount = Math.min(amount, invoice.balance);
+  if (!(cappedAmount > 0)) return null;
+
+  return postPaymentAtomically(
+    {
+      account: account._id,
+      amount: cappedAmount,
+      direction: 'in',
+      type,
+      method,
+      reference,
+      description: `Payment on invoice ${invoice.number}`,
+      invoice: invoice._id,
+      customer: invoice.customer,
+      createdBy: user._id,
+      idempotencyKey,
+    },
+    async (session, posted) => {
+      invoice.payments.push({
+        amount: cappedAmount,
+        method,
+        reference,
+        recordedBy: user._id,
+        account: account._id,
+        transaction: posted._id,
+      });
+      invoice.paid += cappedAmount;
+      // Only ever 'paid' once the outstanding balance actually reaches zero.
+      invoice.balance = Math.max(0, invoice.total - invoice.paid);
+      invoice.status = invoice.balance === 0 ? 'paid' : 'partial';
+      await invoice.save({ session });
+
+      // Receivable lives on Customer.balance, as before — no second balance system.
+      await Customer.updateOne(
+        { _id: invoice.customer },
+        [{ $set: { balance: { $max: [0, { $subtract: ['$balance', cappedAmount] }] } } }],
+        session ? { session } : {}
+      );
+    }
+  );
+}
 
 export const listInvoices = asyncHandler(async (req, res) => {
   const { customer, status, from, to, q } = req.query;
@@ -70,32 +122,33 @@ export const createInvoice = asyncHandler(async (req, res) => {
       res.status(400);
       throw new Error(`Insufficient stock for ${product.name} (have ${product.stock}, need ${it.quantity})`);
     }
-    lines.push(await buildLineFromProduct({ product, ...it }));
+    // Order matters: `it.product` is the raw id string from the request, so it must be
+    // spread BEFORE `product` or it overwrites the fetched document and the line loses
+    // its product ref.
+    lines.push(await buildLineFromProduct({ ...it, product }));
   }
 
   const { items: enriched, subtotal } = computeItemTotals(lines);
   const { taxAmount, total } = applyTax({ subtotal, discount, taxRate });
 
-  if (customer.creditLimit > 0 && customer.balance + total - (initialPayment || 0) > customer.creditLimit) {
+  // `initialPayment` is an object ({ amount, method, account }); subtracting it directly
+  // produced NaN, so the comparison was always false and the limit was never enforced on
+  // a POS sale that took money up front. creditLimit === 0 still means "no limit".
+  const upfront = Number(initialPayment?.amount) || 0;
+  if (customer.creditLimit > 0 && customer.balance + total - upfront > customer.creditLimit) {
     res.status(400);
     throw new Error(`This sale would exceed the customer's credit limit of ${customer.creditLimit}`);
   }
 
-  const number = await nextNumber('invoice');
-  const payments = [];
-  let paid = 0;
-  if (initialPayment?.amount > 0) {
-    payments.push({
-      amount: initialPayment.amount,
-      method: initialPayment.method || 'cash',
-      reference: initialPayment.reference,
-      recordedBy: req.user._id,
-    });
-    paid = initialPayment.amount;
-  }
-  const balance = Math.max(0, total - paid);
-  const status = paid >= total ? 'paid' : paid > 0 ? 'partial' : 'open';
+  // An initial payment needs an account to land in, and we validate that before
+  // creating anything so a bad account can't leave a half-finished sale behind.
+  const initialAccount = initialPayment?.amount > 0 ? await resolveAccount(res, initialPayment.account) : null;
 
+  const number = await nextNumber('invoice');
+  // The invoice is always created unpaid; any initial payment is then applied
+  // through applyInvoicePayment below — the same path a later payment takes — so
+  // there is exactly one implementation of "money received against an invoice".
+  const balance = total;
   const invoice = await Invoice.create({
     number,
     customer: customer._id,
@@ -105,10 +158,10 @@ export const createInvoice = asyncHandler(async (req, res) => {
     taxRate,
     taxAmount,
     total,
-    paid,
+    paid: 0,
     balance,
-    payments,
-    status,
+    payments: [],
+    status: 'open',
     notes,
     createdBy: req.user._id,
   });
@@ -141,6 +194,32 @@ export const createInvoice = asyncHandler(async (req, res) => {
   customer.balance += balance;
   await customer.save();
 
+  // Apply the POS initial payment, if any, through the shared path above.
+  if (initialAccount) {
+    try {
+      await applyInvoicePayment({
+        invoice,
+        account: initialAccount,
+        amount: initialPayment.amount,
+        method: initialPayment.method || 'cash',
+        reference: initialPayment.reference,
+        user: req.user,
+        type: 'sale_payment',
+        idempotencyKey: initialPayment.idempotencyKey,
+      });
+    } catch (e) {
+      // The invoice and its stock movements are already committed at this point.
+      // Rather than unwind a completed sale, leave it recorded as unpaid and say so —
+      // the payment can be retried from the invoice screen without re-selling stock.
+      rethrowDuplicatePosting(e, res);
+      res.status(502);
+      throw new Error(
+        `Invoice ${invoice.number} was created but the initial payment could not be posted ` +
+          `(${e.message}). The invoice is saved as unpaid — record the payment from the invoice screen.`
+      );
+    }
+  }
+
   await logActivity(req, 'invoice_created', {
     entity: 'Invoice',
     entityId: invoice._id,
@@ -150,33 +229,41 @@ export const createInvoice = asyncHandler(async (req, res) => {
 });
 
 export const recordPayment = asyncHandler(async (req, res) => {
-  const { amount, method = 'cash', reference } = req.body;
+  const { amount, method = 'cash', reference, account: accountId, idempotencyKey } = req.body;
   if (!(amount > 0)) {
     res.status(400);
     throw new Error('Amount must be > 0');
   }
+  const account = await resolveAccount(res, accountId);
   const invoice = await Invoice.findById(req.params.id);
   if (!invoice) {
     res.status(404);
     throw new Error('Invoice not found');
   }
-  const cappedAmount = Math.min(amount, invoice.balance);
-  invoice.payments.push({ amount: cappedAmount, method, reference, recordedBy: req.user._id });
-  invoice.paid += cappedAmount;
-  invoice.balance = Math.max(0, invoice.total - invoice.paid);
-  invoice.status = invoice.balance === 0 ? 'paid' : 'partial';
-  await invoice.save();
-
-  const customer = await Customer.findById(invoice.customer);
-  if (customer) {
-    customer.balance = Math.max(0, customer.balance - cappedAmount);
-    await customer.save();
+  if (invoice.balance <= 0) {
+    res.status(400);
+    throw new Error('This invoice is already settled');
+  }
+  let txn;
+  try {
+    txn = await applyInvoicePayment({
+      invoice,
+      account,
+      amount,
+      method,
+      reference,
+      user: req.user,
+      type: 'customer_payment',
+      idempotencyKey,
+    });
+  } catch (e) {
+    rethrowDuplicatePosting(e, res);
   }
 
   await logActivity(req, 'payment_recorded', {
     entity: 'Invoice',
     entityId: invoice._id,
-    meta: { amount: cappedAmount, method },
+    meta: { amount: txn.amount, method, account: account.name, transaction: txn._id.toString() },
   });
   res.json(invoice);
 });
@@ -191,6 +278,62 @@ export const returnInvoice = asyncHandler(async (req, res) => {
     res.status(400);
     throw new Error(`Invoice already ${invoice.status}`);
   }
+
+  // ---------------------------------------------------------------------------
+  // Refund what was actually received.
+  //
+  // Until now a return restored stock and cleared the remaining receivable but left the
+  // money already collected sitting in the account, with no entry showing it had been
+  // handed back. Every payment that has a ledger entry is now reversed through the same
+  // Change 8 mechanism used by a manual reversal — money OUT of the account it came into,
+  // the original payment preserved and marked, one reversing entry each.
+  //
+  // The customer arithmetic below is deliberately unchanged: reversing the payments first
+  // raises invoice.balance back to the full total, so the existing
+  // `customer.balance -= invoice.balance` still nets to exactly -originalOutstanding.
+  //
+  // A payment with no account (recorded before account tracking, or imported as historical)
+  // has nothing to reverse. Rather than invent an account to refund it from, the whole
+  // return is refused before anything is written.
+  const refundable = invoice.payments
+    .map((p, i) => ({ p, i }))
+    .filter(({ p }) => !p.reversed);
+  const unattributed = refundable.filter(({ p }) => !p.transaction || !p.account);
+  if (unattributed.length) {
+    res.status(409);
+    throw new Error(
+      `This invoice has ${unattributed.length} payment(s) with no financial account attached ` +
+        '(recorded before account tracking, or imported as historical payments). They cannot be ' +
+        'refunded automatically, so the return has been cancelled. Record the refund manually first.'
+    );
+  }
+
+  const reason = typeof req.body?.reason === 'string' && req.body.reason.trim()
+    ? req.body.reason.trim()
+    : 'Invoice returned';
+  for (const { p, i } of refundable) {
+    const original = await assertReversible(res, p);
+    await postReversal(res, {
+      original,
+      payment: p,
+      index: i,
+      reason,
+      user: req.user,
+      description: `Refund on returned invoice ${invoice.number} — ${reason}`,
+      links: { invoice: invoice._id, customer: invoice.customer },
+      applyDocumentUpdates: async (session) => {
+        invoice.paid = Math.max(0, invoice.paid - original.amount);
+        invoice.balance = Math.max(0, invoice.total - invoice.paid);
+        await invoice.save({ session });
+        await Customer.updateOne(
+          { _id: invoice.customer },
+          { $inc: { balance: original.amount } },
+          session ? { session } : {}
+        );
+      },
+    });
+  }
+
   for (const it of invoice.items) {
     const product = await Product.findById(it.product);
     if (!product) continue;
@@ -219,6 +362,9 @@ export const returnInvoice = asyncHandler(async (req, res) => {
   invoice.status = 'returned';
   await invoice.save();
 
+  // Unchanged from before: clears whatever this invoice still had outstanding. Combined
+  // with the refunds above the customer nets to -(original outstanding), which is correct —
+  // they owe nothing on a returned invoice and have their money back.
   const customer = await Customer.findById(invoice.customer);
   if (customer) {
     customer.balance = Math.max(0, customer.balance - invoice.balance);
@@ -237,4 +383,66 @@ export const invoicePDF = asyncHandler(async (req, res) => {
   }
   const settings = await Settings.getSingleton();
   streamInvoicePDF(res, { invoice: invoice.toObject(), customer: invoice.customer, settings });
+});
+
+// ---------------------------------------------------------------------------
+// Reverse a previously recorded invoice payment (admin only).
+//
+// The original payment line and its ledger entry are preserved untouched; a single
+// reversing entry is posted in the opposite direction and the invoice, customer
+// receivable and account balance are all restored by exactly the reversed amount.
+// ---------------------------------------------------------------------------
+export const reverseInvoicePayment = asyncHandler(async (req, res) => {
+  const reason = requireReason(res, req.body?.reason);
+
+  const invoice = await Invoice.findById(req.params.id);
+  if (!invoice) {
+    res.status(404);
+    throw new Error('Invoice not found');
+  }
+  // Returned and cancelled invoices already had their receivable adjusted by a
+  // different code path. Reversing a payment on one would mix two corrections and
+  // could leave the customer balance wrong, so it is refused rather than guessed at.
+  if (invoice.status === 'returned' || invoice.status === 'cancelled') {
+    res.status(409);
+    throw new Error(
+      `This invoice is ${invoice.status}, so its payments can no longer be reversed. ` +
+        'Reverse the payment before processing a return.'
+    );
+  }
+
+  const { payment, index } = resolvePayment(res, invoice.payments, req.params.paymentId);
+  const original = await assertReversible(res, payment);
+  const amount = original.amount;
+
+  const reversal = await postReversal(res, {
+    original,
+    payment,
+    index,
+    reason,
+    user: req.user,
+    description: `Reversal of payment on invoice ${invoice.number} — ${reason}`,
+    links: { invoice: invoice._id, customer: invoice.customer },
+    applyDocumentUpdates: async (session) => {
+      invoice.paid = Math.max(0, invoice.paid - amount);
+      invoice.balance = Math.max(0, invoice.total - invoice.paid);
+      // Same status vocabulary the payment path uses — no new statuses introduced.
+      invoice.status = invoice.balance === 0 ? 'paid' : invoice.paid > 0 ? 'partial' : 'open';
+      await invoice.save({ session });
+
+      // Receivable returns to Customer.balance, the existing source of truth.
+      await Customer.updateOne(
+        { _id: invoice.customer },
+        { $inc: { balance: amount } },
+        session ? { session } : {}
+      );
+    },
+  });
+
+  await logActivity(req, 'payment_reversed', {
+    entity: 'Invoice',
+    entityId: invoice._id,
+    meta: { amount, reason, payment: index, reversalTransaction: reversal._id.toString() },
+  });
+  res.json(invoice);
 });

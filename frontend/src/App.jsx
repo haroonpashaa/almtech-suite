@@ -7,8 +7,6 @@ import Products from './pages/Products.jsx';
 import ProductForm from './pages/ProductForm.jsx';
 import Customers from './pages/Customers.jsx';
 import CustomerDetail from './pages/CustomerDetail.jsx';
-import Suppliers from './pages/Suppliers.jsx';
-import SupplierDetail from './pages/SupplierDetail.jsx';
 import Invoices from './pages/Invoices.jsx';
 import InvoiceDetail from './pages/InvoiceDetail.jsx';
 import POS from './pages/POS.jsx';
@@ -17,6 +15,17 @@ import QuotationForm from './pages/QuotationForm.jsx';
 import PurchaseOrders from './pages/PurchaseOrders.jsx';
 import PurchaseOrderDetail from './pages/PurchaseOrderDetail.jsx';
 import PurchaseOrderForm from './pages/PurchaseOrderForm.jsx';
+import Accounts from './pages/Accounts.jsx';
+import AccountLedger from './pages/AccountLedger.jsx';
+import ImportExport from './pages/ImportExport.jsx';
+import Deals from './pages/Deals.jsx';
+import DealDetail from './pages/DealDetail.jsx';
+import Receivables from './pages/Receivables.jsx';
+import ReceivableDetail from './pages/ReceivableDetail.jsx';
+import Payables from './pages/Payables.jsx';
+import PayableDetail from './pages/PayableDetail.jsx';
+import Expenses from './pages/Expenses.jsx';
+import ExpenseReports from './pages/ExpenseReports.jsx';
 import Reports from './pages/Reports.jsx';
 import Settings from './pages/Settings.jsx';
 import Users from './pages/Users.jsx';
@@ -45,11 +54,9 @@ export default function App() {
         <Route index element={<Dashboard />} />
         <Route path="products" element={<Products />} />
         <Route path="products/new" element={<Protected roles={['admin', 'stock']}><ProductForm /></Protected>} />
-        <Route path="products/:id/edit" element={<Protected roles={['admin', 'stock']}><ProductForm /></Protected>} />
+        <Route path="products/:id/edit" element={<Protected roles={['admin']}><ProductForm /></Protected>} />
         <Route path="customers" element={<Customers />} />
         <Route path="customers/:id" element={<CustomerDetail />} />
-        <Route path="suppliers" element={<Suppliers />} />
-        <Route path="suppliers/:id" element={<SupplierDetail />} />
         <Route path="pos" element={<Protected roles={['admin', 'sales']}><POS /></Protected>} />
         <Route path="invoices" element={<Invoices />} />
         <Route path="invoices/:id" element={<InvoiceDetail />} />
@@ -58,6 +65,17 @@ export default function App() {
         <Route path="purchase-orders" element={<PurchaseOrders />} />
         <Route path="purchase-orders/new" element={<Protected roles={['admin', 'stock']}><PurchaseOrderForm /></Protected>} />
         <Route path="purchase-orders/:id" element={<PurchaseOrderDetail />} />
+        <Route path="accounts" element={<Protected roles={['admin']}><Accounts /></Protected>} />
+        <Route path="accounts/:id" element={<Protected roles={['admin']}><AccountLedger /></Protected>} />
+        <Route path="data" element={<Protected roles={['admin']}><ImportExport /></Protected>} />
+        <Route path="deals" element={<Protected roles={['admin']}><Deals /></Protected>} />
+        <Route path="deals/:kind/:id" element={<Protected roles={['admin']}><DealDetail /></Protected>} />
+        <Route path="receivables" element={<Protected roles={['admin']}><Receivables /></Protected>} />
+        <Route path="receivables/:id" element={<Protected roles={['admin']}><ReceivableDetail /></Protected>} />
+        <Route path="payables" element={<Protected roles={['admin']}><Payables /></Protected>} />
+        <Route path="payables/:id" element={<Protected roles={['admin']}><PayableDetail /></Protected>} />
+        <Route path="expenses" element={<Protected roles={['admin']}><Expenses /></Protected>} />
+        <Route path="expense-reports" element={<Protected roles={['admin']}><ExpenseReports /></Protected>} />
         <Route path="reports" element={<Reports />} />
         <Route path="settings" element={<Protected roles={['admin']}><Settings /></Protected>} />
         <Route path="users" element={<Protected roles={['admin']}><Users /></Protected>} />

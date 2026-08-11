@@ -12,11 +12,18 @@ A practical, plain-language guide to how the system works, how data flows throug
    - [Users & Login](#users--login)
    - [Inventory / Products](#inventory--products)
    - [Customers (CRM)](#customers-crm)
-   - [Suppliers](#suppliers)
+   - [Barcodes](#barcodes)
    - [POS / New Sale](#pos--new-sale)
    - [Invoices](#invoices)
    - [Quotations](#quotations)
    - [Purchase Orders](#purchase-orders)
+   - [Financial Accounts](#financial-accounts)
+   - [Expenses](#expenses)
+   - [Receivables & Payables](#receivables--payables)
+   - [Transactions (Deals)](#transactions-deals)
+   - [Returns and Refunds](#returns-and-refunds)
+   - [Payment Reversal](#payment-reversal)
+   - [Import & Export](#import--export)
    - [Reports](#reports)
    - [Settings](#settings)
    - [Activity Log](#activity-log)
@@ -47,7 +54,7 @@ You only have to "do" one thing — the system handles the rest. This is true th
 | Method | When to use it | Where |
 |---|---|---|
 | **Type into a form** | Day-to-day work — add a customer, create an invoice, log a payment | Every page has **"+ New"** buttons |
-| **Bulk import** (Excel / CSV) | First-time setup — load your existing product catalogue | Backend endpoint `POST /api/products/import` (UI to be added later) |
+| **Bulk import** (Excel) | First-time setup — load your existing catalogue, customers, suppliers, history and opening balances | Sidebar → **Import / Export** (Admin only) |
 | **Automatic** | Created as a side-effect of another action | See [section 4](#4-automatic-behaviours-the-magic) |
 
 ---
@@ -82,7 +89,7 @@ You only have to "do" one thing — the system handles the rest. This is true th
 
 **Search**: top of the page — searches name, SKU, brand, model live.
 
-**Excel import (backend ready)**: paste a JSON array of products to `POST /api/products/import`. The system creates new ones and updates existing ones by SKU.
+**Excel import**: Sidebar → **Import / Export** → Products. Download the template, fill it in, preview, then confirm. Products are matched on SKU, so re-importing updates rather than duplicates. See [Import & Export](#import--export).
 
 ---
 
@@ -90,7 +97,7 @@ You only have to "do" one thing — the system handles the rest. This is true th
 
 **Add a customer**: Customers → **"+ New Customer"** → fill name, company, phone, credit limit, etc.
 
-**Credit limit** = the maximum amount the customer can owe before the system blocks new sales. Set to `0` for no limit.
+**Credit limit** = the maximum amount the customer can owe before the system blocks new sales. Set to `0` for no limit. The check counts any payment taken at the point of sale, so a sale that would exceed the limit is still allowed if enough is paid up front.
 
 **Customer ledger**: Click a customer's name → see every invoice + every payment + running balance, with running totals.
 
@@ -100,11 +107,34 @@ You only have to "do" one thing — the system handles the rest. This is true th
 
 ### Suppliers
 
-Mirror image of Customers — tracks what **you owe them**.
+> **Removed.** The standalone Suppliers section (directory, add/edit, supplier ledger) is no
+> longer part of the app. Supplier records themselves are untouched — purchase orders still
+> attach to a supplier, supplier payables still accrue, and the **Payables** report still lists
+> everyone you owe — see [Receivables & Payables](#receivables--payables). The Purchase Order
+> form lists whichever suppliers exist, and new suppliers can be added through
+> [Import & Export](#import--export) → Suppliers.
 
-**Add via** Suppliers → **"+ New Supplier"**.
+---
 
-**Click a supplier** → ledger of every PO + every payment.
+### Barcodes
+
+Every product can carry a barcode. It is optional, but when present it must be unique
+across the whole catalogue — the system refuses a barcode that already belongs to another
+product and tells you which one.
+
+**Set one**: Inventory → open a product (admin only) → Barcode field. Leave it blank if the
+product has none; clearing a barcode frees it for another product.
+
+**Scanning**: the POS accepts any USB or Bluetooth scanner that types like a keyboard —
+which is nearly all of them. Point the scanner at the *Scan or enter barcode* box and pull
+the trigger; the scanner types the code and presses Enter for you. You can also type or
+paste a code and press Enter.
+
+After each scan the box clears itself and keeps the cursor, so you can scan continuously
+without touching the mouse. Scanning a product already in the cart increases its quantity.
+An unknown code says so and adds nothing; out-of-stock and inactive products are refused.
+
+There is no camera scanning.
 
 ---
 
@@ -183,6 +213,129 @@ On save: PO becomes **Ordered**, supplier payable balance increases by the PO to
 
 ---
 
+### Financial Accounts
+
+Money lives in named accounts — **Cash**, **Bank of Punjab** and **Soneri Bank** are set up
+for you, and you can add more (Accounts → New Account) without any developer involvement.
+
+Each account has an opening balance and a running current balance. Every payment, expense
+and reversal posts one entry to one account, so **Accounts → click an account** shows a
+complete ledger: opening balance, every movement in date order with a running balance, and
+the closing figure. The page also tells you whether the stored balance still agrees with the
+sum of its ledger, so a discrepancy can never hide.
+
+Account balances are visible to Admin only.
+
+---
+
+### Expenses
+
+Record what the business spends and which account paid for it: Expenses → Add Expense.
+
+Every expense needs a date, a category (Rent, Salaries, Electricity, Fuel, and so on), an
+amount and a paying account. Saving it moves money out of that account immediately.
+
+**Expense Reports** gives you a daily view (pick a date) and a monthly view (pick a month)
+with a category breakdown, a day-by-day breakdown and per-account totals — all calculated
+from the actual expense records, never typed in.
+
+**Corrections**: once an expense is posted, its amount, account and date can no longer be
+edited, because the money has already left the account. Instead, open it and choose
+**Void & reverse** — the original stays on record and a reversing entry puts the money back.
+Description, notes, reference and category can still be corrected in place.
+
+---
+
+### Receivables & Payables
+
+**Receivables** answers "who owes us money?". It lists every customer with an outstanding
+balance, what they were invoiced, what they have paid and what is still owed, plus the age of
+the oldest unpaid invoice. Click a customer to see their individual outstanding invoices and
+record a payment against any of them.
+
+**Payables** answers the same question in reverse for suppliers and purchase orders.
+
+Both pages show an **aging** breakdown — Current, 1–30, 31–60, 61–90 and 90+ days. Note that
+the system has no payment due-date field, so aging counts days since the invoice or purchase
+order was raised, not days past an agreed payment term. The pages say so on screen.
+
+The **Net Outstanding Position** is simply receivables minus payables. It is money owed, not
+profit.
+
+---
+
+### Transactions (Deals)
+
+**Transactions** is the Excel replacement: one scannable list of every sale and every
+purchase, with date, deal number, customer or supplier, total, paid, outstanding, status and
+payment count. Filter by date, status, cash/credit or amount, search by number or name, and
+sort any column.
+
+Click any row for the full deal record: the products, the money summary, every payment with
+the account it went through, links to the account ledger and to the receivable or payable,
+and a timeline of everything that happened to the deal.
+
+---
+
+### Returns and Refunds
+
+Returning an invoice (Invoices → open it → **Return**) does three things: the goods go back
+into stock, the customer stops owing whatever was still outstanding, and **any money already
+received is refunded** — each payment is reversed out of the account it was paid into, with
+a matching entry in that account's ledger.
+
+The original payments stay on the invoice, marked reversed, so the history is complete.
+
+If the invoice contains a payment that was imported from a spreadsheet without an account,
+there is nothing to refund it from, so the return is refused with an explanation rather than
+guessing. Record that refund manually first.
+
+A returned invoice cannot be returned again, and its payments cannot be reversed a second
+time.
+
+---
+
+### Payment Reversal
+
+If a payment was recorded in error, an Admin can reverse it from the invoice or purchase
+order (or from the deal record). A reason is required.
+
+Nothing is deleted. The original payment stays visible, marked **REVERSED**, showing who
+reversed it, when and why. A matching reversing entry is posted to the same account, so the
+account balance, the invoice or PO, and the customer receivable or supplier payable all
+return to where they were.
+
+A payment can only be reversed once. Payments that were imported from a spreadsheet without
+an account cannot be reversed automatically, because there is no ledger entry to undo — the
+system will tell you so rather than guess.
+
+---
+
+### Import & Export
+
+**Import** (Admin only) brings your existing spreadsheets in: Products, Customers, Suppliers,
+Sales/Invoices, Purchase Orders, Expenses and Opening Balances.
+
+Download the template for whatever you are importing — it has the right column headers, one
+clearly marked example row to delete, and instructions. Then upload your file and press
+**Preview & validate**. Nothing is saved at this point: you get a row-by-row report of what
+will be created, what will be updated, what will be skipped as already present, and exactly
+what is wrong with any row that fails. Failed rows download as a spreadsheet you can correct
+and re-upload. Only when you confirm does anything reach the database.
+
+Re-uploading the same file does not duplicate anything.
+
+**Opening Balances** is how you carry over where the business already stands — cash and bank
+starting balances, what customers already owed you, and what you already owed suppliers.
+These are a starting position, not transactions, so they create no revenue and no expense.
+
+**Export** produces proper Excel files with readable column names, real dates and real
+numbers you can sum: Products, Customers, Suppliers, Sales, Purchases, Payments, Expenses,
+Receivables, Payables, Account Ledgers, Deals, P&L, and the daily and monthly expense
+reports. Where a date range applies, the export respects it.
+
+---
+
 ### Reports
 
 Six views, all with date filters:
@@ -246,11 +399,12 @@ When you start using this for real (with real ALMTech data), follow this order:
 
 1. **Sign in as Admin** → **Settings** → fill in business profile (name, address, tax number).
 2. **Users** → create accounts for staff (sales, stock).
-3. **Suppliers** → add your real suppliers.
-4. **Inventory** → add products (manually or via import).
+3. **Accounts** → set the opening balance of Cash and each bank account.
+4. **Inventory** → add products (manually or via Import).
 5. **Customers** → add wholesale clients with credit limits.
-6. **Purchase Orders** → optionally log recently received stock to back-fill inventory.
-7. From here on, normal daily use: sales, payments, receiving stock, running reports.
+6. **Import → Opening Balances** → carry over what customers already owe you and what you owe suppliers.
+7. **Purchase Orders** → optionally log recently received stock to back-fill inventory.
+8. From here on, normal daily use: sales, payments, expenses, receiving stock, running reports.
 
 ---
 
@@ -279,6 +433,12 @@ These are seeded on first launch. **Change them immediately** in production.
 | **JWT** | The token your browser uses to stay signed in for 12 hours after login. |
 | **RBAC** | Role-Based Access Control — what each role can/can't see and do. |
 | **PO** | Purchase Order — what you send to a supplier to buy stock. |
+| **Account** | A place money is held: Cash, or a named bank account. |
+| **Ledger** (account) | Every movement in and out of one account, with a running balance. |
+| **Reversing entry** | A correcting entry that undoes an earlier one. The original is kept; nothing is deleted. |
+| **Opening balance** | Where a balance stood before ALMTech started tracking it. Not a transaction. |
+| **Aging** | How long money has been outstanding, counted from the invoice or PO date. |
+| **Deal** | One sale or one purchase, seen as a whole: products, totals, payments and history. |
 | **Partial payment** | A payment that doesn't cover the full invoice/PO — the system tracks the remaining balance until it's paid in full. |
 
 ---

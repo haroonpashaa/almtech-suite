@@ -21,6 +21,18 @@ const paymentLineSchema = new mongoose.Schema(
     amount: { type: Number, required: true, min: 0 },
     reference: String,
     recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    // Which financial account the money left, and the ledger row recording it.
+    // Optional on the schema so payments made before Change 3 still load; required
+    // by the API for every new payment.
+    account: { type: mongoose.Schema.Types.ObjectId, ref: 'Account' },
+    transaction: { type: mongoose.Schema.Types.ObjectId, ref: 'FinancialTransaction' },
+    // Reversal audit trail. The original amount, account and date are never edited —
+    // a reversed payment stays exactly as recorded and is simply marked.
+    reversed: { type: Boolean, default: false },
+    reversedAt: Date,
+    reversedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    reversalReason: String,
+    reversalTransaction: { type: mongoose.Schema.Types.ObjectId, ref: 'FinancialTransaction' },
   },
   { _id: false }
 );
