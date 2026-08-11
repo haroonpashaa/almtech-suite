@@ -12,7 +12,17 @@ const isProd = process.env.NODE_ENV === 'production';
 const missing = [];
 if (!process.env.JWT_SECRET) missing.push('JWT_SECRET       — signs login tokens; without it nobody can sign in');
 if (isProd) {
-  if (!process.env.MONGO_URI) missing.push('MONGO_URI        — production database connection string');
+  // Accept exactly the same variable names config/db.js resolves, or a deployment that
+  // sets MONGODB_URI (as Vercel/Atlas integrations commonly do) would be refused here
+  // even though the connection itself would have worked.
+  const mongoUri =
+    process.env.MONGO_URI ||
+    process.env.MONGODB_URI ||
+    process.env.STORAGE_MONGODB_URI ||
+    process.env.DATABASE_URL;
+  if (!mongoUri) {
+    missing.push('MONGO_URI        — production database connection string (MONGODB_URI is also accepted)');
+  }
   if (!process.env.CORS_ORIGIN) missing.push('CORS_ORIGIN      — the exact origin of your frontend, e.g. https://your-domain');
 }
 if (missing.length) {
