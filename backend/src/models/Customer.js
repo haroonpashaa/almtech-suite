@@ -17,5 +17,7 @@ const customerSchema = new mongoose.Schema(
 );
 
 customerSchema.index({ name: 'text', company: 'text', phone: 'text', email: 'text' });
+// The customer list sorts newest-first and had no index for it.
+customerSchema.index({ createdAt: -1 });
 
 export default mongoose.model('Customer', customerSchema);

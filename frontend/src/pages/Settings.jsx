@@ -63,9 +63,9 @@ export default function Settings() {
         title="Settings"
         subtitle="Business profile, numbering, and tax defaults"
         icon={<svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z" /><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.5-2-3.5-2.4 1a7.6 7.6 0 0 0-1.7-1l-.4-2.5h-4l-.4 2.5a7.6 7.6 0 0 0-1.7 1l-2.4-1-2 3.5L4.6 11a7.6 7.6 0 0 0 0 2l-2 1.5 2 3.5 2.4-1a7.6 7.6 0 0 0 1.7 1l.4 2.5h4l.4-2.5a7.6 7.6 0 0 0 1.7-1l2.4 1 2-3.5z" /></svg>}
-        actions={<button className="btn-primary-gradient" onClick={save} disabled={saving}>{saving ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Save Settings'}</button>}
+        actions={<button className="btn-primary" onClick={save} disabled={saving}>{saving ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Save Settings'}</button>}
       />
-      <div className="p-6 sm:p-8 max-w-3xl space-y-5">
+      <div className="page page-narrow space-y-5">
         {GROUPS.map((group) => (
           <div key={group.title} className="card p-6">
             <div className="mb-4">
@@ -75,8 +75,8 @@ export default function Settings() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {group.fields.map(([k, label, type = 'text']) => (
                 <div key={k}>
-                  <label className="label">{label}</label>
-                  <input
+                  <label htmlFor="settings-label-64" className="label">{label}</label>
+                  <input id="settings-label-64"
                     className={`input ${type === 'number' ? 'num' : ''}`}
                     type={type}
                     value={form[k] ?? ''}
@@ -97,7 +97,7 @@ export default function Settings() {
         </div>
 
         <div className="flex justify-end">
-          <button className="btn-primary-gradient" onClick={save} disabled={saving}>{saving ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Save Settings'}</button>
+          <button className="btn-primary" onClick={save} disabled={saving}>{saving ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Save Settings'}</button>
         </div>
       </div>
     </div>

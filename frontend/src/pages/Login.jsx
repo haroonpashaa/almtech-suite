@@ -5,17 +5,28 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { errorMessage } from '../lib/format.js';
 import { Spinner } from '../components/ui.jsx';
 
-const demoAccounts = [
-  { label: 'Admin', email: 'admin@almtech.org', password: 'admin1234' },
-  { label: 'Sales', email: 'sales@almtech.org', password: 'sales1234' },
-  { label: 'Stock', email: 'stock@almtech.org', password: 'stock1234' },
-];
+/* The demo shortcuts exist so a developer does not retype credentials all day. They
+   must never reach a deployed server: the panel advertises three valid addresses to
+   anyone who opens the login page, and offers one-click sign-in with passwords that
+   are published in the repository. `import.meta.env.DEV` is true only under `vite dev`
+   and is statically false in a production build, so the whole block — including these
+   strings — is removed by the bundler rather than merely hidden. */
+const SHOW_DEMO_ACCOUNTS = import.meta.env.DEV;
+
+const demoAccounts = SHOW_DEMO_ACCOUNTS
+  ? [
+      { label: 'Admin', email: 'admin@almtech.org', password: 'admin1234' },
+      { label: 'Sales', email: 'sales@almtech.org', password: 'sales1234' },
+      { label: 'Stock', email: 'stock@almtech.org', password: 'stock1234' },
+    ]
+  : [];
 
 export default function Login() {
   const { user, login } = useAuth();
   const navigate = useNavigate();
-  const [email, setEmail] = useState('admin@almtech.org');
-  const [password, setPassword] = useState('admin1234');
+  // A deployed login screen starts empty; only local development pre-fills.
+  const [email, setEmail] = useState(SHOW_DEMO_ACCOUNTS ? 'admin@almtech.org' : '');
+  const [password, setPassword] = useState(SHOW_DEMO_ACCOUNTS ? 'admin1234' : '');
   const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -59,8 +70,8 @@ export default function Login() {
 
           <div className="mt-6 space-y-4">
             <div>
-              <label className="label">Email address</label>
-              <input
+              <label htmlFor="login-email-address-25" className="label">Email address</label>
+              <input id="login-email-address-25"
                 className="input"
                 type="email"
                 value={email}
@@ -71,9 +82,10 @@ export default function Login() {
               />
             </div>
             <div>
-              <label className="label">Password</label>
+              <label htmlFor="login-password" className="label">Password</label>
               <div className="relative">
                 <input
+                  id="login-password"
                   className="input pr-10"
                   type={showPw ? 'text' : 'password'}
                   value={password}
@@ -99,10 +111,11 @@ export default function Login() {
             </div>
           </div>
 
-          <button className="btn-primary-gradient btn-lg w-full mt-6" disabled={loading}>
+          <button className="btn-primary btn-lg w-full mt-6" disabled={loading}>
             {loading ? <><Spinner className="w-4 h-4" /> Signing in…</> : 'Sign in'}
           </button>
 
+          {SHOW_DEMO_ACCOUNTS && (
           <div className="mt-6 pt-5 border-t border-ink-100">
             <div className="text-[11px] text-ink-400 mb-2 text-center uppercase tracking-wider font-medium">
               Demo accounts
@@ -124,6 +137,7 @@ export default function Login() {
               ))}
             </div>
           </div>
+          )}
         </form>
 
         <div className="mt-6 text-center text-[11px] text-ink-400">

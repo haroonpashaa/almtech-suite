@@ -8,6 +8,7 @@ import {
   accountLedger,
   reconcileAccounts,
 } from '../controllers/account.controller.js';
+import { accountStatementPDF } from '../controllers/document.controller.js';
 
 const r = Router();
 r.use(protect);
@@ -19,6 +20,8 @@ r.get('/', listAccounts);
 r.get('/summary', requireRole('admin'), accountsSummary);
 r.get('/reconcile', requireRole('admin'), reconcileAccounts);
 r.get('/:id/ledger', requireRole('admin'), accountLedger);
+// The printed statement is the ledger, so it stays admin-only like the ledger.
+r.get('/:id/statement/pdf', requireRole('admin'), accountStatementPDF);
 r.post('/', requireRole('admin'), createAccount);
 r.patch('/:id', requireRole('admin'), updateAccount);
 export default r;

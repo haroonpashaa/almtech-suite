@@ -2,6 +2,7 @@ import asyncHandler from 'express-async-handler';
 import Customer from '../models/Customer.js';
 import Invoice from '../models/Invoice.js';
 import { logActivity } from '../utils/activity.js';
+import { resolvePaging, runPaged } from '../utils/pagination.js';
 
 export const listCustomers = asyncHandler(async (req, res) => {
   const { q } = req.query;
@@ -14,7 +15,11 @@ export const listCustomers = asyncHandler(async (req, res) => {
       { email: new RegExp(q, 'i') },
     ];
   }
-  const items = await Customer.find(filter).sort('-createdAt');
+  // This list was previously unbounded. The default stays unbounded so that every
+  // existing caller — including the POS customer picker — is unaffected; callers
+  // that want a window now have one, and everyone gets the true count.
+  const paging = resolvePaging(req.query, 0);
+  const items = await runPaged(res, Customer, filter, { sort: '-createdAt', paging });
   res.json(items);
 });
 

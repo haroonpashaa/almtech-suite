@@ -4,8 +4,10 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
 import { money, date as fmtDate, errorMessage } from '../lib/format.js';
+import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
+import Money from '../components/Money.jsx';
 import Modal from '../components/Modal.jsx';
 import { Badge, LoadingBlock, Spinner } from '../components/ui.jsx';
 import { AgingBuckets, AgingNote, OverdueBadge } from '../components/Aging.jsx';
@@ -30,11 +32,7 @@ export default function PayableDetail() {
     queryKey: ['accounts'],
     queryFn: async () => (await api.get('/accounts')).data,
   });
-  const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: async () => (await api.get('/settings')).data,
-  });
-  const currency = settings?.currency || 'PKR';
+  const currency = useCurrency();
 
   function openPay(po) {
     setPayTarget(po);
@@ -76,28 +74,34 @@ export default function PayableDetail() {
   return (
     <div>
       <PageHeader
-        breadcrumb={[{ label: 'Payables', to: '/payables' }, { label: data.supplier.name }]}
+        breadcrumb={[{ label: `Payables (${currency})`, to: '/payables' }, { label: data.supplier.name }]}
         title={data.supplier.name}
         subtitle={data.supplier.contactPerson ? `Contact: ${data.supplier.contactPerson}` : 'Outstanding purchase orders'}
-        actions={data.oldestAgeDays > 0 && <Badge tone={data.oldestAgeDays > 60 ? 'danger' : 'warning'} dot>{data.oldestAgeDays} days old</Badge>}
+        actions={
+          <>
+            {data.oldestAgeDays > 0 && <Badge tone={data.oldestAgeDays > 60 ? 'danger' : 'warning'} dot>{data.oldestAgeDays} days old</Badge>}
+            {/* This screen is admin-only, so supplier access is guaranteed. */}
+            <Link to={`/suppliers/${data.supplier._id}`} className="btn-secondary">Supplier profile</Link>
+          </>
+        }
       />
-      <div className="p-6 sm:p-8 space-y-4 max-w-[1300px]">
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="page page-w space-y-4">
+        <div className="grid grid-cols-1 min-[420px]:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="card p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Total Payable</div>
-            <div className="mt-2 text-2xl font-semibold num text-amber-600 tracking-tight">{money(data.outstanding, currency)}</div>
+            <div className="mt-2 fig-lg font-semibold num break-words text-amber-600 tracking-tight">{money(data.outstanding, currency)}</div>
           </div>
           <div className="card p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Purchase Total</div>
-            <div className="mt-2 text-xl font-semibold num text-ink-900">{money(data.total, currency)}</div>
+            <div className="mt-2 fig-md font-semibold num break-words text-ink-900">{money(data.total, currency)}</div>
           </div>
           <div className="card p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Paid</div>
-            <div className="mt-2 text-xl font-semibold num text-emerald-600">{money(data.paid, currency)}</div>
+            <div className="mt-2 fig-md font-semibold num break-words text-emerald-600">{money(data.paid, currency)}</div>
           </div>
           <div className="card p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Open POs</div>
-            <div className="mt-2 text-xl font-semibold num text-ink-900">{data.purchaseOrders.length}</div>
+            <div className="mt-2 fig-md font-semibold num break-words text-ink-900">{data.purchaseOrders.length}</div>
             {!data.reconciled && (
               <div className="text-xs text-amber-600 mt-1">Stored payable {money(data.storedPayable, currency)}</div>
             )}
@@ -105,7 +109,7 @@ export default function PayableDetail() {
         </div>
 
         <div className="space-y-2">
-          <div className="flex items-baseline justify-between">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
             <div className="section-title">Aging</div>
             <AgingNote />
           </div>
@@ -124,9 +128,9 @@ export default function PayableDetail() {
             { key: 'expectedAt', label: 'Expected', render: (r) => r.expectedAt ? <span className="text-ink-500 whitespace-nowrap">{fmtDate(r.expectedAt)}</span> : <span className="text-ink-300">—</span> },
             { key: 'status', label: 'Status', render: (r) => <Badge tone={statusTone[r.status]} dot>{r.status}</Badge> },
             { key: 'overdueDays', label: 'Age', render: (r) => <OverdueBadge days={r.overdueDays} /> },
-            { key: 'total', label: 'Total', className: 'text-right num text-ink-600', render: (r) => money(r.total, currency) },
-            { key: 'paid', label: 'Paid', className: 'text-right num text-emerald-600', render: (r) => money(r.paid, currency) },
-            { key: 'balance', label: 'Balance', className: 'text-right num font-semibold text-amber-600', render: (r) => money(r.balance, currency) },
+            { key: 'total', label: `Total (${currency})`, className: 'text-right num text-ink-600', render: (r) => <Money value={r.total} /> },
+            { key: 'paid', label: `Paid (${currency})`, className: 'text-right num text-emerald-600', render: (r) => <Money value={r.paid} /> },
+            { key: 'balance', label: `Balance (${currency})`, className: 'text-right num font-semibold text-amber-600', render: (r) => <Money value={r.balance} /> },
             {
               key: 'action',
               label: '',
@@ -152,20 +156,20 @@ export default function PayableDetail() {
         {payTarget && (
           <div className="space-y-3">
             <div>
-              <label className="label">Amount <span className="text-red-500">*</span></label>
-              <input className="input num" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
+              <label htmlFor="payabledetail-amount-33" className="label">Amount <span className="text-red-500">*</span></label>
+              <input id="payabledetail-amount-33" className="input num" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
               <p className="text-xs text-ink-400 mt-1">Amounts above the outstanding balance are capped automatically.</p>
             </div>
             <div>
-              <label className="label">Pay From <span className="text-red-500">*</span></label>
-              <select className="select" value={account} onChange={(e) => setAccount(e.target.value)}>
+              <label htmlFor="payabledetail-pay-from-34" className="label">Pay From <span className="text-red-500">*</span></label>
+              <select id="payabledetail-pay-from-34" className="select" value={account} onChange={(e) => setAccount(e.target.value)}>
                 <option value="">— select account —</option>
                 {(accounts || []).map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
               </select>
             </div>
             <div>
-              <label className="label">Method</label>
-              <select className="select" value={method} onChange={(e) => setMethod(e.target.value)}>
+              <label htmlFor="payabledetail-method-35" className="label">Method</label>
+              <select id="payabledetail-method-35" className="select" value={method} onChange={(e) => setMethod(e.target.value)}>
                 <option value="cash">Cash</option>
                 <option value="bank">Bank Transfer</option>
                 <option value="cheque">Cheque</option>
@@ -173,11 +177,11 @@ export default function PayableDetail() {
               </select>
             </div>
             <div>
-              <label className="label">Reference</label>
-              <input className="input" value={reference} onChange={(e) => setReference(e.target.value)} placeholder="Optional" />
+              <label htmlFor="payabledetail-reference-36" className="label">Reference</label>
+              <input id="payabledetail-reference-36" className="input" value={reference} onChange={(e) => setReference(e.target.value)} placeholder="Optional" />
             </div>
             <div className="flex gap-2 pt-2">
-              <button className="btn-primary-gradient" onClick={pay} disabled={paying || !account || !(Number(amount) > 0)}>
+              <button className="btn-primary" onClick={pay} disabled={paying || !account || !(Number(amount) > 0)}>
                 {paying ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Save payment'}
               </button>
               <button className="btn-secondary" onClick={() => setPayTarget(null)}>Cancel</button>

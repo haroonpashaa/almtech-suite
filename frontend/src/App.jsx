@@ -1,46 +1,59 @@
+import { Suspense, lazy } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './context/AuthContext.jsx';
 import Layout from './components/Layout.jsx';
 import Login from './pages/Login.jsx';
-import Dashboard from './pages/Dashboard.jsx';
-import Products from './pages/Products.jsx';
-import ProductForm from './pages/ProductForm.jsx';
-import Customers from './pages/Customers.jsx';
-import CustomerDetail from './pages/CustomerDetail.jsx';
-import Invoices from './pages/Invoices.jsx';
-import InvoiceDetail from './pages/InvoiceDetail.jsx';
-import POS from './pages/POS.jsx';
-import Quotations from './pages/Quotations.jsx';
-import QuotationForm from './pages/QuotationForm.jsx';
-import PurchaseOrders from './pages/PurchaseOrders.jsx';
-import PurchaseOrderDetail from './pages/PurchaseOrderDetail.jsx';
-import PurchaseOrderForm from './pages/PurchaseOrderForm.jsx';
-import Accounts from './pages/Accounts.jsx';
-import AccountLedger from './pages/AccountLedger.jsx';
-import ImportExport from './pages/ImportExport.jsx';
-import Deals from './pages/Deals.jsx';
-import DealDetail from './pages/DealDetail.jsx';
-import Receivables from './pages/Receivables.jsx';
-import ReceivableDetail from './pages/ReceivableDetail.jsx';
-import Payables from './pages/Payables.jsx';
-import PayableDetail from './pages/PayableDetail.jsx';
-import Expenses from './pages/Expenses.jsx';
-import ExpenseReports from './pages/ExpenseReports.jsx';
-import Reports from './pages/Reports.jsx';
-import Settings from './pages/Settings.jsx';
-import Users from './pages/Users.jsx';
-import Activity from './pages/Activity.jsx';
+import AccessDenied from './components/AccessDenied.jsx';
+import { LoadingBlock } from './components/ui.jsx';
 
+// Every screen loads on demand. The initial download is the shell and the login
+// page; the heavy reporting screens (and the chart library they pull in) arrive
+// only when someone actually opens them.
+const Dashboard = lazy(() => import('./pages/Dashboard.jsx'));
+const Products = lazy(() => import('./pages/Products.jsx'));
+const ProductForm = lazy(() => import('./pages/ProductForm.jsx'));
+const Customers = lazy(() => import('./pages/Customers.jsx'));
+const CustomerDetail = lazy(() => import('./pages/CustomerDetail.jsx'));
+const Invoices = lazy(() => import('./pages/Invoices.jsx'));
+const InvoiceDetail = lazy(() => import('./pages/InvoiceDetail.jsx'));
+const POS = lazy(() => import('./pages/POS.jsx'));
+const Quotations = lazy(() => import('./pages/Quotations.jsx'));
+const QuotationForm = lazy(() => import('./pages/QuotationForm.jsx'));
+const PurchaseOrders = lazy(() => import('./pages/PurchaseOrders.jsx'));
+const PurchaseOrderDetail = lazy(() => import('./pages/PurchaseOrderDetail.jsx'));
+const PurchaseOrderForm = lazy(() => import('./pages/PurchaseOrderForm.jsx'));
+const Suppliers = lazy(() => import('./pages/Suppliers.jsx'));
+const SupplierDetail = lazy(() => import('./pages/SupplierDetail.jsx'));
+const Accounts = lazy(() => import('./pages/Accounts.jsx'));
+const AccountLedger = lazy(() => import('./pages/AccountLedger.jsx'));
+const ImportExport = lazy(() => import('./pages/ImportExport.jsx'));
+const Deals = lazy(() => import('./pages/Deals.jsx'));
+const DealDetail = lazy(() => import('./pages/DealDetail.jsx'));
+const Receivables = lazy(() => import('./pages/Receivables.jsx'));
+const ReceivableDetail = lazy(() => import('./pages/ReceivableDetail.jsx'));
+const Payables = lazy(() => import('./pages/Payables.jsx'));
+const PayableDetail = lazy(() => import('./pages/PayableDetail.jsx'));
+const Expenses = lazy(() => import('./pages/Expenses.jsx'));
+const ExpenseReports = lazy(() => import('./pages/ExpenseReports.jsx'));
+const Reports = lazy(() => import('./pages/Reports.jsx'));
+const Settings = lazy(() => import('./pages/Settings.jsx'));
+const Users = lazy(() => import('./pages/Users.jsx'));
+const Activity = lazy(() => import('./pages/Activity.jsx'));
+
+// Permissions themselves are unchanged. What changed is that a denial is now
+// stated rather than performed silently: the previous <Navigate to="/"> made a
+// legitimate permission boundary look like a broken link.
 function Protected({ children, roles }) {
   const { user, loading } = useAuth();
-  if (loading) return <div className="p-8 text-slate-500">Loading…</div>;
+  if (loading) return <LoadingBlock />;
   if (!user) return <Navigate to="/login" replace />;
-  if (roles && !roles.includes(user.role)) return <Navigate to="/" replace />;
+  if (roles && !roles.includes(user.role)) return <AccessDenied roles={roles} />;
   return children;
 }
 
 export default function App() {
   return (
+    <Suspense fallback={<LoadingBlock />}>
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route
@@ -65,6 +78,9 @@ export default function App() {
         <Route path="purchase-orders" element={<PurchaseOrders />} />
         <Route path="purchase-orders/new" element={<Protected roles={['admin', 'stock']}><PurchaseOrderForm /></Protected>} />
         <Route path="purchase-orders/:id" element={<PurchaseOrderDetail />} />
+        {/* Supplier screens mirror the API: admin and stock only. */}
+        <Route path="suppliers" element={<Protected roles={['admin', 'stock']}><Suppliers /></Protected>} />
+        <Route path="suppliers/:id" element={<Protected roles={['admin', 'stock']}><SupplierDetail /></Protected>} />
         <Route path="accounts" element={<Protected roles={['admin']}><Accounts /></Protected>} />
         <Route path="accounts/:id" element={<Protected roles={['admin']}><AccountLedger /></Protected>} />
         <Route path="data" element={<Protected roles={['admin']}><ImportExport /></Protected>} />
@@ -83,5 +99,6 @@ export default function App() {
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+    </Suspense>
   );
 }

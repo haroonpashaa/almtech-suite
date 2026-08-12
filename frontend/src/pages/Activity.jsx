@@ -16,7 +16,7 @@ export default function Activity() {
         subtitle="Every action recorded with user and timestamp"
         icon={<svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 7v5l3 2m6-2a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" /></svg>}
       />
-      <div className="p-6 sm:p-8">
+      <div className="page page-w">
         <Table
           loading={isLoading}
           empty="No activity recorded yet"

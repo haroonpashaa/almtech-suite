@@ -3,10 +3,13 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
 import { money, date as fmtDate, errorMessage } from '../lib/format.js';
+import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
+import Money from '../components/Money.jsx';
 import Modal from '../components/Modal.jsx';
 import { Badge, Spinner } from '../components/ui.jsx';
+import ConfirmDialog from '../components/ConfirmDialog.jsx';
 
 const today = () => new Date().toISOString().slice(0, 10);
 const emptyForm = () => ({
@@ -27,6 +30,7 @@ export default function Expenses() {
   const [detail, setDetail] = useState(null);
   const [voiding, setVoiding] = useState(false);
   const [voidReason, setVoidReason] = useState('');
+  const [confirmVoid, setConfirmVoid] = useState(false);
 
   // Filters
   const [from, setFrom] = useState('');
@@ -58,11 +62,7 @@ export default function Expenses() {
     queryKey: ['expense-categories'],
     queryFn: async () => (await api.get('/expenses/categories')).data,
   });
-  const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: async () => (await api.get('/settings')).data,
-  });
-  const currency = settings?.currency || 'PKR';
+  const currency = useCurrency();
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -90,7 +90,6 @@ export default function Expenses() {
   }
 
   async function voidExpense() {
-    if (!confirm(`Void this ${money(detail.amount, currency)} expense? A reversing entry will return the money to ${detail.account?.name}.`)) return;
     setVoiding(true);
     try {
       await api.post(`/expenses/${detail._id}/void`, { reason: voidReason || undefined });
@@ -115,40 +114,40 @@ export default function Expenses() {
         subtitle="Business expenses, paid from your financial accounts"
         icon={<svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16v16H4zM8 9h8M8 13h8M8 17h4" /></svg>}
         actions={
-          <button className="btn-primary-gradient" onClick={() => { setForm(emptyForm()); setShowAdd(true); }}>
+          <button className="btn-primary" onClick={() => { setForm(emptyForm()); setShowAdd(true); }}>
             <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
             Add Expense
           </button>
         }
       />
-      <div className="p-6 sm:p-8 space-y-4 max-w-[1300px]">
+      <div className="page page-w space-y-4">
         {/* Filters */}
         <div className="flex flex-wrap items-end gap-3">
           <div>
-            <label className="label">From</label>
-            <input className="input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+            <label htmlFor="expenses-from-11" className="label">From</label>
+            <input id="expenses-from-11" className="input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
           </div>
           <div>
-            <label className="label">To</label>
-            <input className="input" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+            <label htmlFor="expenses-to-12" className="label">To</label>
+            <input id="expenses-to-12" className="input" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
           </div>
           <div>
-            <label className="label">Category</label>
-            <select className="select" value={category} onChange={(e) => setCategory(e.target.value)}>
+            <label htmlFor="expenses-category-13" className="label">Category</label>
+            <select id="expenses-category-13" className="select" value={category} onChange={(e) => setCategory(e.target.value)}>
               <option value="">All categories</option>
               {(categories || []).map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
           <div>
-            <label className="label">Account</label>
-            <select className="select" value={account} onChange={(e) => setAccount(e.target.value)}>
+            <label htmlFor="expenses-account-14" className="label">Account</label>
+            <select id="expenses-account-14" className="select" value={account} onChange={(e) => setAccount(e.target.value)}>
               <option value="">All accounts</option>
               {(accounts || []).map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
             </select>
           </div>
           <div>
-            <label className="label">Status</label>
-            <select className="select" value={status} onChange={(e) => setStatus(e.target.value)}>
+            <label htmlFor="expenses-status-15" className="label">Status</label>
+            <select id="expenses-status-15" className="select" value={status} onChange={(e) => setStatus(e.target.value)}>
               <option value="posted">Posted</option>
               <option value="voided">Voided</option>
               <option value="all">All</option>
@@ -194,7 +193,7 @@ export default function Expenses() {
             { key: 'status', label: '', render: (e) => (e.status === 'voided' ? <Badge tone="danger" dot>voided</Badge> : null) },
             {
               key: 'amount',
-              label: 'Amount',
+              label: `Amount (${currency})`,
               className: 'text-right num font-medium',
               render: (e) => (
                 <span className={e.status === 'voided' ? 'text-ink-300 line-through' : 'text-red-600'}>
@@ -212,44 +211,44 @@ export default function Expenses() {
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="label">Date <span className="text-red-500">*</span></label>
-              <input className="input" type="date" value={form.date} onChange={(e) => set('date', e.target.value)} />
+              <label htmlFor="expenses-date-16" className="label">Date <span className="text-red-500">*</span></label>
+              <input id="expenses-date-16" className="input" type="date" value={form.date} onChange={(e) => set('date', e.target.value)} />
             </div>
             <div>
-              <label className="label">Amount <span className="text-red-500">*</span></label>
-              <input className="input num" type="number" step="0.01" min="0" value={form.amount} onChange={(e) => set('amount', e.target.value)} placeholder="0.00" />
+              <label htmlFor="expenses-amount-17" className="label">Amount <span className="text-red-500">*</span></label>
+              <input id="expenses-amount-17" className="input num" type="number" step="0.01" min="0" value={form.amount} onChange={(e) => set('amount', e.target.value)} placeholder="0.00" />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="label">Category <span className="text-red-500">*</span></label>
-              <select className="select" value={form.category} onChange={(e) => set('category', e.target.value)}>
+              <label htmlFor="expenses-category-18" className="label">Category <span className="text-red-500">*</span></label>
+              <select id="expenses-category-18" className="select" value={form.category} onChange={(e) => set('category', e.target.value)}>
                 <option value="">— select category —</option>
                 {(categories || []).map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
             </div>
             <div>
-              <label className="label">Payment Account <span className="text-red-500">*</span></label>
-              <select className="select" value={form.account} onChange={(e) => set('account', e.target.value)}>
+              <label htmlFor="expenses-payment-account-19" className="label">Payment Account <span className="text-red-500">*</span></label>
+              <select id="expenses-payment-account-19" className="select" value={form.account} onChange={(e) => set('account', e.target.value)}>
                 <option value="">— select account —</option>
                 {(accounts || []).map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
               </select>
             </div>
           </div>
           <div>
-            <label className="label">Description</label>
-            <input className="input" value={form.description} onChange={(e) => set('description', e.target.value)} placeholder="e.g. Monthly electricity bill" />
+            <label htmlFor="expenses-description-20" className="label">Description</label>
+            <input id="expenses-description-20" className="input" value={form.description} onChange={(e) => set('description', e.target.value)} placeholder="e.g. Monthly electricity bill" />
           </div>
           <div>
-            <label className="label">Reference</label>
-            <input className="input font-mono" value={form.reference} onChange={(e) => set('reference', e.target.value)} placeholder="Bill / receipt / voucher number (optional)" />
+            <label htmlFor="expenses-reference-21" className="label">Reference</label>
+            <input id="expenses-reference-21" className="input font-mono" value={form.reference} onChange={(e) => set('reference', e.target.value)} placeholder="Bill / receipt / voucher number (optional)" />
           </div>
           <div>
-            <label className="label">Notes</label>
-            <textarea className="input" rows="2" value={form.notes} onChange={(e) => set('notes', e.target.value)} placeholder="Optional" />
+            <label htmlFor="expenses-notes-22" className="label">Notes</label>
+            <textarea id="expenses-notes-22" className="input" rows="2" value={form.notes} onChange={(e) => set('notes', e.target.value)} placeholder="Optional" />
           </div>
           <div className="flex gap-2 pt-2">
-            <button className="btn-primary-gradient" onClick={save} disabled={saving || !canSave}>
+            <button className="btn-primary" onClick={save} disabled={saving || !canSave}>
               {saving ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Record expense'}
             </button>
             <button className="btn-secondary" onClick={() => setShowAdd(false)}>Cancel</button>
@@ -288,7 +287,7 @@ export default function Expenses() {
                 </p>
                 <label className="label mt-3">Void reason</label>
                 <input className="input" value={voidReason} onChange={(e) => setVoidReason(e.target.value)} placeholder="Optional" />
-                <button className="btn-secondary w-full mt-3 text-red-600 border-red-200 hover:bg-red-50" onClick={voidExpense} disabled={voiding}>
+                <button className="btn-secondary w-full mt-3 text-red-600 border-red-200 hover:bg-red-50" onClick={() => setConfirmVoid(true)} disabled={voiding}>
                   {voiding ? <><Spinner className="w-4 h-4" /> Voiding…</> : 'Void & reverse this expense'}
                 </button>
               </div>
@@ -296,6 +295,24 @@ export default function Expenses() {
           </div>
         )}
       </Modal>
+      <ConfirmDialog
+        open={confirmVoid}
+        onClose={() => setConfirmVoid(false)}
+        onConfirm={async (reason) => { setVoidReason(reason); await voidExpense(); }}
+        title="Void this expense?"
+        description="Nothing is deleted. The expense stays on record marked voided, and a reversing entry puts the money back."
+        consequences={detail ? [
+          `${money(detail.amount, currency)} returns to ${detail.account?.name || 'the paying account'}`,
+          `The ${detail.category} expense is marked VOIDED and drops out of expense totals and P&L`,
+          'Both the original and the reversing entry remain in the account ledger',
+          'A voided expense cannot be edited or voided again',
+        ] : []}
+        confirmLabel="Void & reverse"
+        reasonRequired
+        reasonLabel="Why is this being voided?"
+        reasonPlaceholder="e.g. Duplicate entry"
+      />
+
     </div>
   );
 }

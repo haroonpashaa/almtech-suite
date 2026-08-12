@@ -1,6 +1,6 @@
 const accentBar = {
   default: 'bg-ink-200',
-  brand: 'bg-brand-gradient',
+  brand: 'bg-brand-600',
   success: 'bg-emerald-500',
   warning: 'bg-amber-500',
   danger: 'bg-red-500',
@@ -31,7 +31,7 @@ export default function StatCard({ label, value, hint, accent, icon, delta, load
           </div>
         )}
       </div>
-      <div className="mt-2 text-2xl font-semibold text-ink-900 num tracking-tight">{value}</div>
+      <div className="mt-2 fig-lg font-semibold text-ink-900 num tracking-tight">{value}</div>
       <div className="mt-1 flex items-center gap-2 min-h-[1.1rem]">
         {delta != null && (
           <span

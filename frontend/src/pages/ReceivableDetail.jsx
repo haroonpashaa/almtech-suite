@@ -4,8 +4,10 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
 import { money, date as fmtDate, errorMessage } from '../lib/format.js';
+import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
+import Money from '../components/Money.jsx';
 import Modal from '../components/Modal.jsx';
 import { Badge, LoadingBlock, Spinner } from '../components/ui.jsx';
 import { AgingBuckets, AgingNote, OverdueBadge } from '../components/Aging.jsx';
@@ -30,11 +32,7 @@ export default function ReceivableDetail() {
     queryKey: ['accounts'],
     queryFn: async () => (await api.get('/accounts')).data,
   });
-  const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: async () => (await api.get('/settings')).data,
-  });
-  const currency = settings?.currency || 'PKR';
+  const currency = useCurrency();
 
   function openPay(inv) {
     setPayTarget(inv);
@@ -81,23 +79,23 @@ export default function ReceivableDetail() {
         subtitle={data.customer.company || 'Outstanding invoices'}
         actions={data.oldestAgeDays > 0 && <Badge tone={data.oldestAgeDays > 60 ? 'danger' : 'warning'} dot>{data.oldestAgeDays} days overdue</Badge>}
       />
-      <div className="p-6 sm:p-8 space-y-4 max-w-[1300px]">
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="page page-w space-y-4">
+        <div className="grid grid-cols-1 min-[420px]:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="card p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Total Outstanding</div>
-            <div className="mt-2 text-2xl font-semibold num text-amber-600 tracking-tight">{money(data.outstanding, currency)}</div>
+            <div className="mt-2 fig-lg font-semibold num break-words text-amber-600 tracking-tight">{money(data.outstanding, currency)}</div>
           </div>
           <div className="card p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Invoiced</div>
-            <div className="mt-2 text-xl font-semibold num text-ink-900">{money(data.total, currency)}</div>
+            <div className="mt-2 fig-md font-semibold num break-words text-ink-900">{money(data.total, currency)}</div>
           </div>
           <div className="card p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Paid</div>
-            <div className="mt-2 text-xl font-semibold num text-emerald-600">{money(data.paid, currency)}</div>
+            <div className="mt-2 fig-md font-semibold num break-words text-emerald-600">{money(data.paid, currency)}</div>
           </div>
           <div className="card p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Open Invoices</div>
-            <div className="mt-2 text-xl font-semibold num text-ink-900">{data.invoices.length}</div>
+            <div className="mt-2 fig-md font-semibold num break-words text-ink-900">{data.invoices.length}</div>
             {!data.reconciled && (
               <div className="text-xs text-amber-600 mt-1">Stored balance {money(data.storedBalance, currency)}</div>
             )}
@@ -105,7 +103,7 @@ export default function ReceivableDetail() {
         </div>
 
         <div className="space-y-2">
-          <div className="flex items-baseline justify-between">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
             <div className="section-title">Aging</div>
             <AgingNote />
           </div>
@@ -123,9 +121,9 @@ export default function ReceivableDetail() {
             { key: 'date', label: 'Date', render: (r) => <span className="text-ink-500 whitespace-nowrap">{fmtDate(r.date)}</span> },
             { key: 'status', label: 'Status', render: (r) => <Badge tone={statusTone[r.status]} dot>{r.status}</Badge> },
             { key: 'overdueDays', label: 'Overdue', render: (r) => <OverdueBadge days={r.overdueDays} /> },
-            { key: 'total', label: 'Total', className: 'text-right num text-ink-600', render: (r) => money(r.total, currency) },
-            { key: 'paid', label: 'Paid', className: 'text-right num text-emerald-600', render: (r) => money(r.paid, currency) },
-            { key: 'balance', label: 'Balance', className: 'text-right num font-semibold text-amber-600', render: (r) => money(r.balance, currency) },
+            { key: 'total', label: `Total (${currency})`, className: 'text-right num text-ink-600', render: (r) => <Money value={r.total} /> },
+            { key: 'paid', label: `Paid (${currency})`, className: 'text-right num text-emerald-600', render: (r) => <Money value={r.paid} /> },
+            { key: 'balance', label: `Balance (${currency})`, className: 'text-right num font-semibold text-amber-600', render: (r) => <Money value={r.balance} /> },
             {
               key: 'action',
               label: '',
@@ -151,20 +149,20 @@ export default function ReceivableDetail() {
         {payTarget && (
           <div className="space-y-3">
             <div>
-              <label className="label">Amount <span className="text-red-500">*</span></label>
-              <input className="input num" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
+              <label htmlFor="receivabledetail-amount-55" className="label">Amount <span className="text-red-500">*</span></label>
+              <input id="receivabledetail-amount-55" className="input num" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
               <p className="text-xs text-ink-400 mt-1">Amounts above the outstanding balance are capped automatically.</p>
             </div>
             <div>
-              <label className="label">Deposit To <span className="text-red-500">*</span></label>
-              <select className="select" value={account} onChange={(e) => setAccount(e.target.value)}>
+              <label htmlFor="receivabledetail-deposit-to-56" className="label">Deposit To <span className="text-red-500">*</span></label>
+              <select id="receivabledetail-deposit-to-56" className="select" value={account} onChange={(e) => setAccount(e.target.value)}>
                 <option value="">— select account —</option>
                 {(accounts || []).map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
               </select>
             </div>
             <div>
-              <label className="label">Method</label>
-              <select className="select" value={method} onChange={(e) => setMethod(e.target.value)}>
+              <label htmlFor="receivabledetail-method-57" className="label">Method</label>
+              <select id="receivabledetail-method-57" className="select" value={method} onChange={(e) => setMethod(e.target.value)}>
                 <option value="cash">Cash</option>
                 <option value="bank">Bank Transfer</option>
                 <option value="cheque">Cheque</option>
@@ -172,11 +170,11 @@ export default function ReceivableDetail() {
               </select>
             </div>
             <div>
-              <label className="label">Reference</label>
-              <input className="input" value={reference} onChange={(e) => setReference(e.target.value)} placeholder="Optional" />
+              <label htmlFor="receivabledetail-reference-58" className="label">Reference</label>
+              <input id="receivabledetail-reference-58" className="input" value={reference} onChange={(e) => setReference(e.target.value)} placeholder="Optional" />
             </div>
             <div className="flex gap-2 pt-2">
-              <button className="btn-primary-gradient" onClick={pay} disabled={paying || !account || !(Number(amount) > 0)}>
+              <button className="btn-primary" onClick={pay} disabled={paying || !account || !(Number(amount) > 0)}>
                 {paying ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Save payment'}
               </button>
               <button className="btn-secondary" onClick={() => setPayTarget(null)}>Cancel</button>

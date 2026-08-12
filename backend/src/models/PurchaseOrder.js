@@ -64,5 +64,7 @@ const poSchema = new mongoose.Schema(
 
 poSchema.index({ supplier: 1, orderedAt: -1 });
 poSchema.index({ status: 1 });
+// Same reasoning as Invoice: the unfiltered list sorts on orderedAt alone.
+poSchema.index({ orderedAt: -1 });
 
 export default mongoose.model('PurchaseOrder', poSchema);

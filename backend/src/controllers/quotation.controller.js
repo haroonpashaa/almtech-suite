@@ -7,9 +7,15 @@ import StockMovement from '../models/StockMovement.js';
 import { nextNumber } from '../utils/numbering.js';
 import { computeItemTotals, applyTax } from '../utils/totals.js';
 import { logActivity } from '../utils/activity.js';
+import { resolvePaging, runPaged } from '../utils/pagination.js';
 
 export const listQuotations = asyncHandler(async (req, res) => {
-  const items = await Quotation.find().populate('customer', 'name company').sort('-issuedAt').limit(500);
+  const paging = resolvePaging(req.query, 500);
+  const items = await runPaged(res, Quotation, {}, {
+    sort: '-issuedAt',
+    populate: [['customer', 'name company']],
+    paging,
+  });
   res.json(items);
 });
 

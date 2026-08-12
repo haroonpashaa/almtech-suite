@@ -2,20 +2,64 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ---------------------------------------------------------------------------
+   Inter, served from this application rather than fonts.googleapis.com.
+
+   The CDN made every page load depend on a third party: it added a DNS lookup
+   and two round trips before any text could paint, sent every user's IP address
+   to Google, and left the typography to fall back on a network that blocks it or
+   has no internet at all — a real prospect for a business running this on a local
+   machine. These are the two subsets this application needs (Latin and Latin
+   Extended, the latter for accented customer and supplier names). One variable
+   file per subset covers every weight from 400 to 800.
+   --------------------------------------------------------------------------- */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('/fonts/inter-latin-v20.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('/fonts/inter-latin-ext-v20.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0,
+    U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ===========================================================================
+   ALM Business Suite — design system
+   ---------------------------------------------------------------------------
+   The visual language is deliberately restrained: hierarchy and spacing carry
+   the weight, not colour or effects. Two radii (6px controls, 10px surfaces),
+   three elevations, one accent ramp. Gradients are reserved for the brand mark
+   in the sidebar — never for actions, which should read as operational
+   controls rather than marketing buttons.
+   =========================================================================== */
+
 @layer base {
   html, body, #root { height: 100%; }
   body {
     font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
     font-feature-settings: 'cv11', 'ss01', 'ss03';
+    font-size: 14px;
+    line-height: 1.5;
     color: #0b1220;
-    background: #f7f9fc;
+    background: #f6f8fb;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
-  /* tabular numbers for money/counts */
+
+  /* Tabular figures so money columns align on the decimal without hacks. */
   .num { font-variant-numeric: tabular-nums; font-feature-settings: 'tnum'; }
 
-  /* Refined, unobtrusive scrollbars */
   * { scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent; }
   *::-webkit-scrollbar { width: 10px; height: 10px; }
   *::-webkit-scrollbar-thumb {
@@ -26,82 +70,132 @@
   *::-webkit-scrollbar-track { background: transparent; }
 
   ::selection { background: rgba(7,108,200,0.16); }
+
+  /* A single, always-visible keyboard focus treatment. Never removed. */
+  :focus-visible {
+    outline: 2px solid #076cc8;
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  /* Respect the operating-system setting. Motion is decoration here — every
+     animation in this app is an entrance or a shimmer, so removing them costs
+     nothing. Focus outlines and colour are deliberately left untouched. */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }
 
 @layer components {
-  /* ---------- Buttons ---------- */
-  .btn {
-    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
-           transition-all duration-150 ease-smooth select-none
-           disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none
-           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1
-           focus-visible:ring-brand-500/40 active:scale-[0.98];
-  }
-  .btn-sm { @apply px-3 py-1.5 text-[13px] rounded-lg gap-1.5; }
-  .btn-lg { @apply px-5 py-2.5 text-[15px]; }
-  .btn-icon { @apply p-2 rounded-lg; }
+  /* ---------- Typography scale ---------- */
+  .t-page    { @apply text-[26px] leading-[1.2] font-semibold tracking-tight text-ink-900; }
+  .t-section { @apply text-[15px] leading-snug font-semibold text-ink-900; }
+  .t-body    { @apply text-sm text-ink-700; }
+  .t-sub     { @apply text-[13px] text-ink-500; }
+  .t-meta    { @apply text-xs text-ink-400; }
+  .t-label   { @apply text-[11px] font-semibold uppercase tracking-wider text-ink-400; }
 
-  .btn-primary {
-    @apply btn text-white bg-brand-600 hover:bg-brand-700 shadow-soft hover:shadow-lift;
+  /* ---------- Buttons ----------
+     Four tiers only: primary (one per view), secondary, ghost, danger. */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-md text-sm font-medium
+           whitespace-nowrap transition-colors duration-150 select-none
+           disabled:opacity-45 disabled:cursor-not-allowed
+           focus-visible:outline-2 focus-visible:outline-offset-2;
   }
-  .btn-primary-gradient {
-    @apply btn text-white shadow-soft hover:shadow-lift relative overflow-hidden;
-    background-image: linear-gradient(95deg, #163e93 0%, #0950b9 55%, #0086cd 100%);
-  }
-  .btn-primary-gradient:hover { filter: brightness(1.06) saturate(1.05); }
-  .btn-secondary {
-    @apply btn bg-white text-ink-700 border border-ink-200 hover:bg-ink-50
-           hover:border-ink-300 shadow-xs;
-  }
-  .btn-ghost { @apply btn text-ink-600 hover:bg-ink-100 hover:text-ink-900; }
-  .btn-danger { @apply btn bg-red-600 text-white hover:bg-red-700 shadow-soft; }
-  .btn-danger-soft {
-    @apply btn bg-red-50 text-red-700 border border-red-100 hover:bg-red-100;
-  }
+  /* Compact on a pointer device, but never below the 44px touch guidance on a
+     touch screen. The visual size is unchanged — the HIT AREA is extended with a
+     pseudo-element, so ERP density survives while thumbs still land. */
+  .btn-sm   { @apply px-2.5 py-1.5 text-[13px] gap-1.5; }
+  .btn-lg   { @apply px-4 py-2.5 text-[15px]; }
+  .btn-icon { @apply p-2 rounded-md; }
+
+  .btn-primary   { @apply btn bg-brand-700 text-white hover:bg-brand-800 active:bg-brand-900 shadow-xs; }
+  .btn-secondary { @apply btn bg-white text-ink-700 border border-ink-200 hover:bg-ink-50 hover:border-ink-300; }
+  .btn-ghost     { @apply btn text-ink-600 hover:bg-ink-100 hover:text-ink-900; }
+  .btn-danger    { @apply btn bg-red-600 text-white hover:bg-red-700 shadow-xs; }
+  .btn-danger-soft { @apply btn bg-white text-red-600 border border-red-200 hover:bg-red-50 hover:border-red-300; }
 
   /* ---------- Form controls ---------- */
   .input {
-    @apply w-full px-3.5 py-2 rounded-lg border border-ink-200 bg-white text-sm text-ink-900
-           placeholder:text-ink-300 transition shadow-xs
+    @apply w-full px-3 py-2 rounded-md border border-ink-200 bg-white text-sm text-ink-900
+           placeholder:text-ink-300 transition-colors
            focus:outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/15
-           disabled:bg-ink-50 disabled:text-ink-400;
+           disabled:bg-ink-50 disabled:text-ink-400 disabled:cursor-not-allowed
+           aria-[invalid=true]:border-red-400 aria-[invalid=true]:ring-red-500/15;
   }
-  .input-sm { @apply px-3 py-1.5 text-[13px]; }
+  .input-sm { @apply px-2.5 py-1.5 text-[13px]; }
   .select {
     @apply input appearance-none bg-no-repeat pr-9;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-    background-position: right 0.65rem center;
+    background-position: right 0.6rem center;
   }
-  .label {
-    @apply block text-xs font-medium text-ink-500 mb-1.5 tracking-wide;
-  }
+  .label { @apply block text-[12px] font-medium text-ink-600 mb-1.5; }
+  .field-hint  { @apply mt-1 text-xs text-ink-400; }
+  .field-error { @apply mt-1 text-xs text-red-600 flex items-center gap-1; }
+  .req { @apply text-red-500 ml-0.5; }
 
-  /* Search field with leading icon slot */
-  .field-search {
-    @apply relative;
-  }
+  .field-search { @apply relative; }
   .field-search > svg {
-    @apply absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-300 pointer-events-none;
+    @apply absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-300 pointer-events-none;
   }
-  .field-search > .input { @apply pl-9; }
+  .field-search > .input { padding-left: 2.1rem; }
 
-  /* ---------- Surfaces ---------- */
-  .card {
-    @apply bg-white rounded-xl border border-ink-100 shadow-card;
-  }
-  .card-hover {
-    @apply transition-all duration-200 ease-smooth hover:shadow-pop
-           hover:border-ink-200 hover:-translate-y-0.5;
-  }
-  .panel {
-    @apply bg-white rounded-xl border border-ink-100 shadow-xs;
-  }
+  /* ---------- Page layout ----------
+     One gutter and two content widths for the whole product. Before this, 31 pages
+     carried 27 different container class strings and 5 max-widths, so moving
+     between screens shifted the content edge. */
+  .page      { @apply px-4 sm:px-6 lg:px-8 py-5; }
+  .page-tight{ @apply px-4 sm:px-6 lg:px-8 py-4; }
+  .page-w    { @apply max-w-[1400px]; }   /* default: lists, details, forms */
+  .page-wide { @apply max-w-[1600px]; }   /* dashboard and analytics only */
+  .page-narrow { @apply max-w-3xl; }      /* single-column settings/forms */
+  .stack     { @apply space-y-5; }
+  .stack-sm  { @apply space-y-4; }
+
+  /* ---------- Surfaces ----------
+     A deliberate hierarchy rather than "everything is a floating card".
+       .surface  content that sits on the page with no chrome at all
+       .panel    a bordered region — the default grouping device
+       .card     a panel that is its own object (KPI, chart, activity)
+       .raised   only for things that genuinely float (menus, dialogs)
+     Elevation is never used to mean importance; spacing and type do that. */
+  .card  { @apply bg-white rounded-[10px] border border-ink-100 shadow-xs min-w-0; }
+  .panel { @apply bg-white rounded-[10px] border border-ink-100; }
+  .surface { @apply bg-transparent; }
+  .card-hover { @apply transition-shadow duration-150 hover:shadow-card; }
   .hairline { @apply border-b border-ink-100; }
+
+  /* An interactive card (KPI tile, deep link). Keeps the lift subtle — this is an
+     ERP, not a marketing page — and never moves layout on hover. */
+  .card-link {
+    @apply card block transition-[box-shadow,border-color] duration-150
+           hover:shadow-card hover:border-ink-200 focus-visible:border-brand-400;
+  }
+
+  /* A KPI. `.kpi-lead` promotes the two or three figures that matter most so a row
+     of metrics reads as a hierarchy instead of six identical tiles. */
+  .kpi       { @apply card p-4 flex flex-col justify-between min-h-[104px] min-w-0 overflow-hidden; }
+  .kpi-lead  { @apply p-5 min-h-[124px] border-ink-200; }
+  .kpi-value { @apply num tabular-nums tracking-tight text-ink-900; }
+
+  /* Section heading used to group panels without wrapping them in more chrome. */
+  .section-head { @apply flex flex-wrap items-baseline justify-between gap-2 mb-3; }
+
+  /* Card header strip — used by every panel that has a title. */
+  .card-head {
+    @apply flex items-center justify-between gap-3 px-4 py-3 border-b border-ink-100;
+  }
 
   /* ---------- Badges ---------- */
   .badge {
-    @apply inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full
-           ring-1 ring-inset;
+    @apply inline-flex items-center gap-1.5 px-2 py-0.5 text-[11.5px] font-medium rounded-full
+           ring-1 ring-inset whitespace-nowrap;
   }
   .badge-neutral { @apply badge bg-ink-50 text-ink-600 ring-ink-200/70; }
   .badge-brand   { @apply badge bg-brand-50 text-brand-700 ring-brand-200/70; }
@@ -109,64 +203,216 @@
   .badge-warning { @apply badge bg-amber-50 text-amber-700 ring-amber-200/70; }
   .badge-danger  { @apply badge bg-red-50 text-red-700 ring-red-200/70; }
   .badge-info    { @apply badge bg-sky-50 text-sky-700 ring-sky-200/70; }
-  /* small status dot, pair inside badges */
-  .dot { @apply w-1.5 h-1.5 rounded-full; }
+  .dot { @apply w-1.5 h-1.5 rounded-full shrink-0; }
+
+  /* ---------- Financial values ----------
+     Status is never carried by colour alone — negatives keep their minus sign
+     and heavier weight so they read without relying on hue. */
+  .money      { @apply num tabular-nums text-right whitespace-nowrap; }
+  .money-pos  { @apply money text-emerald-700; }
+  .money-neg  { @apply money text-red-600 font-medium; }
+  .money-due  { @apply money text-amber-700 font-medium; }
+  .money-zero { @apply money text-ink-300; }
+  .money-lg   { @apply num tabular-nums text-[22px] font-semibold tracking-tight text-ink-900; }
+
+  /* Headline figures that must never clip or truncate.
+     A nine-figure PKR value needs ~203px at 24px type but the summary tiles give
+     it 190px, so Chromium measured it clipped on the receivable, payable, customer
+     and account screens. These scale with the viewport instead of being cut off.
+     Written as real CSS because Tailwind does not reliably generate arbitrary
+     values containing commas — only 1 of 5 clamp() classes reached the bundle. */
+  .fig-sm { font-size: clamp(0.95rem, 3.4vw, 1.125rem); overflow-wrap: anywhere; }
+  .fig-md { font-size: clamp(1rem, 3.8vw, 1.25rem);     overflow-wrap: anywhere; }
+  .fig-lg { font-size: clamp(1.05rem, 4.4vw, 1.5rem);   overflow-wrap: anywhere; }
+  .fig-xl { font-size: clamp(1.1rem, 4.6vw, 1.875rem);  overflow-wrap: anywhere; }
 
   /* ---------- Navigation ---------- */
   .nav-link {
-    @apply relative flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13.5px] font-medium
+    @apply relative flex items-center gap-2.5 px-2.5 py-[7px] rounded-md text-[13.5px] font-medium
            text-ink-500 hover:text-ink-900 hover:bg-ink-50 transition-colors duration-150;
   }
   .nav-link-active {
-    @apply text-brand-700 bg-brand-50 hover:bg-brand-50 hover:text-brand-700 font-semibold;
+    @apply text-brand-700 bg-brand-50/70 hover:bg-brand-50 hover:text-brand-700 font-semibold;
   }
   .nav-link-active::before {
     content: '';
-    @apply absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full bg-brand-gradient;
+    @apply absolute left-0 top-1/2 -translate-y-1/2 h-4 w-[3px] rounded-r bg-brand-600;
   }
+  .nav-group { @apply text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-300 px-2.5 mb-1 mt-1; }
+
+  /* ---------- Tables ---------- */
+  .th {
+    @apply px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider
+           text-ink-400 whitespace-nowrap bg-ink-25;
+  }
+  .td { @apply px-4 py-2.5 text-sm text-ink-700 align-middle; }
+  .tr { @apply border-b border-ink-100 last:border-0 transition-colors; }
+  .tr-hover { @apply hover:bg-brand-50/40; }
+  .table-sticky thead th { @apply sticky top-0 z-10; }
 
   /* ---------- Misc primitives ---------- */
   .kbd {
     @apply inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded
            border border-ink-200 bg-ink-50 text-[11px] font-medium text-ink-500 font-sans;
   }
-  .menu {
-    @apply bg-white rounded-xl border border-ink-100 shadow-pop p-1.5 animate-scale-in origin-top;
-  }
+  .menu { @apply bg-white rounded-[10px] border border-ink-100 shadow-pop p-1.5 animate-scale-in origin-top; }
   .menu-item {
-    @apply flex items-center gap-2.5 w-full px-2.5 py-1.5 rounded-lg text-sm text-ink-700
+    @apply flex items-center gap-2.5 w-full px-2.5 py-1.5 rounded-md text-sm text-ink-700
            hover:bg-ink-50 hover:text-ink-900 transition cursor-pointer;
   }
-  .section-title {
-    @apply text-[11px] font-semibold uppercase tracking-wider text-ink-400;
-  }
+  .section-title { @apply text-[11px] font-semibold uppercase tracking-wider text-ink-400; }
   .divider { @apply h-px bg-ink-100; }
 
-  /* Segmented control / tabs */
-  .segment {
-    @apply inline-flex items-center p-0.5 rounded-lg bg-ink-50 border border-ink-100;
-  }
+  .segment { @apply inline-flex items-center p-0.5 rounded-md bg-ink-50 border border-ink-100; }
+  /* When a segment scrolls, keep the chosen item in view rather than off the edge. */
+  .segment.scroll-x { scroll-snap-type: x proximity; }
+  .segment.scroll-x > .segment-item { scroll-snap-align: center; }
   .segment-item {
-    @apply px-3 py-1 rounded-md text-[13px] font-medium text-ink-500 transition cursor-pointer
+    @apply px-2.5 py-1 rounded text-[13px] font-medium text-ink-500 transition cursor-pointer
            hover:text-ink-900;
   }
-  .segment-item-active {
-    @apply bg-white text-ink-900 shadow-xs;
-  }
+  .segment-item-active { @apply bg-white text-ink-900 shadow-xs; }
 
-  /* Skeleton loaders */
-  .skeleton {
-    @apply relative overflow-hidden rounded-md bg-ink-100/80;
-  }
+  .skeleton { @apply relative overflow-hidden rounded bg-ink-100/80; }
   .skeleton::after {
     content: '';
     @apply absolute inset-0 -translate-x-full;
     background-image: linear-gradient(90deg, transparent, rgba(255,255,255,0.65), transparent);
     animation: shimmer 1.5s infinite;
   }
+
+  /* Off-screen until focused, then the first thing a keyboard user reaches. */
+  .skip-link {
+    @apply sr-only;
+  }
+  .skip-link:focus {
+    @apply not-sr-only fixed top-3 left-3 z-[100] px-3 py-2 rounded-md
+           bg-brand-700 text-white text-sm font-medium shadow-pop;
+  }
+
+  /* Tooltip for the collapsed sidebar. */
+  .tip {
+    @apply invisible opacity-0 group-hover:visible group-hover:opacity-100
+           absolute left-full ml-2 top-1/2 -translate-y-1/2 z-50
+           px-2 py-1 rounded bg-ink-900 text-white text-xs whitespace-nowrap
+           transition-opacity duration-100 pointer-events-none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Browser print.
+
+   The authoritative documents are the server-generated PDFs — they own the A4
+   geometry, the repeating table headers and the page numbering. This stylesheet
+   covers the other case: someone pressing Ctrl+P on a screen. It strips the
+   application chrome so the content prints on its own, and does nothing at all
+   on screen.
+   --------------------------------------------------------------------------- */
+@media print {
+  /* Chrome: navigation, actions, filters and anything interactive. */
+  aside,
+  header,
+  nav[aria-label='Main'],
+  nav[aria-label='Pagination'],
+  .skip-link,
+  .btn, .btn-primary, .btn-secondary, .btn-ghost, .btn-danger, .btn-danger-soft, .btn-icon,
+  .segment,
+  .field-search,
+  input, select, textarea,
+  [role='dialog'],
+  [data-print='hide'] {
+    display: none !important;
+  }
+
+  html, body, #root {
+    height: auto !important;
+    background: #fff !important;
+  }
+
+  main {
+    overflow: visible !important;
+    height: auto !important;
+  }
+
+  /* Surfaces lose their screen elevation so they do not print as grey boxes. */
+  .card, .panel {
+    border: 1px solid #d7dee8 !important;
+    box-shadow: none !important;
+    break-inside: avoid;
+  }
+
+  /* A table must not shed its header across a page boundary, and a row must not
+     be split down the middle. */
+  thead { display: table-header-group; }
+  tfoot { display: table-footer-group; }
+  tr, .tr { break-inside: avoid; page-break-inside: avoid; }
+  .th { background: #f1f5f9 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+  /* Totals stay with the figures they summarise. */
+  [data-print='keep-together'] { break-inside: avoid; }
+
+  /* Money keeps its alignment and its sign. */
+  .num { font-variant-numeric: tabular-nums; }
+
+  a[href]::after { content: ''; }          /* no URL noise after links */
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+  @page {
+    size: A4;
+    margin: 14mm;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Touch.
+
+   `pointer: coarse` targets real touch input rather than a width breakpoint, so a
+   touchscreen laptop is treated correctly and a narrow desktop window is not.
+
+   Hit areas are extended with a pseudo-element instead of padding, which keeps the
+   ERP's information density intact — the control looks identical, it is simply
+   easier to hit. Anything already 44px keeps its own geometry.
+   --------------------------------------------------------------------------- */
+@media (pointer: coarse) {
+  .btn, .btn-sm, .btn-icon, .segment-item, .menu-item,
+  nav[aria-label='Pagination'] button,
+  nav[aria-label='Breadcrumb'] a,
+  p.t-sub a,
+  header button {
+    position: relative;
+  }
+  .btn::after, .btn-sm::after, .btn-icon::after, .segment-item::after, .menu-item::after,
+  nav[aria-label='Pagination'] button::after,
+  nav[aria-label='Breadcrumb'] a::after,
+  p.t-sub a::after,
+  header button::after {
+    content: '';
+    position: absolute;
+    left: 0; right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    min-height: 44px;
+    /* Behind the content so it never intercepts text selection or child clicks. */
+    z-index: -1;
+  }
+  /* Native controls get real size rather than a phantom target. */
+  input[type='checkbox'], input[type='radio'] { min-width: 20px; min-height: 20px; }
+  .input, .select { @apply py-2.5; }
+  /* iOS zooms the page when a focused field is under 16px. The design-system
+     classes must be named explicitly: `.input`/`.select` are class selectors and
+     outrank a bare element selector, so targeting only elements had no effect —
+     Chromium measured every field still at 14px. */
+  .input, .select, input, select, textarea { font-size: 16px; }
 }
 
 @layer utilities {
   .text-balance { text-wrap: balance; }
-  .bg-app { background-color: #f7f9fc; }
+  /* Wide analytical content scrolls INSIDE its own region — never the page. */
+  .scroll-x { @apply overflow-x-auto overscroll-x-contain; max-width: 100%; }
+  .bg-app { background-color: #f6f8fb; }
+  /* Screen-reader-only text for icon-only controls. */
+  .sr-only-focusable:not(:focus):not(:focus-within) {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+  }
 }

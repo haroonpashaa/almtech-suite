@@ -7,13 +7,19 @@ import { nextNumber } from '../utils/numbering.js';
 import { logActivity } from '../utils/activity.js';
 import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting } from '../utils/ledger.js';
 import { resolvePayment, requireReason, assertReversible, postReversal } from '../services/paymentReversal.js';
+import { resolvePaging, runPaged } from '../utils/pagination.js';
 
 export const listPOs = asyncHandler(async (req, res) => {
   const { supplier, status } = req.query;
   const filter = {};
   if (supplier) filter.supplier = supplier;
   if (status) filter.status = status;
-  const items = await PurchaseOrder.find(filter).populate('supplier', 'name').sort('-orderedAt').limit(500);
+  const paging = resolvePaging(req.query, 500);
+  const items = await runPaged(res, PurchaseOrder, filter, {
+    sort: '-orderedAt',
+    populate: [['supplier', 'name']],
+    paging,
+  });
   res.json(items);
 });
 
@@ -88,24 +94,63 @@ export const receiveItems = asyncHandler(async (req, res) => {
     if (!line) continue;
     const incoming = Math.max(0, Math.min(r.quantity, line.quantity - line.received));
     if (!incoming) continue;
-    line.received += incoming;
-    const product = await Product.findById(line.product);
-    if (product) {
-      product.stock += incoming;
-      product.purchasePrice = line.unitCost;
-      if (product.tracksSerials && r.serials?.length) {
-        for (const s of r.serials) {
-          if (!product.serials.find((x) => x.serial === s)) {
-            product.serials.push({ serial: s, status: 'in_stock' });
-          }
+
+    // Claim the quantity on the purchase-order line, then move stock by the amount
+    // the DATABASE confirms was claimed — never by a locally computed number.
+    //
+    // Original defect: `line.received += incoming` on a stale in-memory document
+    // followed by `po.save()`, so two concurrent receives both banked the full
+    // remainder — a 5-unit order received 10 units. No financial reconciliation
+    // caught it, because stock sits outside the ledger and outside AR/AP.
+    //
+    // A first attempt gated the stock movement on `updateOne(...).modifiedCount`.
+    // That capped `received` correctly but stock still doubled under sustained
+    // load, so the gate was not a sound proof of having won the claim.
+    //
+    // The claim is now expressed in the FILTER of a single findOneAndUpdate. The
+    // document only matches while the line still has room for `incoming`, and
+    // match-and-update is atomic, so a loser gets `null` — an unambiguous answer
+    // that does not depend on interpreting a write-result count. Because the
+    // filter proved the room existed at write time, the applied delta is exactly
+    // `incoming`, and stock is moved by that same proven figure.
+    const claimed = await PurchaseOrder.findOneAndUpdate(
+      {
+        _id: po._id,
+        items: {
+          $elemMatch: { product: line.product, received: { $lte: line.quantity - incoming } },
+        },
+      },
+      { $inc: { 'items.$[line].received': incoming } },
+      { arrayFilters: [{ 'line.product': line.product }], returnDocument: 'before' }
+    );
+    if (!claimed) continue;   // another request took the remainder — do nothing at all
+
+    line.received += incoming;            // keep the in-memory copy in step
+
+    // Stock is moved atomically and the post-image is returned, so `balanceAfter`
+    // on the movement is the balance the database actually holds rather than a
+    // figure derived from a document read before the increment.
+    const movedProduct = await Product.findOneAndUpdate(
+      { _id: line.product },
+      { $inc: { stock: incoming }, $set: { purchasePrice: line.unitCost } },
+      { returnDocument: 'after' }
+    );
+    if (movedProduct) {
+      if (movedProduct.tracksSerials && r.serials?.length) {
+        const fresh = r.serials.filter((sn) => !movedProduct.serials.find((x) => x.serial === sn));
+        if (fresh.length) {
+          await Product.updateOne(
+            { _id: line.product },
+            { $push: { serials: { $each: fresh.map((sn) => ({ serial: sn, status: 'in_stock' })) } } }
+          );
         }
       }
-      await product.save();
+      // Exactly one movement per successful claim, for exactly the claimed amount.
       await StockMovement.create({
-        product: product._id,
+        product: movedProduct._id,
         type: 'purchase',
         quantity: incoming,
-        balanceAfter: product.stock,
+        balanceAfter: movedProduct.stock,
         refType: 'PurchaseOrder',
         refId: po._id,
         refNumber: po.number,
@@ -113,12 +158,20 @@ export const receiveItems = asyncHandler(async (req, res) => {
       });
     }
   }
-  const allReceived = po.items.every((l) => l.received >= l.quantity);
-  const anyReceived = po.items.some((l) => l.received > 0);
-  po.status = allReceived ? 'received' : anyReceived ? 'partial' : po.status;
-  await po.save();
+  // Status is derived from what the DATABASE now holds, not from this request's
+  // in-memory copy, and only the status field is written. Saving the whole document
+  // would push a stale `items` array back over a concurrent request's claim — which
+  // is precisely the lost update the arrayFilter above exists to prevent.
+  const fresh = await PurchaseOrder.findById(po._id);
+  const allReceived = fresh.items.every((l) => l.received >= l.quantity);
+  const anyReceived = fresh.items.some((l) => l.received > 0);
+  const status = allReceived ? 'received' : anyReceived ? 'partial' : fresh.status;
+  if (status !== fresh.status) {
+    await PurchaseOrder.updateOne({ _id: po._id }, { $set: { status } });
+    fresh.status = status;
+  }
   await logActivity(req, 'po_received', { entity: 'PurchaseOrder', entityId: po._id });
-  res.json(po);
+  res.json(fresh);
 });
 
 export const recordSupplierPayment = asyncHandler(async (req, res) => {
@@ -158,17 +211,44 @@ export const recordSupplierPayment = asyncHandler(async (req, res) => {
         idempotencyKey,
       },
       async (session, posted) => {
-        po.payments.push({
-          amount: cappedAmount,
-          method,
-          reference,
-          recordedBy: req.user._id,
-          account: account._id,
-          transaction: posted._id,
-        });
-        po.paid += cappedAmount;
-        po.balance = Math.max(0, po.total - po.paid);
-        await po.save({ session });
+        // Same atomic claim as the invoice side: conditional on the CURRENT
+        // balance, so two concurrent supplier payments cannot both bank the same
+        // remaining amount. A loser matches nothing, throws, and has its ledger
+        // entry reversed by postPaymentAtomically — leaving no partial state.
+        const claim = await PurchaseOrder.updateOne(
+          { _id: po._id, balance: { $gte: cappedAmount } },
+          [
+            {
+              $set: {
+                paid: { $add: ['$paid', cappedAmount] },
+                balance: { $subtract: ['$balance', cappedAmount] },
+                payments: {
+                  $concatArrays: [
+                    { $ifNull: ['$payments', []] },
+                    [{
+                      amount: cappedAmount,
+                      method,
+                      reference,
+                      date: new Date(),
+                      recordedBy: req.user._id,
+                      account: account._id,
+                      transaction: posted._id,
+                      reversed: false,
+                    }],
+                  ],
+                },
+              },
+            },
+          ],
+          session ? { session } : {}
+        );
+        if (!claim.matchedCount) {
+          const err = new Error(
+            'This payment could not be applied because the purchase-order balance changed — it may have just been paid by another request. Reload and try again.'
+          );
+          err.statusCode = 409;
+          throw err;
+        }
 
         await Supplier.updateOne(
           { _id: po.supplier },
@@ -186,7 +266,9 @@ export const recordSupplierPayment = asyncHandler(async (req, res) => {
     entityId: po._id,
     meta: { amount: cappedAmount, account: account.name },
   });
-  res.json(po);
+  // Re-read: the payment is applied by a conditional update, so the copy loaded
+  // above still shows the pre-payment figures.
+  res.json(await PurchaseOrder.findById(po._id));
 });
 
 // ---------------------------------------------------------------------------

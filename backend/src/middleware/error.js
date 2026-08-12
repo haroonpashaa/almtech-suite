@@ -8,8 +8,13 @@ export function errorHandler(err, _req, res, _next) {
   // those are safe, user-facing texts and are passed through untouched. Anything that
   // reaches here without a status is an unhandled fault, and its raw message may carry
   // database or driver internals, so it is classified and sanitised below.
-  const explicit = res.statusCode && res.statusCode !== 200;
-  let status = explicit ? res.statusCode : 500;
+  // A status may be chosen either by setting it on the response (the established
+  // pattern) or by carrying it on the error — the latter is needed where the throw
+  // happens deep inside a helper that has no access to `res`.
+  const explicit = (res.statusCode && res.statusCode !== 200) || Number.isInteger(err.statusCode);
+  let status = Number.isInteger(err.statusCode)
+    ? err.statusCode
+    : (res.statusCode && res.statusCode !== 200 ? res.statusCode : 500);
   let message = err.message;
 
   if (!explicit) {

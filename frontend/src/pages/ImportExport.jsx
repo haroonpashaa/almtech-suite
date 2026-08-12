@@ -6,6 +6,7 @@ import { datetime, errorMessage } from '../lib/format.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
 import { Badge, Spinner } from '../components/ui.jsx';
+import ConfirmDialog from '../components/ConfirmDialog.jsx';
 
 const ACTION_TONE = { CREATE: 'success', UPDATE: 'warning', SKIP: 'neutral', ERROR: 'danger' };
 const STATUS_TONE = { completed: 'success', completed_with_errors: 'warning', failed: 'danger' };
@@ -35,6 +36,7 @@ export default function ImportExport() {
   const [preview, setPreview] = useState(null);
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [confirmImport, setConfirmImport] = useState(false);
   const fileRef = useRef(null);
 
   // Export state
@@ -88,7 +90,6 @@ export default function ImportExport() {
 
   async function commit() {
     if (!file || !preview) return;
-    if (!confirm(`Import ${preview.summary.create} new and ${preview.summary.update} updated record(s)? This writes to the database.`)) return;
     setBusy(true);
     try {
       const fd = new FormData();
@@ -159,7 +160,7 @@ export default function ImportExport() {
         subtitle="Move data between Excel and ALM Suite"
         icon={<svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" /></svg>}
       />
-      <div className="p-6 sm:p-8 space-y-4 max-w-[1400px]">
+      <div className="page page-w space-y-4">
         <div className="segment w-fit">
           <button onClick={() => setTab('import')} className={`segment-item ${tab === 'import' ? 'segment-item-active' : ''}`}>Import</button>
           <button onClick={() => setTab('export')} className={`segment-item ${tab === 'export' ? 'segment-item-active' : ''}`}>Export</button>
@@ -172,8 +173,8 @@ export default function ImportExport() {
             <div className="card p-5 space-y-4">
               <div className="flex flex-wrap items-end gap-3">
                 <div className="min-w-[220px]">
-                  <label className="label">What are you importing?</label>
-                  <select className="select" value={type} onChange={(e) => { setType(e.target.value); reset(); }}>
+                  <label htmlFor="importexport-what-are-you-importing-23" className="label">What are you importing?</label>
+                  <select id="importexport-what-are-you-importing-23" className="select" value={type} onChange={(e) => { setType(e.target.value); reset(); }}>
                     {(types?.imports || []).map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
                   </select>
                 </div>
@@ -227,7 +228,7 @@ export default function ImportExport() {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-3">
-                  <button className="btn-primary-gradient" onClick={commit} disabled={busy || preview.summary.valid === 0}>
+                  <button className="btn-primary" onClick={() => setConfirmImport(true)} disabled={busy || preview.summary.valid === 0}>
                     {busy ? <><Spinner className="w-4 h-4" /> Importing…</> : `Confirm import of ${preview.summary.valid} row(s)`}
                   </button>
                   {preview.summary.invalid > 0 && (
@@ -301,10 +302,10 @@ export default function ImportExport() {
           <>
             <div className="card p-5">
               <div className="flex flex-wrap items-end gap-3">
-                <div><label className="label">From</label><input className="input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
-                <div><label className="label">To</label><input className="input" type="date" value={to} onChange={(e) => setTo(e.target.value)} /></div>
-                <div><label className="label">Daily report date</label><input className="input" type="date" value={day} onChange={(e) => setDay(e.target.value)} /></div>
-                <div><label className="label">Monthly report month</label><input className="input" type="month" value={month} onChange={(e) => setMonth(e.target.value)} /></div>
+                <div><label htmlFor="importexport-from-203" className="label">From</label><input id="importexport-from-203" className="input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
+                <div><label htmlFor="importexport-to-204" className="label">To</label><input id="importexport-to-204" className="input" type="date" value={to} onChange={(e) => setTo(e.target.value)} /></div>
+                <div><label htmlFor="importexport-daily-report-date-205" className="label">Daily report date</label><input id="importexport-daily-report-date-205" className="input" type="date" value={day} onChange={(e) => setDay(e.target.value)} /></div>
+                <div><label htmlFor="importexport-monthly-report-month-206" className="label">Monthly report month</label><input id="importexport-monthly-report-month-206" className="input" type="month" value={month} onChange={(e) => setMonth(e.target.value)} /></div>
                 {(from || to) && <button className="btn-secondary" onClick={() => { setFrom(''); setTo(''); }}>Clear range</button>}
               </div>
               <p className="text-xs text-ink-400 mt-3">
@@ -360,6 +361,24 @@ export default function ImportExport() {
           </>
         )}
       </div>
+      <ConfirmDialog
+        open={confirmImport}
+        onClose={() => setConfirmImport(false)}
+        onConfirm={commit}
+        tone="primary"
+        title="Import these records?"
+        description="This writes to the database. Rows that failed validation are skipped — everything else is applied."
+        consequences={preview ? [
+          `${preview.summary.create} record(s) will be created`,
+          `${preview.summary.update} existing record(s) will be updated`,
+          `${preview.summary.skip} row(s) already present will be skipped`,
+          preview.summary.invalid > 0
+            ? `${preview.summary.invalid} invalid row(s) will not be imported`
+            : 'Every row passed validation',
+        ] : []}
+        confirmLabel="Import now"
+      />
+
     </div>
   );
 }

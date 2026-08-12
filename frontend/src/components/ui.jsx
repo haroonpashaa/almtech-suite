@@ -36,18 +36,38 @@ export function Badge({ children, tone, dot = false, className = '' }) {
   );
 }
 
-export function EmptyState({ icon, title, description, action, className = '' }) {
+// The single empty/error placeholder for the whole app. Every list, table and panel
+// routes through this so "nothing here" always looks and reads the same way.
+export function EmptyState({ icon, title, description, action, tone = 'neutral', className = '' }) {
+  const iconTone = tone === 'danger' ? 'bg-red-50 text-red-400' : 'bg-ink-50 text-ink-300';
   return (
-    <div className={`flex flex-col items-center justify-center text-center py-16 px-6 ${className}`}>
+    <div className={`flex flex-col items-center justify-center text-center py-14 px-6 ${className}`}>
       {icon && (
-        <div className="w-14 h-14 rounded-2xl bg-ink-50 text-ink-300 flex items-center justify-center mb-4">
+        <div className={`w-12 h-12 rounded-lg flex items-center justify-center mb-3.5 ${iconTone}`}>
           {icon}
         </div>
       )}
       <h3 className="text-sm font-semibold text-ink-900">{title}</h3>
-      {description && <p className="text-sm text-ink-400 mt-1 max-w-sm">{description}</p>}
-      {action && <div className="mt-5">{action}</div>}
+      {description && <p className="t-sub mt-1 max-w-sm">{description}</p>}
+      {action && <div className="mt-4">{action}</div>}
     </div>
+  );
+}
+
+// Inline error panel for a failed section that is not a table.
+export function ErrorState({ title = 'Something went wrong', description, onRetry }) {
+  return (
+    <EmptyState
+      tone="danger"
+      icon={
+        <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+          <circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16h.01" />
+        </svg>
+      }
+      title={title}
+      description={description}
+      action={onRetry && <button className="btn-secondary" onClick={onRetry}>Try again</button>}
+    />
   );
 }
 

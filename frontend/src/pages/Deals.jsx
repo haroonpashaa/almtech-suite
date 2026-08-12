@@ -3,11 +3,16 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { api } from '../api/client.js';
 import { money, date as fmtDate } from '../lib/format.js';
+import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
+import Money from '../components/Money.jsx';
 import StatCard from '../components/StatCard.jsx';
 import { DealStatusBadge, SettlementBadge } from '../components/DealStatus.jsx';
 
+// Sort options, not table headers. The currency belongs on money COLUMN headers,
+// never on a sort control — and `currency` is not in scope at module level, so
+// referencing it here threw on import and took the whole application down.
 const SORTS = [
   { key: 'date', label: 'Date' },
   { key: 'number', label: 'Deal #' },
@@ -59,11 +64,7 @@ export default function Deals() {
         },
       })).data,
   });
-  const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: async () => (await api.get('/settings')).data,
-  });
-  const currency = settings?.currency || 'PKR';
+  const currency = useCurrency();
 
   const s = data?.summary;
   const filtered = q || from || to || status || settlement || minAmount || maxAmount;
@@ -100,7 +101,7 @@ export default function Deals() {
         subtitle="Every sale and purchase, with payments and outstanding balances"
         icon={<svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M3 12h18M3 18h12M17 15l3 3-3 3" /></svg>}
       />
-      <div className="p-6 sm:p-8 space-y-4 max-w-[1500px]">
+      <div className="page page-w space-y-4">
         <div className="segment w-fit">
           <button onClick={() => setKind('sales')} className={`segment-item ${isSale ? 'segment-item-active' : ''}`}>Sales</button>
           <button onClick={() => setKind('purchases')} className={`segment-item ${!isSale ? 'segment-item-active' : ''}`}>Purchases</button>
@@ -121,11 +122,11 @@ export default function Deals() {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
             <input className="input" placeholder={isSale ? 'Deal # or customer…' : 'PO # or supplier…'} value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }} />
           </div>
-          <div><label className="label">From</label><input className="input" type="date" value={from} onChange={(e) => { setFrom(e.target.value); setPage(1); }} /></div>
-          <div><label className="label">To</label><input className="input" type="date" value={to} onChange={(e) => { setTo(e.target.value); setPage(1); }} /></div>
+          <div><label htmlFor="deals-from" className="label">From</label><input id="deals-from" className="input" type="date" value={from} onChange={(e) => { setFrom(e.target.value); setPage(1); }} /></div>
+          <div><label htmlFor="deals-to-200" className="label">To</label><input id="deals-to-200" className="input" type="date" value={to} onChange={(e) => { setTo(e.target.value); setPage(1); }} /></div>
           <div>
-            <label className="label">Status</label>
-            <select className="select" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }}>
+            <label htmlFor="deals-status" className="label">Status</label>
+            <select id="deals-status" className="select" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }}>
               <option value="">All</option>
               <option value="PAID">Paid</option>
               <option value="PARTIAL">Partial</option>
@@ -136,15 +137,15 @@ export default function Deals() {
             </select>
           </div>
           <div>
-            <label className="label">Settlement</label>
-            <select className="select" value={settlement} onChange={(e) => { setSettlement(e.target.value); setPage(1); }}>
+            <label htmlFor="deals-settlement-10" className="label">Settlement</label>
+            <select id="deals-settlement-10" className="select" value={settlement} onChange={(e) => { setSettlement(e.target.value); setPage(1); }}>
               <option value="">All</option>
               <option value="cash">Cash / settled</option>
               <option value="credit">Credit</option>
             </select>
           </div>
-          <div><label className="label">Min</label><input className="input num w-28" type="number" value={minAmount} onChange={(e) => { setMinAmount(e.target.value); setPage(1); }} /></div>
-          <div><label className="label">Max</label><input className="input num w-28" type="number" value={maxAmount} onChange={(e) => { setMaxAmount(e.target.value); setPage(1); }} /></div>
+          <div><label htmlFor="deals-min-201" className="label">Min</label><input id="deals-min-201" className="input num w-28" type="number" value={minAmount} onChange={(e) => { setMinAmount(e.target.value); setPage(1); }} /></div>
+          <div><label htmlFor="deals-max-202" className="label">Max</label><input id="deals-max-202" className="input num w-28" type="number" value={maxAmount} onChange={(e) => { setMaxAmount(e.target.value); setPage(1); }} /></div>
           {filtered && <button className="btn-secondary" onClick={clearAll}>Clear</button>}
         </div>
 
@@ -170,13 +171,13 @@ export default function Deals() {
                 </span>
               ),
             },
-            { key: 'total', label: <SortHeader k="total" label="Total" />, className: 'text-right num text-ink-700', render: (r) => money(r.total, currency) },
-            { key: 'paid', label: <SortHeader k="paid" label="Paid" />, className: 'text-right num text-emerald-600', render: (r) => money(r.paid, currency) },
+            { key: 'total', label: <SortHeader k="total" label="Total" />, className: 'text-right num text-ink-700', render: (r) => <Money value={r.total} /> },
+            { key: 'paid', label: <SortHeader k="paid" label="Paid" />, className: 'text-right num text-emerald-600', render: (r) => <Money value={r.paid} /> },
             {
               key: 'outstanding',
               label: <SortHeader k="outstanding" label="Outstanding" />,
               className: 'text-right num font-medium',
-              render: (r) => <span className={r.outstanding > 0 ? 'text-amber-600' : 'text-ink-300'}>{money(r.outstanding, currency)}</span>,
+              render: (r) => <Money value={r.outstanding} tone="due" />,
             },
             { key: 'dealStatus', label: 'Status', render: (r) => <DealStatusBadge status={r.dealStatus} /> },
             { key: 'settlement', label: 'Type', render: (r) => <SettlementBadge settlement={r.settlement} /> },

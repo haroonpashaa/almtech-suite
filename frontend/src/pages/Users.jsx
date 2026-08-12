@@ -53,13 +53,13 @@ export default function Users() {
         subtitle="Team members and role-based access"
         icon={<svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z" /></svg>}
         actions={
-          <button className="btn-primary-gradient" onClick={() => setShowAdd(true)}>
+          <button className="btn-primary" onClick={() => setShowAdd(true)}>
             <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
             New User
           </button>
         }
       />
-      <div className="p-6 sm:p-8">
+      <div className="page page-w">
         <Table
           loading={isLoading}
           empty="No users yet"
@@ -92,26 +92,26 @@ export default function Users() {
         footer={
           <>
             <button className="btn-secondary" onClick={() => setShowAdd(false)}>Cancel</button>
-            <button className="btn-primary-gradient" onClick={save} disabled={!form.name || !form.email || !form.password || saving}>{saving ? 'Saving…' : 'Create user'}</button>
+            <button className="btn-primary" onClick={save} disabled={!form.name || !form.email || !form.password || saving}>{saving ? 'Saving…' : 'Create user'}</button>
           </>
         }
       >
         <div className="space-y-3">
           <div>
-            <label className="label">Name</label>
-            <input className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+            <label htmlFor="users-name-65" className="label">Name</label>
+            <input id="users-name-65" className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </div>
           <div>
-            <label className="label">Email</label>
-            <input className="input" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+            <label htmlFor="users-email-66" className="label">Email</label>
+            <input id="users-email-66" className="input" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
           </div>
           <div>
-            <label className="label">Password</label>
-            <input className="input" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+            <label htmlFor="users-password-67" className="label">Password</label>
+            <input id="users-password-67" className="input" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
           </div>
           <div>
-            <label className="label">Role</label>
-            <select className="select" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+            <label htmlFor="users-role-68" className="label">Role</label>
+            <select id="users-role-68" className="select" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
               <option value="admin">Admin</option>
               <option value="sales">Sales Staff</option>
               <option value="stock">Stock Manager</option>

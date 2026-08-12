@@ -76,32 +76,32 @@ export default function ProductForm() {
         title={id ? 'Edit Product' : 'New Product'}
         subtitle="Define product details, pricing, and stock"
       />
-      <form onSubmit={submit} className="p-6 sm:p-8 max-w-3xl space-y-5">
+      <form onSubmit={submit} className="page page-narrow space-y-5">
         <Section title="Basics" description="How this product is identified across the suite">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="label">Name <span className="text-red-500">*</span></label>
-              <input className="input" required value={form.name} onChange={(e) => set('name', e.target.value)} />
+              <label htmlFor="productform-name-40" className="label">Name <span className="text-red-500">*</span></label>
+              <input id="productform-name-40" className="input" required value={form.name} onChange={(e) => set('name', e.target.value)} />
             </div>
             <div>
-              <label className="label">SKU <span className="text-red-500">*</span></label>
-              <input className="input font-mono" required value={form.sku} onChange={(e) => set('sku', e.target.value)} />
+              <label htmlFor="productform-sku-41" className="label">SKU <span className="text-red-500">*</span></label>
+              <input id="productform-sku-41" className="input font-mono" required value={form.sku} onChange={(e) => set('sku', e.target.value)} />
             </div>
             <div>
-              <label className="label">Brand</label>
-              <input className="input" value={form.brand} onChange={(e) => set('brand', e.target.value)} />
+              <label htmlFor="productform-brand-42" className="label">Brand</label>
+              <input id="productform-brand-42" className="input" value={form.brand} onChange={(e) => set('brand', e.target.value)} />
             </div>
             <div>
-              <label className="label">Model</label>
-              <input className="input" value={form.model} onChange={(e) => set('model', e.target.value)} />
+              <label htmlFor="productform-model-43" className="label">Model</label>
+              <input id="productform-model-43" className="input" value={form.model} onChange={(e) => set('model', e.target.value)} />
             </div>
             <div>
-              <label className="label">Category</label>
-              <input className="input" value={form.category} onChange={(e) => set('category', e.target.value)} />
+              <label htmlFor="productform-category-44" className="label">Category</label>
+              <input id="productform-category-44" className="input" value={form.category} onChange={(e) => set('category', e.target.value)} />
             </div>
             <div>
-              <label className="label">Barcode</label>
-              <input
+              <label htmlFor="productform-barcode-45" className="label">Barcode</label>
+              <input id="productform-barcode-45"
                 className="input font-mono"
                 value={form.barcode}
                 onChange={(e) => set('barcode', e.target.value)}
@@ -112,28 +112,28 @@ export default function ProductForm() {
             </div>
           </div>
           <div className="mt-4">
-            <label className="label">Description</label>
-            <textarea className="input" rows="3" value={form.description} onChange={(e) => set('description', e.target.value)} />
+            <label htmlFor="productform-description-46" className="label">Description</label>
+            <textarea id="productform-description-46" className="input" rows="3" value={form.description} onChange={(e) => set('description', e.target.value)} />
           </div>
         </Section>
 
         <Section title="Pricing & Stock" description="Cost, sell price, and reorder levels">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="label">Purchase Price</label>
-              <input className="input num" type="number" step="0.01" value={form.purchasePrice} onChange={(e) => set('purchasePrice', e.target.value)} />
+              <label htmlFor="productform-purchase-price-47" className="label">Purchase Price</label>
+              <input id="productform-purchase-price-47" className="input num" type="number" step="0.01" value={form.purchasePrice} onChange={(e) => set('purchasePrice', e.target.value)} />
             </div>
             <div>
-              <label className="label">Selling Price</label>
-              <input className="input num" type="number" step="0.01" value={form.sellingPrice} onChange={(e) => set('sellingPrice', e.target.value)} />
+              <label htmlFor="productform-selling-price-48" className="label">Selling Price</label>
+              <input id="productform-selling-price-48" className="input num" type="number" step="0.01" value={form.sellingPrice} onChange={(e) => set('sellingPrice', e.target.value)} />
             </div>
             <div>
-              <label className="label">Stock</label>
-              <input className="input num" type="number" value={form.stock} onChange={(e) => set('stock', e.target.value)} />
+              <label htmlFor="productform-stock-49" className="label">Stock</label>
+              <input id="productform-stock-49" className="input num" type="number" value={form.stock} onChange={(e) => set('stock', e.target.value)} />
             </div>
             <div>
-              <label className="label">Low Stock Threshold</label>
-              <input className="input num" type="number" value={form.lowStockThreshold} onChange={(e) => set('lowStockThreshold', e.target.value)} />
+              <label htmlFor="productform-low-stock-threshold-50" className="label">Low Stock Threshold</label>
+              <input id="productform-low-stock-threshold-50" className="input num" type="number" value={form.lowStockThreshold} onChange={(e) => set('lowStockThreshold', e.target.value)} />
             </div>
           </div>
           {form.sellingPrice > 0 && (
@@ -154,7 +154,7 @@ export default function ProductForm() {
         </Section>
 
         <div className="flex gap-2 pt-1">
-          <button className="btn-primary-gradient" disabled={saving}>
+          <button className="btn-primary" disabled={saving}>
             {saving ? <><Spinner className="w-4 h-4" /> Saving…</> : id ? 'Save changes' : 'Create product'}
           </button>
           <button type="button" className="btn-secondary" onClick={() => navigate(-1)}>Cancel</button>

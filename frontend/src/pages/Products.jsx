@@ -3,9 +3,11 @@ import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client.js';
 import { money } from '../lib/format.js';
+import { useCurrency } from '../hooks/useSettings.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
+import Money from '../components/Money.jsx';
 import { Badge } from '../components/ui.jsx';
 
 export default function Products() {
@@ -17,11 +19,7 @@ export default function Products() {
     queryKey: ['products', q, lowStock],
     queryFn: async () => (await api.get('/products', { params: { q, lowStock } })).data,
   });
-  const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: async () => (await api.get('/settings')).data,
-  });
-  const currency = settings?.currency || 'PKR';
+  const currency = useCurrency();
 
   return (
     <div>
@@ -30,13 +28,13 @@ export default function Products() {
         subtitle="Products, stock levels, and pricing"
         icon={<svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7l9-4 9 4-9 4-9-4zm0 0v10l9 4 9-4V7M12 11v10" /></svg>}
         actions={has('admin', 'stock') && (
-          <Link to="/products/new" className="btn-primary-gradient">
+          <Link to="/products/new" className="btn-primary">
             <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
             New Product
           </Link>
         )}
       />
-      <div className="p-6 sm:p-8">
+      <div className="page page-w">
         <div className="flex flex-wrap items-center gap-3 mb-4">
           <div className="field-search max-w-xs w-full">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
@@ -72,8 +70,8 @@ export default function Products() {
                   ) : p.stock}
                 </span>
               ) },
-            { key: 'purchasePrice', label: 'Cost', className: 'text-right num', render: (p) => money(p.purchasePrice, currency) },
-            { key: 'sellingPrice', label: 'Price', className: 'text-right num font-medium text-ink-900', render: (p) => money(p.sellingPrice, currency) },
+            { key: 'purchasePrice', label: `Cost (${currency})`, className: 'text-right num', render: (p) => <Money value={p.purchasePrice} /> },
+            { key: 'sellingPrice', label: `Price (${currency})`, className: 'text-right num font-medium text-ink-900', render: (p) => <Money value={p.sellingPrice} /> },
           ]}
           rows={data?.items || []}
         />

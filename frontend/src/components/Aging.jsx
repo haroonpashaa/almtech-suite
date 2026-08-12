@@ -30,7 +30,7 @@ export function AgingNote() {
 export function AgingBuckets({ aging, currency, active, onSelect }) {
   if (!aging) return null;
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+    <div className="grid grid-cols-1 min-[420px]:grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
       {BUCKETS.map((b) => {
         const value = aging[b.key] || 0;
         const isActive = active === b.key;
@@ -46,7 +46,11 @@ export function AgingBuckets({ aging, currency, active, onSelect }) {
             }`}
           >
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">{b.label}</div>
-            <div className={`mt-1.5 text-lg font-semibold num tracking-tight ${value > 0 ? TONE[b.key] : 'text-ink-300'}`}>
+            {/* Five buckets across leaves each one narrow. At a fixed text-lg the
+                Current bucket rendered `PKR 4,541,682,314.` with the `01` cut off —
+                a figure that reads as complete and is not. The fig scale shrinks and,
+                failing that, wraps. */}
+            <div className={`mt-1.5 fig-md font-semibold num tracking-tight ${value > 0 ? TONE[b.key] : 'text-ink-300'}`}>
               {money(value, currency)}
             </div>
           </button>

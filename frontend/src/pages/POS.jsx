@@ -1,10 +1,13 @@
 import { useMemo, useRef, useState } from 'react';
+import { useSubmit } from '../hooks/useSubmit.js';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
 import { money, errorMessage } from '../lib/format.js';
+import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
+import Combobox from '../components/Combobox.jsx';
 import { Spinner } from '../components/ui.jsx';
 
 export default function POS() {
@@ -27,19 +30,11 @@ export default function POS() {
     queryKey: ['products-pos', search],
     queryFn: async () => (await api.get('/products', { params: { q: search, limit: 30 } })).data,
   });
-  const { data: customers } = useQuery({
-    queryKey: ['customers-pos'],
-    queryFn: async () => (await api.get('/customers')).data,
-  });
   const { data: accounts } = useQuery({
     queryKey: ['accounts'],
     queryFn: async () => (await api.get('/accounts')).data,
   });
-  const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: async () => (await api.get('/settings')).data,
-  });
-  const currency = settings?.currency || 'PKR';
+  const currency = useCurrency();
 
   function addToCart(p) {
     setCart((c) => {
@@ -106,7 +101,7 @@ export default function POS() {
 
   const itemCount = cart.reduce((s, l) => s + Number(l.quantity || 0), 0);
 
-  async function submit() {
+  async function doSubmit() {
     if (!customer) return toast.error('Select a customer');
     if (!cart.length) return toast.error('Cart is empty');
     // An initial payment has to land somewhere — a sale with no payment is unaffected.
@@ -139,18 +134,23 @@ export default function POS() {
     }
   }
 
+  // A sale posts money and moves stock; the control is latched while in flight.
+  const { run: submit, pending: submitting } = useSubmit(doSubmit);
+
   return (
-    <div>
+    <div className="pb-24 lg:pb-0">
       <PageHeader
         title="Point of Sale"
         subtitle="Create a new sale and invoice"
         icon={<svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M6 6h15l-1.5 9h-12zM6 6 5 3H2m4 18a1 1 0 1 1 0-2 1 1 0 0 1 0 2m12 0a1 1 0 1 1 0-2 1 1 0 0 1 0 2" /></svg>}
       />
-      <div className="p-6 sm:p-8 grid grid-cols-1 lg:grid-cols-5 gap-6 max-w-[1500px]">
+      <div className="page page-w grid grid-cols-1 lg:grid-cols-5 gap-6">
         {/* LEFT: catalog + cart */}
         <div className="lg:col-span-3 space-y-4">
           {/* Barcode scan */}
           <div className="card p-4">
+            {/* autoFocus is applied only on a pointer device: on a phone it would
+                open the keyboard over the catalogue the moment the till loads. */}
             <form onSubmit={submitBarcode} className="flex items-center gap-2">
               <div className="field-search flex-1">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M3 5v14M6.5 5v14M10 5v14M13.5 5v10M17 5v14M20.5 5v14" /></svg>
@@ -162,7 +162,7 @@ export default function POS() {
                   onChange={(e) => setBarcode(e.target.value)}
                   autoComplete="off"
                   aria-label="Scan or enter barcode"
-                  autoFocus
+                  autoFocus={typeof window !== 'undefined' && window.matchMedia('(pointer: fine)').matches}
                 />
               </div>
               <button type="submit" className="btn-secondary shrink-0" disabled={scanning || !barcode.trim()}>
@@ -247,26 +247,26 @@ export default function POS() {
                 <div className="text-xs text-ink-300 mt-0.5">Search and click a product to add it</div>
               </div>
             ) : (
-              <div className="overflow-x-auto">
+              <div className="hidden sm:block">
                 <table className="min-w-full text-sm">
                   <thead>
-                    <tr className="border-b border-ink-100 text-[11px] font-semibold uppercase tracking-wider text-ink-400">
-                      <th className="px-4 py-2.5 text-left">Item</th>
-                      <th className="px-3 py-2.5 text-center w-28">Qty</th>
-                      <th className="px-3 py-2.5 text-right">Price</th>
-                      <th className="px-3 py-2.5 text-right">Disc.</th>
-                      <th className="px-4 py-2.5 text-right">Total</th>
+                    <tr>
+                      <th scope="col" className="th">Item</th>
+                      <th scope="col" className="th text-center w-28">Qty</th>
+                      <th scope="col" className="th text-right">Price</th>
+                      <th scope="col" className="th text-right">Disc.</th>
+                      <th scope="col" className="th text-right">Total</th>
                       <th className="w-10"></th>
                     </tr>
                   </thead>
                   <tbody>
                     {cart.map((line, i) => (
-                      <tr key={i} className="border-b border-ink-100 last:border-0">
-                        <td className="px-4 py-2.5">
+                      <tr key={i} className="tr">
+                        <td className="td">
                           <div className="font-medium text-ink-900">{line.name}</div>
-                          <div className="text-[11px] text-ink-400 font-mono">{line.sku} · {line.stock} avail.</div>
+                          <div className="t-meta font-mono">{line.sku} · {line.stock} avail.</div>
                         </td>
-                        <td className="px-3 py-2.5">
+                        <td className="td">
                           <div className="inline-flex items-center rounded-lg border border-ink-200 overflow-hidden">
                             <button type="button" onClick={() => updateLine(i, { quantity: Math.max(1, line.quantity - 1) })} className="px-2 py-1 text-ink-500 hover:bg-ink-50">−</button>
                             <input
@@ -278,16 +278,16 @@ export default function POS() {
                             <button type="button" onClick={() => updateLine(i, { quantity: Math.min(line.stock, line.quantity + 1) })} className="px-2 py-1 text-ink-500 hover:bg-ink-50">+</button>
                           </div>
                         </td>
-                        <td className="px-3 py-2.5 text-right">
+                        <td className="td text-right">
                           <input type="number" step="0.01" className="input input-sm w-24 text-right num" value={line.unitPrice} onChange={(e) => updateLine(i, { unitPrice: Number(e.target.value) })} />
                         </td>
-                        <td className="px-3 py-2.5 text-right">
+                        <td className="td text-right">
                           <input type="number" step="0.01" className="input input-sm w-20 text-right num" value={line.discount} onChange={(e) => updateLine(i, { discount: Number(e.target.value) })} />
                         </td>
-                        <td className="px-4 py-2.5 text-right font-semibold text-ink-900 num whitespace-nowrap">
+                        <td className="td text-right font-semibold text-ink-900 num whitespace-nowrap">
                           {money(Math.max(0, line.quantity * line.unitPrice - (line.discount || 0)), currency)}
                         </td>
-                        <td className="px-2 py-2.5 text-right">
+                        <td className="td text-right">
                           <button className="btn-icon text-ink-300 hover:text-red-600 hover:bg-red-50" onClick={() => removeLine(i)} aria-label="Remove">
                             <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m2 0v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6" /></svg>
                           </button>
@@ -298,6 +298,70 @@ export default function POS() {
                 </table>
               </div>
             )}
+
+            {/* Phone: the same cart state as editable cards. A six-column table
+                with number inputs cannot be operated with a thumb, and sideways
+                scrolling is not an acceptable answer for the till screen. */}
+            {cart.length > 0 && (
+              <ul className="sm:hidden divide-y divide-ink-100">
+                {cart.map((line, i) => (
+                  <li key={i} className="p-3.5">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-medium text-ink-900 text-[13.5px] leading-snug">{line.name}</div>
+                        <div className="t-meta font-mono truncate">{line.sku} · {line.stock} avail.</div>
+                      </div>
+                      <button
+                        className="btn-icon text-ink-300 hover:text-red-600 hover:bg-red-50 shrink-0 -mt-1 -mr-1"
+                        onClick={() => removeLine(i)}
+                        aria-label={`Remove ${line.name} from the cart`}
+                      >
+                        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m2 0v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6" /></svg>
+                      </button>
+                    </div>
+
+                    <div className="mt-2.5 flex items-center gap-2">
+                      <div className="inline-flex items-center rounded-md border border-ink-200 overflow-hidden shrink-0">
+                        <button type="button" aria-label="Decrease quantity"
+                                onClick={() => updateLine(i, { quantity: Math.max(1, line.quantity - 1) })}
+                                className="w-11 h-11 text-lg text-ink-600 active:bg-ink-100">−</button>
+                        <input
+                          type="number" inputMode="numeric" min="1" max={line.stock}
+                          aria-label={`Quantity of ${line.name}`}
+                          className="w-12 h-11 text-center text-sm outline-none num [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+                          value={line.quantity}
+                          onChange={(e) => updateLine(i, { quantity: Math.min(line.stock, Math.max(1, Number(e.target.value))) })}
+                        />
+                        <button type="button" aria-label="Increase quantity"
+                                onClick={() => updateLine(i, { quantity: Math.min(line.stock, line.quantity + 1) })}
+                                className="w-11 h-11 text-lg text-ink-600 active:bg-ink-100">+</button>
+                      </div>
+                      <span className="ml-auto text-right">
+                        <span className="block t-meta">Line total</span>
+                        <span className="num font-semibold text-ink-900 whitespace-nowrap">
+                          {money(Math.max(0, line.quantity * line.unitPrice - (line.discount || 0)), currency)}
+                        </span>
+                      </span>
+                    </div>
+
+                    <div className="mt-2.5 grid grid-cols-2 gap-2">
+                      <div>
+                        <label htmlFor={`pos-price-${i}`} className="t-meta block mb-1">Unit price</label>
+                        <input id={`pos-price-${i}`} type="number" inputMode="decimal" step="0.01"
+                               className="input input-sm text-right num w-full" value={line.unitPrice}
+                               onChange={(e) => updateLine(i, { unitPrice: Number(e.target.value) })} />
+                      </div>
+                      <div>
+                        <label htmlFor={`pos-disc-${i}`} className="t-meta block mb-1">Discount</label>
+                        <input id={`pos-disc-${i}`} type="number" inputMode="decimal" step="0.01"
+                               className="input input-sm text-right num w-full" value={line.discount}
+                               onChange={(e) => updateLine(i, { discount: Number(e.target.value) })} />
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
 
@@ -306,27 +370,31 @@ export default function POS() {
           <div className="space-y-4 lg:sticky lg:top-20">
             <div className="card p-5 space-y-3">
               <div>
-                <label className="label">Customer <span className="text-red-500">*</span></label>
-                <select className="select" value={customer} onChange={(e) => setCustomer(e.target.value)}>
-                  <option value="">— select customer —</option>
-                  {(customers || []).map((c) => (
-                    <option key={c._id} value={c._id}>{c.name}{c.company ? ` (${c.company})` : ''}</option>
-                  ))}
-                </select>
+                <Combobox
+                  id="pos-customer-26"
+                  label="Customer"
+                  required
+                  path="/customers"
+                  value={customer}
+                  onChange={setCustomer}
+                  placeholder="Search customers…"
+                  getHint={(c) => [c.company, c.phone].filter(Boolean).join(' · ')}
+                  emptyHint="No customer found"
+                />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="label">Discount</label>
-                  <input className="input num" type="number" step="0.01" value={discount} onChange={(e) => setDiscount(e.target.value)} />
+                  <label htmlFor="pos-discount-27" className="label">Discount</label>
+                  <input id="pos-discount-27" className="input num" type="number" step="0.01" value={discount} onChange={(e) => setDiscount(e.target.value)} />
                 </div>
                 <div>
-                  <label className="label">Tax %</label>
-                  <input className="input num" type="number" step="0.01" value={taxRate} onChange={(e) => setTaxRate(e.target.value)} />
+                  <label htmlFor="pos-tax-28" className="label">Tax %</label>
+                  <input id="pos-tax-28" className="input num" type="number" step="0.01" value={taxRate} onChange={(e) => setTaxRate(e.target.value)} />
                 </div>
               </div>
               <div>
-                <label className="label">Notes</label>
-                <textarea className="input" rows="2" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional note for this invoice…" />
+                <label htmlFor="pos-notes-29" className="label">Notes</label>
+                <textarea id="pos-notes-29" className="input" rows="2" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional note for this invoice…" />
               </div>
             </div>
 
@@ -354,12 +422,12 @@ export default function POS() {
 
               <div className="grid grid-cols-2 gap-3 mt-4">
                 <div>
-                  <label className="label">Initial Payment</label>
-                  <input className="input num" type="number" step="0.01" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} />
+                  <label htmlFor="pos-initial-payment-30" className="label">Initial Payment</label>
+                  <input id="pos-initial-payment-30" className="input num" type="number" step="0.01" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} />
                 </div>
                 <div>
-                  <label className="label">Method</label>
-                  <select className="select" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
+                  <label htmlFor="pos-method-31" className="label">Method</label>
+                  <select id="pos-method-31" className="select" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
                     <option value="cash">Cash</option>
                     <option value="bank">Bank Transfer</option>
                     <option value="cheque">Cheque</option>
@@ -369,20 +437,41 @@ export default function POS() {
               </div>
               {paymentAmount > 0 && (
                 <div className="mt-3">
-                  <label className="label">Deposit To <span className="text-red-500">*</span></label>
-                  <select className="select" value={paymentAccount} onChange={(e) => setPaymentAccount(e.target.value)}>
+                  <label htmlFor="pos-deposit-to-32" className="label">Deposit To <span className="text-red-500">*</span></label>
+                  <select id="pos-deposit-to-32" className="select" value={paymentAccount} onChange={(e) => setPaymentAccount(e.target.value)}>
                     <option value="">— select account —</option>
                     {(accounts || []).map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
                   </select>
                 </div>
               )}
-              <button className="btn-primary-gradient btn-lg w-full mt-5" onClick={submit} disabled={saving || cart.length === 0}>
-                {saving ? <><Spinner className="w-4 h-4" /> Saving…</> : <>Save Invoice · {money(totals.total, currency)}</>}
+              <button className="btn-primary btn-lg w-full mt-5" onClick={submit} disabled={saving || submitting || cart.length === 0}>
+                {saving || submitting ? <><Spinner className="w-4 h-4" /> Saving…</> : <>Save Invoice · {money(totals.total, currency)}</>}
               </button>
             </div>
           </div>
         </div>
       </div>
+
+      {/* Phone: the total and the primary action stay in the thumb zone. The
+          checkout panel is otherwise below the catalogue and the whole cart, so
+          completing a sale meant scrolling past everything first. */}
+      {cart.length > 0 && (
+        <div className="lg:hidden fixed bottom-0 inset-x-0 z-30 border-t border-ink-200 bg-white/95 backdrop-blur px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-[0_-2px_10px_rgba(16,24,40,0.06)]">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="t-meta">{itemCount} item{itemCount === 1 ? '' : 's'} · Total</div>
+              <div className="num font-semibold text-[17px] text-ink-900 truncate">{money(totals.total, currency)}</div>
+            </div>
+            <button
+              className="btn-primary btn-lg shrink-0"
+              onClick={submit}
+              disabled={saving || submitting || cart.length === 0}
+            >
+              {saving || submitting ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Save Invoice'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

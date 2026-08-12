@@ -6,6 +6,7 @@ import Product from '../models/Product.js';
 import StockMovement from '../models/StockMovement.js';
 import Account from '../models/Account.js';
 import Expense from '../models/Expense.js';
+import PurchaseOrder from '../models/PurchaseOrder.js';
 
 function dateRange(from, to) {
   const f = from ? new Date(from) : new Date(Date.now() - 30 * 86400000);
@@ -276,4 +277,178 @@ export const monthlySummary = asyncHandler(async (_req, res) => {
   ];
   const data = await Invoice.aggregate(pipeline);
   res.json(data.map((d) => ({ month: d._id, revenue: d.revenue, cost: d.cost, grossProfit: d.revenue - d.cost })));
+});
+
+// ---------------------------------------------------------------------------
+// Time series for dashboard charts.
+//
+// Read-only, and deliberately built from the SAME records and the SAME
+// inclusion rules the existing reports already use, so a chart can never tell a
+// different story from the numbers beside it:
+//
+//   revenue    Invoice.items.lineTotal, excluding cancelled/returned — identical
+//              to the profitAndLoss revenue aggregation.
+//   expenses   Expense.amount where status === 'posted' — identical to the
+//              profitAndLoss expense aggregation and to /expenses reporting.
+//   purchases  PurchaseOrder.total, excluding cancelled/draft — the same set
+//              payables treats as real.
+//
+// It stores nothing, caches nothing and computes no balance. Summing any series
+// over a range returns exactly what /reports/profit-loss reports for that range,
+// which the Change 11 tests assert directly.
+// ---------------------------------------------------------------------------
+export const series = asyncHandler(async (req, res) => {
+  const { granularity = 'day' } = req.query;
+  const fmt = granularity === 'month' ? '%Y-%m' : '%Y-%m-%d';
+  const range = dateRange(req.query.from, req.query.to);
+
+  const bucket = (dateField) => [
+    { $group: { _id: { $dateToString: { format: fmt, date: `$${dateField}` } }, total: { $sum: '$__amount' } } },
+    { $sort: { _id: 1 } },
+  ];
+
+  const [revenueRows, expenseRows, purchaseRows] = await Promise.all([
+    Invoice.aggregate([
+      { $match: { issuedAt: range, status: { $nin: ['cancelled', 'returned'] } } },
+      { $unwind: '$items' },
+      { $addFields: { __amount: '$items.lineTotal' } },
+      ...bucket('issuedAt'),
+    ]),
+    Expense.aggregate([
+      { $match: { status: 'posted', date: range } },
+      { $addFields: { __amount: '$amount' } },
+      ...bucket('date'),
+    ]),
+    PurchaseOrder.aggregate([
+      { $match: { orderedAt: range, status: { $nin: ['cancelled', 'draft'] } } },
+      { $addFields: { __amount: '$total' } },
+      ...bucket('orderedAt'),
+    ]),
+  ]);
+
+  // Merge onto a single set of buckets so the chart never has ragged series.
+  const keys = [...new Set([...revenueRows, ...expenseRows, ...purchaseRows].map((r) => r._id))].sort();
+  const lookup = (rows) => Object.fromEntries(rows.map((r) => [r._id, r.total]));
+  const rev = lookup(revenueRows);
+  const exp = lookup(expenseRows);
+  const pur = lookup(purchaseRows);
+
+  const points = keys.map((k) => ({
+    period: k,
+    revenue: Math.round((rev[k] || 0) * 100) / 100,
+    expenses: Math.round((exp[k] || 0) * 100) / 100,
+    purchases: Math.round((pur[k] || 0) * 100) / 100,
+  }));
+
+  const sum = (f) => Math.round(points.reduce((t, p) => t + p[f], 0) * 100) / 100;
+
+  res.json({
+    from: range.$gte,
+    to: range.$lte,
+    granularity: granularity === 'month' ? 'month' : 'day',
+    points,
+    totals: { revenue: sum('revenue'), expenses: sum('expenses'), purchases: sum('purchases') },
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inventory reconciliation.
+//
+// /accounts/reconcile and /finance/position both proved TRUE while a purchase
+// order had received 10 units against an order of 5 — stock sits outside the
+// ledger and outside AR/AP, so no financial invariant could see it.
+//
+// This adds the missing check. It is strictly read-only and derives everything
+// from the existing authoritative records; it introduces no second source of
+// truth and never adjusts a balance to make itself pass.
+//
+// Detected:
+//   received > ordered on any purchase-order line   (the receiving race)
+//   negative received                               (impossible state)
+//   negative stock on an active product             (impossible state)
+// ---------------------------------------------------------------------------
+export const inventoryReconcile = asyncHandler(async (_req, res) => {
+  const overReceived = await PurchaseOrder.aggregate([
+    { $match: { status: { $nin: ['cancelled', 'draft'] } } },
+    { $unwind: '$items' },
+    { $match: { $expr: { $gt: ['$items.received', '$items.quantity'] } } },
+    {
+      $project: {
+        _id: 0,
+        purchaseOrder: '$_id',
+        number: 1,
+        status: 1,
+        product: '$items.product',
+        sku: '$items.sku',
+        name: '$items.name',
+        ordered: '$items.quantity',
+        received: '$items.received',
+        excess: { $subtract: ['$items.received', '$items.quantity'] },
+      },
+    },
+    { $sort: { number: 1 } },
+    { $limit: 200 },
+  ]);
+
+  const negativeReceived = await PurchaseOrder.aggregate([
+    { $unwind: '$items' },
+    { $match: { 'items.received': { $lt: 0 } } },
+    { $project: { _id: 0, purchaseOrder: '$_id', number: 1, sku: '$items.sku', received: '$items.received' } },
+    { $limit: 200 },
+  ]);
+
+  const negativeStock = await Product.find({ active: true, stock: { $lt: 0 } })
+    .select('name sku stock')
+    .limit(200);
+
+  // Receiving-path integrity.
+  //
+  // A global `Product.stock == sum(StockMovement)` invariant is NOT derivable here
+  // and is deliberately not asserted: products are created with an opening stock,
+  // and the Excel importer sets `stock` directly, with no movement in either case.
+  // Claiming that invariant would flag legitimate data as corrupt.
+  //
+  // What IS exactly derivable is the receiving path itself, which is where the
+  // concurrency defect lived: every unit received against a purchase order must
+  // have produced exactly one purchase movement of the same size. Both sides come
+  // from authoritative records, so any divergence is real.
+  const receivedByProduct = await PurchaseOrder.aggregate([
+    { $match: { status: { $nin: ['cancelled', 'draft'] } } },
+    { $unwind: '$items' },
+    { $match: { 'items.received': { $gt: 0 } } },
+    { $group: { _id: '$items.product', received: { $sum: '$items.received' } } },
+  ]);
+  const movedByProduct = await StockMovement.aggregate([
+    { $match: { type: 'purchase', refType: 'PurchaseOrder' } },
+    { $group: { _id: '$product', moved: { $sum: '$quantity' } } },
+  ]);
+  const movedMap = new Map(movedByProduct.map((m) => [String(m._id), m.moved]));
+  const receiptDrift = [];
+  for (const row of receivedByProduct) {
+    const moved = movedMap.get(String(row._id)) || 0;
+    if (moved !== row.received) {
+      receiptDrift.push({ product: row._id, receivedOnOrders: row.received, purchaseMovements: moved, drift: moved - row.received });
+    }
+  }
+  // Movements referencing a product with no corresponding receipts at all.
+  for (const [pid, moved] of movedMap) {
+    if (!receivedByProduct.find((r) => String(r._id) === pid) && moved !== 0) {
+      receiptDrift.push({ product: pid, receivedOnOrders: 0, purchaseMovements: moved, drift: moved });
+    }
+  }
+
+  const issues = overReceived.length + negativeReceived.length + negativeStock.length + receiptDrift.length;
+
+  res.json({
+    ok: issues === 0,
+    checkedAt: new Date(),
+    issues,
+    // Each entry names the purchase order and the line, so a failure is actionable
+    // rather than merely a red flag.
+    overReceived,
+    negativeReceived,
+    negativeStock,
+    receiptDrift,
+    note: 'Product.stock is not compared against the sum of all StockMovements: opening stock and Excel imports set stock directly without a movement, so that equality is not a property of this data model. The receiving path is reconciled exactly instead.',
+  });
 });

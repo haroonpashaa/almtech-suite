@@ -2,8 +2,10 @@ import { Link, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client.js';
 import { money, date as fmtDate, datetime } from '../lib/format.js';
+import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
+import Money from '../components/Money.jsx';
 import { LoadingBlock } from '../components/ui.jsx';
 import { DealStatusBadge, SettlementBadge } from '../components/DealStatus.jsx';
 
@@ -57,11 +59,7 @@ export default function DealDetail() {
     queryKey: ['deal', kind, id],
     queryFn: async () => (await api.get(`/deals/${kind}/${id}`)).data,
   });
-  const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: async () => (await api.get('/settings')).data,
-  });
-  const currency = settings?.currency || 'PKR';
+  const currency = useCurrency();
 
   if (isLoading || !data) return <LoadingBlock />;
 
@@ -82,37 +80,39 @@ export default function DealDetail() {
           </>
         }
       />
-      <div className="p-6 sm:p-8 grid grid-cols-1 lg:grid-cols-3 gap-6 max-w-[1400px]">
+      <div className="page page-w grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-4">
           {/* Products */}
-          <div className="card overflow-hidden">
-            <div className="px-4 py-3 border-b border-ink-100 bg-ink-25">
-              <h3 className="text-sm font-semibold text-ink-900">Products</h3>
-            </div>
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="border-b border-ink-100 text-[11px] font-semibold uppercase tracking-wider text-ink-400">
-                  <th className="px-4 py-2.5 text-left">Item</th>
-                  <th className="px-3 py-2.5 text-right">Qty</th>
-                  <th className="px-3 py-2.5 text-right">{isSale ? 'Unit Price' : 'Unit Cost'}</th>
-                  <th className="px-4 py-2.5 text-right">Line Total</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(data.items || []).map((it, i) => (
-                  <tr key={i} className="border-b border-ink-100 last:border-0">
-                    <td className="px-4 py-2.5">
+          <section>
+            <h3 className="t-section mb-2">Products</h3>
+            <Table
+              caption="Products on this deal"
+              rows={data.items || []}
+              rowKey={(r, i) => `${r.sku}-${i}`}
+              empty="No line items"
+              columns={[
+                {
+                  key: 'item', label: 'Item', priority: 'primary',
+                  render: (it) => (
+                    <>
                       <div className="font-medium text-ink-900">{it.name}</div>
-                      <div className="text-[11px] text-ink-400 font-mono">{it.sku}</div>
-                    </td>
-                    <td className="px-3 py-2.5 text-right num text-ink-700">{it.quantity}</td>
-                    <td className="px-3 py-2.5 text-right num text-ink-700">{money(isSale ? it.unitPrice : it.unitCost, currency)}</td>
-                    <td className="px-4 py-2.5 text-right num font-medium text-ink-900">{money(it.lineTotal, currency)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                      <div className="t-meta font-mono">{it.sku}</div>
+                    </>
+                  ),
+                },
+                { key: 'quantity', label: 'Qty', align: 'right', render: (it) => <span className="num">{it.quantity}</span> },
+                {
+                  key: 'unit', align: 'right',
+                  label: isSale ? `Unit Price (${currency})` : `Unit Cost (${currency})`,
+                  render: (it) => <Money value={isSale ? it.unitPrice : it.unitCost} />,
+                },
+                {
+                  key: 'lineTotal', label: `Line Total (${currency})`, align: 'right',
+                  render: (it) => <Money value={it.lineTotal} className="font-medium text-ink-900" />,
+                },
+              ]}
+            />
+          </section>
 
           {/* Payment history — one list, initial POS payment included */}
           <div className="card overflow-hidden">

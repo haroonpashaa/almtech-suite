@@ -2,8 +2,11 @@ import { useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client.js';
 import { money, date } from '../lib/format.js';
+import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
+import DocumentActions from '../components/DocumentActions.jsx';
 import Table from '../components/Table.jsx';
+import Money from '../components/Money.jsx';
 import { Badge, LoadingBlock } from '../components/ui.jsx';
 
 function Field({ label, value, className = '' }) {
@@ -21,11 +24,7 @@ export default function CustomerDetail() {
     queryKey: ['customer-ledger', id],
     queryFn: async () => (await api.get(`/customers/${id}/ledger`)).data,
   });
-  const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: async () => (await api.get('/settings')).data,
-  });
-  const currency = settings?.currency || 'PKR';
+  const currency = useCurrency();
 
   if (!data) return <LoadingBlock />;
   const { customer, entries, balance } = data;
@@ -36,9 +35,14 @@ export default function CustomerDetail() {
         breadcrumb={[{ label: 'Customers', to: '/customers' }, { label: customer.name }]}
         title={customer.name}
         subtitle={customer.company || customer.phone || customer.email}
-        actions={<Badge tone={balance > 0 ? 'warning' : 'success'} dot>{balance > 0 ? 'Outstanding' : 'Settled'}</Badge>}
+        actions={
+          <>
+            <Badge tone={balance > 0 ? 'warning' : 'success'} dot>{balance > 0 ? 'Outstanding' : 'Settled'}</Badge>
+            <DocumentActions path={`/customers/${id}/statement/pdf`} filename={`statement-${customer.name}`} label="Statement" />
+          </>
+        }
       />
-      <div className="p-6 sm:p-8 space-y-6 max-w-[1200px]">
+      <div className="page page-w space-y-6">
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
           <div className="lg:col-span-3 card p-5 grid grid-cols-2 md:grid-cols-3 gap-5">
             <Field label="Phone" value={customer.phone} />
@@ -52,7 +56,7 @@ export default function CustomerDetail() {
             <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-white/10 blur-2xl" />
             <div className="relative">
               <div className="text-[11px] font-semibold uppercase tracking-wider text-white/70">Outstanding Balance</div>
-              <div className="mt-2 text-3xl font-semibold num tracking-tight">{money(balance, currency)}</div>
+              <div className="mt-2 fig-xl font-semibold num tracking-tight">{money(balance, currency)}</div>
               <div className="mt-1 text-xs text-white/70">{balance > 0 ? 'Owed by this customer' : 'No outstanding balance'}</div>
             </div>
           </div>
@@ -65,9 +69,9 @@ export default function CustomerDetail() {
               { key: 'date', label: 'Date', render: (e) => <span className="text-ink-500 whitespace-nowrap">{date(e.date)}</span> },
               { key: 'type', label: 'Type', render: (e) => <span className="capitalize text-ink-700">{e.type}</span> },
               { key: 'reference', label: 'Reference', render: (e) => <span className="font-mono text-[12px] text-ink-500">{e.reference || '—'}</span> },
-              { key: 'debit', label: 'Debit', className: 'text-right num', render: (e) => (e.debit ? money(e.debit, currency) : <span className="text-ink-300">—</span>) },
-              { key: 'credit', label: 'Credit', className: 'text-right num text-emerald-600', render: (e) => (e.credit ? money(e.credit, currency) : <span className="text-ink-300">—</span>) },
-              { key: 'balance', label: 'Balance', className: 'text-right num font-medium text-ink-900', render: (e) => money(e.balance, currency) },
+              { key: 'debit', label: `Debit (${currency})`, align: 'right', render: (e) => (e.debit ? <Money value={e.debit} /> : <span className="text-ink-300">—</span>) },
+              { key: 'credit', label: `Credit (${currency})`, align: 'right', render: (e) => (e.credit ? <Money value={e.credit} tone="positive" /> : <span className="text-ink-300">—</span>) },
+              { key: 'balance', label: `Balance (${currency})`, align: 'right', render: (e) => <Money value={e.balance} tone="auto" className="font-medium" /> },
             ]}
             rows={entries}
             empty="No ledger entries"

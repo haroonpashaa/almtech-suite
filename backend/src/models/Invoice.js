@@ -65,5 +65,9 @@ const invoiceSchema = new mongoose.Schema(
 
 invoiceSchema.index({ customer: 1, issuedAt: -1 });
 invoiceSchema.index({ status: 1 });
+// The unfiltered invoice list sorts by issuedAt with no customer in the filter, so
+// the compound index above cannot serve it. Without this the default list is an
+// in-memory sort of the whole collection.
+invoiceSchema.index({ issuedAt: -1 });
 
 export default mongoose.model('Invoice', invoiceSchema);

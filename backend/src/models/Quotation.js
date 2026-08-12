@@ -33,4 +33,7 @@ const quotationSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// The quotation list sorts on issuedAt and had no index at all.
+quotationSchema.index({ issuedAt: -1 });
+
 export default mongoose.model('Quotation', quotationSchema);

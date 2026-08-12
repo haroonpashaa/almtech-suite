@@ -2,8 +2,10 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client.js';
 import { money, date as fmtDate } from '../lib/format.js';
+import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
+import Money from '../components/Money.jsx';
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const thisMonth = () => new Date().toISOString().slice(0, 7);
@@ -49,11 +51,7 @@ export default function ExpenseReports() {
     queryKey: ['expenses-monthly', month],
     queryFn: async () => (await api.get('/expenses/monthly', { params: { month } })).data,
   });
-  const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: async () => (await api.get('/settings')).data,
-  });
-  const currency = settings?.currency || 'PKR';
+  const currency = useCurrency();
 
   return (
     <div>
@@ -62,7 +60,7 @@ export default function ExpenseReports() {
         subtitle="Daily and monthly totals, calculated from expense records"
         icon={<svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21h18M6 17v-7m5 7v-11m5 11v-5m5 5v-9" /></svg>}
       />
-      <div className="p-6 sm:p-8 space-y-5 max-w-[1200px]">
+      <div className="page page-w space-y-5">
         <div className="flex flex-wrap items-center gap-3">
           <div className="segment">
             <button onClick={() => setTab('daily')} className={`segment-item ${tab === 'daily' ? 'segment-item-active' : ''}`}>Daily</button>
@@ -96,7 +94,7 @@ export default function ExpenseReports() {
                 { key: 'category', label: 'Category', render: (e) => <span className="font-medium text-ink-900">{e.category}</span> },
                 { key: 'description', label: 'Description', render: (e) => e.description || <span className="text-ink-300">—</span> },
                 { key: 'account', label: 'Account', render: (e) => e.account?.name || <span className="text-ink-300">—</span> },
-                { key: 'amount', label: 'Amount', className: 'text-right num font-medium text-red-600', render: (e) => money(e.amount, currency) },
+                { key: 'amount', label: `Amount (${currency})`, className: 'text-right num font-medium text-red-600', render: (e) => <Money value={e.amount} /> },
               ]}
               rows={daily.data?.items || []}
             />
@@ -120,7 +118,7 @@ export default function ExpenseReports() {
                 columns={[
                   { key: 'date', label: 'Day', render: (d) => <span className="text-ink-600">{fmtDate(d.date)}</span> },
                   { key: 'count', label: 'Entries', className: 'text-right num text-ink-500', render: (d) => d.count },
-                  { key: 'total', label: 'Total', className: 'text-right num font-medium text-red-600', render: (d) => money(d.total, currency) },
+                  { key: 'total', label: `Total (${currency})`, className: 'text-right num font-medium text-red-600', render: (d) => <Money value={d.total} /> },
                 ]}
                 rows={monthly.data?.byDay || []}
               />

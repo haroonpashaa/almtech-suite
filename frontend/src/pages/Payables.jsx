@@ -3,8 +3,10 @@ import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client.js';
 import { money, date as fmtDate } from '../lib/format.js';
+import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
+import Money from '../components/Money.jsx';
 import { Badge } from '../components/ui.jsx';
 import { AgingBuckets, AgingNote, OverdueBadge } from '../components/Aging.jsx';
 
@@ -28,11 +30,7 @@ export default function Payables() {
     queryKey: ['finance-position'],
     queryFn: async () => (await api.get('/finance/position')).data,
   });
-  const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: async () => (await api.get('/settings')).data,
-  });
-  const currency = settings?.currency || 'PKR';
+  const currency = useCurrency();
   const filtered = q || from || to || bucket || status;
 
   return (
@@ -42,21 +40,21 @@ export default function Payables() {
         subtitle="Money the business owes suppliers"
         icon={<svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7h18M3 12h18M3 17h18" /></svg>}
       />
-      <div className="p-6 sm:p-8 space-y-4 max-w-[1400px]">
+      <div className="page page-w space-y-4">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="card p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Total Payables</div>
-            <div className="mt-2 text-2xl font-semibold num text-ink-900 tracking-tight">{money(position?.payables || 0, currency)}</div>
+            <div className="mt-2 fig-lg font-semibold num text-ink-900 tracking-tight">{money(position?.payables || 0, currency)}</div>
             <div className="text-xs text-ink-400 mt-1">Owed by us</div>
           </div>
           <div className="card p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Total Receivables</div>
-            <div className="mt-2 text-2xl font-semibold num text-ink-900 tracking-tight">{money(position?.receivables || 0, currency)}</div>
+            <div className="mt-2 fig-lg font-semibold num text-ink-900 tracking-tight">{money(position?.receivables || 0, currency)}</div>
             <div className="text-xs text-ink-400 mt-1">Owed to us</div>
           </div>
           <div className="card p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Net Outstanding Position</div>
-            <div className={`mt-2 text-2xl font-semibold num tracking-tight ${(position?.netPosition || 0) < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+            <div className={`mt-2 fig-lg font-semibold num tracking-tight ${(position?.netPosition || 0) < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
               {money(position?.netPosition || 0, currency)}
             </div>
             <div className="text-xs text-ink-400 mt-1">Receivables − Payables · not profit</div>
@@ -71,7 +69,7 @@ export default function Payables() {
         )}
 
         <div className="space-y-2">
-          <div className="flex items-baseline justify-between">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
             <div className="section-title">Aging</div>
             <AgingNote />
           </div>
@@ -84,16 +82,16 @@ export default function Payables() {
             <input className="input" placeholder="Search supplier, contact, phone…" value={q} onChange={(e) => setQ(e.target.value)} />
           </div>
           <div>
-            <label className="label">From</label>
-            <input className="input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+            <label htmlFor="payables-from-37" className="label">From</label>
+            <input id="payables-from-37" className="input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
           </div>
           <div>
-            <label className="label">To</label>
-            <input className="input" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+            <label htmlFor="payables-to-38" className="label">To</label>
+            <input id="payables-to-38" className="input" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
           </div>
           <div>
-            <label className="label">Status</label>
-            <select className="select" value={status} onChange={(e) => setStatus(e.target.value)}>
+            <label htmlFor="payables-status-39" className="label">Status</label>
+            <select id="payables-status-39" className="select" value={status} onChange={(e) => setStatus(e.target.value)}>
               <option value="">All open</option>
               <option value="ordered">Ordered</option>
               <option value="partial">Partial</option>
@@ -127,9 +125,9 @@ export default function Payables() {
             { key: 'poCount', label: 'POs', className: 'text-right num text-ink-500', render: (r) => r.poCount },
             { key: 'oldestDate', label: 'Oldest', render: (r) => <span className="text-ink-500 whitespace-nowrap">{fmtDate(r.oldestDate)}</span> },
             { key: 'oldestAgeDays', label: 'Age', render: (r) => <OverdueBadge days={r.oldestAgeDays} /> },
-            { key: 'total', label: 'Purchase Total', className: 'text-right num text-ink-600', render: (r) => money(r.total, currency) },
-            { key: 'paid', label: 'Paid', className: 'text-right num text-emerald-600', render: (r) => money(r.paid, currency) },
-            { key: 'outstanding', label: 'Outstanding', className: 'text-right num font-semibold', render: (r) => <span className="text-amber-600">{money(r.outstanding, currency)}</span> },
+            { key: 'total', label: `Purchase Total (${currency})`, className: 'text-right num text-ink-600', render: (r) => <Money value={r.total} /> },
+            { key: 'paid', label: `Paid (${currency})`, className: 'text-right num text-emerald-600', render: (r) => <Money value={r.paid} /> },
+            { key: 'outstanding', label: `Outstanding (${currency})`, className: 'text-right num font-semibold', render: (r) => <Money value={r.outstanding} tone="due" /> },
             {
               key: 'drift',
               label: '',

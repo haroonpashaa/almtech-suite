@@ -43,7 +43,9 @@ export function createApp({ serveFrontend = true } = {}) {
   const corsOrigin = process.env.CORS_ORIGIN
     ? process.env.CORS_ORIGIN.split(',').map((o) => o.trim()).filter(Boolean)
     : '*';
-  app.use(cors({ origin: corsOrigin, credentials: true }));
+  // X-Total-Count must be readable by the browser, otherwise a cross-origin
+  // frontend cannot tell the user how many records a capped list is hiding.
+  app.use(cors({ origin: corsOrigin, credentials: true, exposedHeaders: ['X-Total-Count'] }));
   app.use(express.json({ limit: '5mb' }));
   if (process.env.NODE_ENV !== 'production') app.use(morgan('dev'));
 

@@ -10,6 +10,7 @@ import { logActivity } from '../utils/activity.js';
 import { streamInvoicePDF } from '../utils/pdf.js';
 import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting } from '../utils/ledger.js';
 import { resolvePayment, requireReason, assertReversible, postReversal } from '../services/paymentReversal.js';
+import { resolvePaging, runPaged } from '../utils/pagination.js';
 
 // Single implementation of "money received against an invoice", shared by the POS
 // initial payment and by later payments on the invoice detail screen.
@@ -37,21 +38,62 @@ export async function applyInvoicePayment({ invoice, account, amount, method, re
       idempotencyKey,
     },
     async (session, posted) => {
-      invoice.payments.push({
-        amount: cappedAmount,
-        method,
-        reference,
-        recordedBy: user._id,
-        account: account._id,
-        transaction: posted._id,
-      });
-      invoice.paid += cappedAmount;
-      // Only ever 'paid' once the outstanding balance actually reaches zero.
-      invoice.balance = Math.max(0, invoice.total - invoice.paid);
-      invoice.status = invoice.balance === 0 ? 'paid' : 'partial';
-      await invoice.save({ session });
+      // The invoice is claimed with a single conditional update rather than a
+      // read-modify-write on the document loaded above.
+      //
+      // The previous code did `invoice.paid += amount; invoice.save()` against a
+      // stale in-memory copy. Two concurrent payments therefore both read paid=0
+      // and both wrote paid=2000, while both pushed a payment line and both posted
+      // to the ledger — reproduced on this database as 4,000 leaving the customer
+      // and entering cash for a single 2,000 payment, leaving
+      // `paid (2000) != sum of live payment lines (4000)` and AR unreconciled.
+      //
+      // `balance: { $gte: cappedAmount }` is evaluated by the database at write
+      // time, so only a request that can still be covered by the CURRENT balance
+      // applies. The loser matches nothing and throws, and postPaymentAtomically
+      // reverses the ledger entry it had already written — so a rejected request
+      // leaves no partial accounting state at all.
+      const claim = await Invoice.updateOne(
+        { _id: invoice._id, balance: { $gte: cappedAmount } },
+        [
+          {
+            $set: {
+              paid: { $add: ['$paid', cappedAmount] },
+              balance: { $subtract: ['$balance', cappedAmount] },
+              payments: {
+                $concatArrays: [
+                  { $ifNull: ['$payments', []] },
+                  [{
+                    amount: cappedAmount,
+                    method,
+                    reference,
+                    date: new Date(),
+                    recordedBy: user._id,
+                    account: account._id,
+                    transaction: posted._id,
+                    reversed: false,
+                  }],
+                ],
+              },
+            },
+          },
+          // Derived from the balance this same operation just wrote, so status can
+          // never disagree with the figure it describes.
+          { $set: { status: { $cond: [{ $lte: ['$balance', 0] }, 'paid', 'partial'] } } },
+        ],
+        session ? { session } : {}
+      );
+
+      if (claim.matchedCount === 0) {
+        const err = new Error(
+          'This payment could not be applied because the invoice balance changed — it may have just been paid by another request. Reload the invoice and try again.'
+        );
+        err.statusCode = 409;
+        throw err;
+      }
 
       // Receivable lives on Customer.balance, as before — no second balance system.
+      // Already a conditional pipeline update, so it was never part of the race.
       await Customer.updateOne(
         { _id: invoice.customer },
         [{ $set: { balance: { $max: [0, { $subtract: ['$balance', cappedAmount] }] } } }],
@@ -72,7 +114,14 @@ export const listInvoices = asyncHandler(async (req, res) => {
     if (to) filter.issuedAt.$lte = new Date(to);
   }
   if (q) filter.number = new RegExp(q, 'i');
-  const items = await Invoice.find(filter).populate('customer', 'name company phone').sort('-issuedAt').limit(500);
+  // 500 remains the default window, so an unparameterised call is unchanged.
+  // What is new is X-Total-Count, which lets the client say what it is not showing.
+  const paging = resolvePaging(req.query, 500);
+  const items = await runPaged(res, Invoice, filter, {
+    sort: '-issuedAt',
+    populate: [['customer', 'name company phone']],
+    paging,
+  });
   res.json(items);
 });
 
@@ -225,7 +274,9 @@ export const createInvoice = asyncHandler(async (req, res) => {
     entityId: invoice._id,
     meta: { number, total, customer: customer.name },
   });
-  res.status(201).json(invoice);
+  // Re-read for the same reason as recordPayment: a POS initial payment is applied
+  // by a conditional update, so the in-memory copy would still say unpaid.
+  res.status(201).json(initialAccount ? await Invoice.findById(invoice._id) : invoice);
 });
 
 export const recordPayment = asyncHandler(async (req, res) => {
@@ -265,7 +316,9 @@ export const recordPayment = asyncHandler(async (req, res) => {
     entityId: invoice._id,
     meta: { amount: txn.amount, method, account: account.name, transaction: txn._id.toString() },
   });
-  res.json(invoice);
+  // Re-read: the payment is applied by a conditional database update, so the copy
+  // loaded above still shows the pre-payment figures.
+  res.json(await Invoice.findById(invoice._id).populate('customer'));
 });
 
 export const returnInvoice = asyncHandler(async (req, res) => {
@@ -382,7 +435,12 @@ export const invoicePDF = asyncHandler(async (req, res) => {
     throw new Error('Invoice not found');
   }
   const settings = await Settings.getSingleton();
-  streamInvoicePDF(res, { invoice: invoice.toObject(), customer: invoice.customer, settings });
+  streamInvoicePDF(res, {
+    invoice: invoice.toObject(),
+    customer: invoice.customer,
+    settings,
+    download: req.query.download === '1',
+  });
 });
 
 // ---------------------------------------------------------------------------

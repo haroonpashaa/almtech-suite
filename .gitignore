@@ -6,6 +6,8 @@ node_modules/
 dist/
 backups/
 backend/data/
+# Rebuild backups of the local embedded database — never tracked.
+backend/data.*/
 .tools/
 /tmp/
 .vercel

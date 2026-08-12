@@ -4,9 +4,14 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
 import { money, date, datetime, errorMessage } from '../lib/format.js';
+import { useCurrency } from '../hooks/useSettings.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import PageHeader from '../components/PageHeader.jsx';
+import DocumentActions from '../components/DocumentActions.jsx';
+import Table from '../components/Table.jsx';
+import Money from '../components/Money.jsx';
 import { Badge, LoadingBlock, Spinner } from '../components/ui.jsx';
+import ConfirmDialog from '../components/ConfirmDialog.jsx';
 
 const statusTone = { paid: 'success', partial: 'warning', open: 'info', returned: 'danger', cancelled: 'neutral' };
 
@@ -19,7 +24,8 @@ export default function InvoiceDetail() {
   const [account, setAccount] = useState('');
   const [reference, setReference] = useState('');
   const [paying, setPaying] = useState(false);
-  const [reversing, setReversing] = useState(null);
+  const [reverseTarget, setReverseTarget] = useState(null);
+  const [confirmReturn, setConfirmReturn] = useState(false);
   const { data: invoice } = useQuery({
     queryKey: ['invoice', id],
     queryFn: async () => (await api.get(`/invoices/${id}`)).data,
@@ -28,11 +34,7 @@ export default function InvoiceDetail() {
     queryKey: ['accounts'],
     queryFn: async () => (await api.get('/accounts')).data,
   });
-  const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: async () => (await api.get('/settings')).data,
-  });
-  const currency = settings?.currency || 'PKR';
+  const currency = useCurrency();
 
   async function pay() {
     setPaying(true);
@@ -51,13 +53,10 @@ export default function InvoiceDetail() {
     }
   }
 
-  // Posts a reversing entry through the admin-only endpoint. The original payment stays
-  // on the invoice, marked reversed.
-  async function reversePayment(index) {
-    const reason = prompt('Why is this payment being reversed? (required)');
-    if (reason === null) return;
-    if (!reason.trim()) return toast.error('A reason is required to reverse a payment');
-    setReversing(index);
+  // Posts a reversing entry through the admin-only endpoint. The dialog collects the
+  // mandatory reason and spells out the consequences before anything is sent.
+  async function reversePayment(reason) {
+    const index = reverseTarget.index;
     try {
       await api.post(`/invoices/${id}/payments/${index}/reverse`, { reason });
       toast.success('Payment reversed');
@@ -67,19 +66,21 @@ export default function InvoiceDetail() {
       );
     } catch (e) {
       toast.error(errorMessage(e));
-    } finally {
-      setReversing(null);
+      throw e;
     }
   }
 
   async function doReturn() {
-    if (!confirm('Process return for this entire invoice? Stock will be restored.')) return;
     try {
       await api.post(`/invoices/${id}/return`);
-      toast.success('Invoice returned');
+      toast.success('Invoice returned and payments refunded');
       qc.invalidateQueries({ queryKey: ['invoice', id] });
+      ['accounts-summary', 'dashboard', 'receivables', 'finance-position', 'payment-history', 'deal'].forEach((k) =>
+        qc.invalidateQueries({ queryKey: [k] })
+      );
     } catch (e) {
       toast.error(errorMessage(e));
+      throw e;
     }
   }
 
@@ -87,98 +88,80 @@ export default function InvoiceDetail() {
 
   return (
     <div>
+      {/* One actions prop. This element previously declared `actions` twice, so the
+          second silently replaced the first and Deal history never rendered. */}
       <PageHeader
         breadcrumb={[{ label: 'Invoices', to: '/invoices' }, { label: invoice.number }]}
         title={<span className="font-mono">{invoice.number}</span>}
         subtitle={`${invoice.customer?.name} · ${date(invoice.issuedAt)}`}
-        actions={has('admin') && <Link to={`/deals/sales/${id}`} className="btn-secondary">Deal history</Link>}
         actions={
           <>
             <Badge tone={statusTone[invoice.status]} dot className="mr-1">{invoice.status}</Badge>
-            <a className="btn-secondary" href={`/api/invoices/${id}/pdf`} target="_blank" rel="noreferrer">
-              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /></svg>
-              View PDF
-            </a>
+            <DocumentActions path={`/invoices/${id}/pdf`} filename={invoice.number} label="Invoice PDF" />
+            {has('admin') && <Link to={`/deals/sales/${id}`} className="btn-secondary">Deal history</Link>}
             {has('admin') && invoice.status !== 'returned' && invoice.status !== 'cancelled' && (
-              <button className="btn-danger-soft" onClick={doReturn}>Process Return</button>
+              <button className="btn-danger-soft" onClick={() => setConfirmReturn(true)}>Process Return</button>
             )}
           </>
         }
       />
-      <div className="p-6 sm:p-8 grid grid-cols-1 lg:grid-cols-3 gap-6 max-w-[1300px]">
+      <div className="page page-w grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-4">
-          <div className="card overflow-hidden">
-            <div className="px-4 py-3 border-b border-ink-100 bg-ink-25"><h3 className="text-sm font-semibold text-ink-900">Line Items</h3></div>
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="border-b border-ink-100 text-[11px] font-semibold uppercase tracking-wider text-ink-400">
-                  <th className="px-4 py-2.5 text-left">Item</th>
-                  <th className="px-3 py-2.5 text-right">Qty</th>
-                  <th className="px-3 py-2.5 text-right">Price</th>
-                  <th className="px-3 py-2.5 text-right">Discount</th>
-                  <th className="px-4 py-2.5 text-right">Total</th>
-                </tr>
-              </thead>
-              <tbody>
-                {invoice.items.map((it, i) => (
-                  <tr key={i} className="border-b border-ink-100 last:border-0">
-                    <td className="px-4 py-2.5">
+          <section>
+            <h3 className="t-section mb-2">Line items</h3>
+            <Table
+              caption="Line items on this invoice"
+              rows={invoice.items}
+              rowKey={(r, i) => `${r.sku}-${i}`}
+              empty="No line items"
+              columns={[
+                {
+                  key: 'item', label: 'Item', priority: 'primary',
+                  render: (it) => (
+                    <>
                       <div className="font-medium text-ink-900">{it.name}</div>
-                      <div className="text-[11px] text-ink-400 font-mono">{it.sku}</div>
-                    </td>
-                    <td className="px-3 py-2.5 text-right num text-ink-700">{it.quantity}</td>
-                    <td className="px-3 py-2.5 text-right num text-ink-700">{money(it.unitPrice, currency)}</td>
-                    <td className="px-3 py-2.5 text-right num text-ink-500">{money(it.discount, currency)}</td>
-                    <td className="px-4 py-2.5 text-right num font-medium text-ink-900">{money(it.lineTotal, currency)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                      <div className="t-meta font-mono">{it.sku}</div>
+                    </>
+                  ),
+                },
+                { key: 'quantity', label: 'Qty', align: 'right', render: (it) => <span className="num">{it.quantity}</span> },
+                { key: 'unitPrice', label: `Price (${currency})`, align: 'right', render: (it) => <Money value={it.unitPrice} /> },
+                { key: 'discount', label: `Discount (${currency})`, align: 'right', render: (it) => <Money value={it.discount} tone="muted" /> },
+                { key: 'lineTotal', label: `Total (${currency})`, align: 'right', render: (it) => <Money value={it.lineTotal} className="font-medium text-ink-900" /> },
+              ]}
+            />
+          </section>
 
-          <div className="card p-5">
-            <h3 className="text-sm font-semibold text-ink-900 mb-3">Payments</h3>
-            {invoice.payments.length === 0 ? (
-              <div className="text-sm text-ink-400">No payments recorded yet.</div>
-            ) : (
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">
-                    <th className="text-left py-1.5">Date</th>
-                    <th className="text-left py-1.5">Account</th>
-                    <th className="text-left py-1.5">Method</th>
-                    <th className="text-left py-1.5">Reference</th>
-                    <th className="text-right py-1.5">Amount</th>
-                    <th className="w-8"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {invoice.payments.map((p, i) => (
-                    <tr key={i} className={`border-t border-ink-100 ${p.reversed ? 'bg-red-50/40' : ''}`}>
-                      <td className="py-2 text-ink-500">{datetime(p.date)}</td>
-                      <td className="py-2 text-ink-700">{accounts?.find((a) => a._id === p.account)?.name || <span className="text-ink-300">—</span>}</td>
-                      <td className="py-2 capitalize text-ink-700">{p.method}</td>
-                      <td className="py-2 text-ink-500 font-mono text-[12px]">{p.reference || '—'}</td>
-                      <td className={`py-2 text-right num font-medium ${p.reversed ? 'text-ink-300 line-through' : 'text-emerald-600'}`}>{money(p.amount, currency)}</td>
-                      <td className="py-2 text-right">
-                        {p.reversed ? (
-                          <span className="badge badge-danger" title={`Reversed${p.reversalReason ? `: ${p.reversalReason}` : ''}`}>reversed</span>
-                        ) : has('admin') ? (
-                          <button
-                            className="btn-sm bg-white border border-ink-200 text-ink-600 hover:bg-red-50 hover:text-red-600 hover:border-red-200"
-                            onClick={() => reversePayment(i)}
-                            disabled={reversing === i}
-                          >
-                            {reversing === i ? '…' : 'Reverse'}
-                          </button>
-                        ) : null}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+          <section>
+            <h3 className="t-section mb-2">Payments</h3>
+            <Table
+              caption="Payments recorded against this invoice"
+              rows={invoice.payments}
+              rowKey={(r, i) => i}
+              empty="No payments recorded yet"
+              emptyDescription={`The full ${money(invoice.balance, currency)} is outstanding.`}
+              columns={[
+                { key: 'date', label: 'Date', priority: 'primary', render: (p) => <span className="text-ink-500 whitespace-nowrap">{datetime(p.date)}</span> },
+                { key: 'account', label: 'Account', render: (p) => accounts?.find((a) => a._id === p.account)?.name || <span className="text-ink-300">—</span> },
+                { key: 'method', label: 'Method', render: (p) => <span className="capitalize">{p.method}</span> },
+                { key: 'reference', label: 'Reference', render: (p) => p.reference ? <span className="font-mono text-[12px] text-ink-500">{p.reference}</span> : <span className="text-ink-300">—</span> },
+                {
+                  key: 'amount', label: `Amount (${currency})`, align: 'right', priority: 'primary',
+                  render: (p) => p.reversed
+                    ? <Money value={p.amount} tone="muted" className="line-through" />
+                    : <Money value={p.amount} tone="positive" className="font-medium" />,
+                },
+                {
+                  key: 'action', label: '', align: 'right',
+                  render: (p) => p.reversed
+                    ? <span className="badge-danger" title={p.reversalReason ? `Reversed: ${p.reversalReason}` : 'Reversed'}>reversed</span>
+                    : has('admin')
+                      ? <button className="btn-sm btn-danger-soft" onClick={() => setReverseTarget({ index: invoice.payments.indexOf(p), payment: p })}>Reverse</button>
+                      : null,
+                },
+              ]}
+            />
+          </section>
         </div>
 
         <div className="space-y-4">
@@ -202,8 +185,8 @@ export default function InvoiceDetail() {
           {has('admin', 'sales') && invoice.balance > 0 && (
             <div className="card p-5">
               <h3 className="text-sm font-semibold text-ink-900 mb-3">Record Payment</h3>
-              <label className="label">Amount</label>
-              <input className="input num" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={money(invoice.balance, currency)} />
+              <label htmlFor="invoicedetail-amount-24" className="label">Amount</label>
+              <input id="invoicedetail-amount-24" className="input num" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={money(invoice.balance, currency)} />
               <label className="label mt-3">Deposit To <span className="text-red-500">*</span></label>
               <select className="select" value={account} onChange={(e) => setAccount(e.target.value)}>
                 <option value="">— select account —</option>
@@ -218,13 +201,48 @@ export default function InvoiceDetail() {
               </select>
               <label className="label mt-3">Reference</label>
               <input className="input" value={reference} onChange={(e) => setReference(e.target.value)} placeholder="Optional" />
-              <button className="btn-primary-gradient w-full mt-4" onClick={pay} disabled={!amount || !account || paying}>
+              <button className="btn-primary w-full mt-4" onClick={pay} disabled={!amount || !account || paying}>
                 {paying ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Save Payment'}
               </button>
             </div>
           )}
         </div>
       </div>
+      <ConfirmDialog
+        open={!!reverseTarget}
+        onClose={() => setReverseTarget(null)}
+        onConfirm={reversePayment}
+        title="Reverse this payment?"
+        description="The original payment stays on record. A matching reversing entry is posted so the money returns to the account it came from."
+        consequences={reverseTarget ? [
+          `${money(reverseTarget.payment.amount, currency)} leaves ${accounts?.find((a) => a._id === reverseTarget.payment.account)?.name || 'the payment account'}`,
+          `Invoice ${invoice.number} paid amount decreases by ${money(reverseTarget.payment.amount, currency)}`,
+          `${invoice.customer?.name || 'The customer'} will owe that amount again`,
+          'The payment is marked REVERSED and cannot be reversed twice',
+        ] : []}
+        confirmLabel="Reverse payment"
+        reasonRequired
+        reasonLabel="Why is this being reversed?"
+        reasonPlaceholder="e.g. Recorded against the wrong invoice"
+      />
+
+      <ConfirmDialog
+        open={confirmReturn}
+        onClose={() => setConfirmReturn(false)}
+        onConfirm={doReturn}
+        title="Return this invoice?"
+        description="Returning voids the sale. Stock goes back to inventory and any money already received is refunded."
+        consequences={[
+          'Every item on this invoice is returned to stock',
+          invoice.paid > 0
+            ? `${money(invoice.paid, currency)} is refunded out of the accounts it was paid into`
+            : 'No payments have been received, so nothing is refunded',
+          `${invoice.customer?.name || 'The customer'} will no longer owe the outstanding balance`,
+          'This cannot be undone',
+        ]}
+        confirmLabel="Return invoice"
+      />
+
     </div>
   );
 }

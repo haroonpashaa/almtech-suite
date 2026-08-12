@@ -1,14 +1,21 @@
-import { useState } from 'react';
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
+import { Suspense, lazy, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client.js';
 import { money, datetime } from '../lib/format.js';
+import { useCurrency } from '../hooks/useSettings.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
+import Money from '../components/Money.jsx';
 import { AgingBuckets, AgingNote, OverdueBadge } from '../components/Aging.jsx';
 import { Link } from 'react-router-dom';
 import StatCard from '../components/StatCard.jsx';
+
+/* Recharts is 422 kB, and six of the seven report tabs are tables. Loading it with
+   the route made every tab wait on a bundle only one of them needs; it now arrives
+   when the Monthly Trends tab is actually opened. */
+const MonthlyTrendChart = lazy(() =>
+  import('../components/charts/ChartBodies.jsx').then((m) => ({ default: m.MonthlyTrendChart })));
 
 const PAYMENT_TYPES = {
   customer_payment: 'Customer payment',
@@ -36,11 +43,7 @@ export default function Reports() {
   const [payAccount, setPayAccount] = useState('');
   const [payType, setPayType] = useState('');
 
-  const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: async () => (await api.get('/settings')).data,
-  });
-  const currency = settings?.currency || 'PKR';
+  const currency = useCurrency();
 
   const params = { from, to };
 
@@ -94,7 +97,7 @@ export default function Reports() {
     { key: 'products', label: 'By Product' },
     { key: 'customers', label: 'By Customer' },
     { key: 'receivables', label: 'Receivables', admin: true },
-    { key: 'payables', label: 'Payables', admin: true },
+    { key: 'payables', label: `Payables (${currency})`, admin: true },
     { key: 'payments', label: 'Payment History', admin: true },
     { key: 'monthly', label: 'Monthly Trends', admin: true },
   ].filter((t) => !t.admin || has('admin'));
@@ -108,21 +111,40 @@ export default function Reports() {
         subtitle="Financial analytics and outstanding balances"
         icon={<svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21h18M6 17v-7m5 7v-11m5 11v-5m5 5v-9" /></svg>}
       />
-      <div className="p-6 sm:p-8 space-y-5 max-w-[1300px]">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="segment">
+      <div className="page page-w space-y-5">
+        {/* At 320px four of the seven tabs sat outside the viewport in a container
+            that did NOT scroll, so they were unreachable rather than merely cut off,
+            and one of the two date fields was unreachable with them. The strip now
+            scrolls inside its own bounds and the date range wraps onto its own row
+            with real labels instead of floating right. */}
+        <div className="space-y-3">
+          <div
+            className="segment scroll-x max-w-full"
+            role="tablist"
+            aria-label="Report"
+          >
             {tabs.map((t) => (
-              <button key={t.key} onClick={() => setTab(t.key)} className={`segment-item ${tab === t.key ? 'segment-item-active' : ''}`}>
+              <button
+                key={t.key}
+                role="tab"
+                aria-selected={tab === t.key}
+                onClick={() => setTab(t.key)}
+                className={`segment-item whitespace-nowrap ${tab === t.key ? 'segment-item-active' : ''}`}
+              >
                 {t.label}
               </button>
             ))}
           </div>
           {showRange && (
-            <div className="ml-auto flex items-center gap-2">
-              <span className="text-xs text-ink-400">From</span>
-              <input className="input input-sm w-auto" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-              <span className="text-xs text-ink-400">To</span>
-              <input className="input input-sm w-auto" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+            <div className="flex flex-wrap items-end gap-3">
+              <div>
+                <label htmlFor="reports-from" className="label">From</label>
+                <input id="reports-from" className="input w-auto" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+              </div>
+              <div>
+                <label htmlFor="reports-to" className="label">To</label>
+                <input id="reports-to" className="input w-auto" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+              </div>
             </div>
           )}
         </div>
@@ -167,7 +189,7 @@ export default function Reports() {
               { key: 'name', label: 'Product', render: (r) => <span className="font-medium text-ink-900">{r.name}</span> },
               { key: 'sku', label: 'SKU', render: (r) => <span className="font-mono text-[12px] text-ink-400">{r.sku}</span> },
               { key: 'quantity', label: 'Qty', className: 'text-right num' },
-              { key: 'revenue', label: 'Revenue', className: 'text-right num font-medium text-ink-900', render: (r) => money(r.revenue, currency) },
+              { key: 'revenue', label: 'Revenue', className: 'text-right num font-medium text-ink-900', render: (r) => <Money value={r.revenue} /> },
             ]}
             rows={byProduct.data || []}
             empty="No sales in this range"
@@ -181,7 +203,7 @@ export default function Reports() {
               { key: 'name', label: 'Customer', render: (r) => <span className="font-medium text-ink-900">{r.name}</span> },
               { key: 'company', label: 'Company', render: (r) => r.company || <span className="text-ink-300">—</span> },
               { key: 'invoices', label: 'Invoices', className: 'text-right num' },
-              { key: 'revenue', label: 'Revenue', className: 'text-right num font-medium text-ink-900', render: (r) => money(r.revenue, currency) },
+              { key: 'revenue', label: 'Revenue', className: 'text-right num font-medium text-ink-900', render: (r) => <Money value={r.revenue} /> },
             ]}
             rows={byCustomer.data || []}
             empty="No sales in this range"
@@ -202,9 +224,9 @@ export default function Reports() {
                 { key: 'company', label: 'Company', render: (r) => r.company || <span className="text-ink-300">\u2014</span> },
                 { key: 'invoiceCount', label: 'Invoices', className: 'text-right num text-ink-500', render: (r) => r.invoiceCount },
                 { key: 'oldestAgeDays', label: 'Overdue', render: (r) => <OverdueBadge days={r.oldestAgeDays} /> },
-                { key: 'total', label: 'Total', className: 'text-right num text-ink-600', render: (r) => money(r.total, currency) },
-                { key: 'paid', label: 'Paid', className: 'text-right num text-emerald-600', render: (r) => money(r.paid, currency) },
-                { key: 'outstanding', label: 'Outstanding', className: 'text-right num font-medium text-amber-600', render: (r) => money(r.outstanding, currency) },
+                { key: 'total', label: `Total (${currency})`, className: 'text-right num text-ink-600', render: (r) => <Money value={r.total} /> },
+                { key: 'paid', label: `Paid (${currency})`, className: 'text-right num text-emerald-600', render: (r) => <Money value={r.paid} /> },
+                { key: 'outstanding', label: `Outstanding (${currency})`, className: 'text-right num font-medium text-amber-600', render: (r) => <Money value={r.outstanding} /> },
               ]}
               rows={receivables.data?.rows || []}
               empty="No receivables"
@@ -232,9 +254,9 @@ export default function Reports() {
                 { key: 'contactPerson', label: 'Contact', render: (r) => r.contactPerson || <span className="text-ink-300">\u2014</span> },
                 { key: 'poCount', label: 'POs', className: 'text-right num text-ink-500', render: (r) => r.poCount },
                 { key: 'oldestAgeDays', label: 'Age', render: (r) => <OverdueBadge days={r.oldestAgeDays} /> },
-                { key: 'total', label: 'Total', className: 'text-right num text-ink-600', render: (r) => money(r.total, currency) },
-                { key: 'paid', label: 'Paid', className: 'text-right num text-emerald-600', render: (r) => money(r.paid, currency) },
-                { key: 'outstanding', label: 'Outstanding', className: 'text-right num font-medium text-amber-600', render: (r) => money(r.outstanding, currency) },
+                { key: 'total', label: `Total (${currency})`, className: 'text-right num text-ink-600', render: (r) => <Money value={r.total} /> },
+                { key: 'paid', label: `Paid (${currency})`, className: 'text-right num text-emerald-600', render: (r) => <Money value={r.paid} /> },
+                { key: 'outstanding', label: `Outstanding (${currency})`, className: 'text-right num font-medium text-amber-600', render: (r) => <Money value={r.outstanding} /> },
               ]}
               rows={payables.data?.rows || []}
               empty="No payables"
@@ -252,15 +274,15 @@ export default function Reports() {
           <>
             <div className="flex flex-wrap items-end gap-3">
               <div>
-                <label className="label">Account</label>
-                <select className="select" value={payAccount} onChange={(e) => setPayAccount(e.target.value)}>
+                <label htmlFor="reports-account-62" className="label">Account</label>
+                <select id="reports-account-62" className="select" value={payAccount} onChange={(e) => setPayAccount(e.target.value)}>
                   <option value="">All accounts</option>
                   {(accountsQ.data || []).map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
                 </select>
               </div>
               <div>
-                <label className="label">Type</label>
-                <select className="select" value={payType} onChange={(e) => setPayType(e.target.value)}>
+                <label htmlFor="reports-type-63" className="label">Type</label>
+                <select id="reports-type-63" className="select" value={payType} onChange={(e) => setPayType(e.target.value)}>
                   <option value="">All types</option>
                   {Object.entries(PAYMENT_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                 </select>
@@ -282,7 +304,7 @@ export default function Reports() {
                 { key: 'user', label: 'By', render: (r) => <span className="text-ink-500">{r.user || '—'}</span> },
                 {
                   key: 'amount',
-                  label: 'Amount',
+                  label: `Amount (${currency})`,
                   className: 'text-right num font-medium',
                   render: (r) => (
                     <span className={r.direction === 'in' ? 'text-emerald-600' : 'text-red-600'}>
@@ -300,18 +322,9 @@ export default function Reports() {
           <div className="card p-5">
             <h3 className="text-sm font-semibold text-ink-900 mb-4">Monthly Revenue, Cost & Profit</h3>
             <div style={{ width: '100%', height: 340 }}>
-              <ResponsiveContainer>
-                <LineChart data={monthly.data || []} margin={{ top: 6, right: 8, left: -8, bottom: 0 }}>
-                  <CartesianGrid stroke="#eef2f7" strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-                  <Tooltip formatter={(v) => money(v, currency)} contentStyle={{ borderRadius: 12, border: '1px solid #e2e8f0', fontSize: 12, boxShadow: '0 4px 14px -2px rgba(16,24,40,0.10)' }} />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Line type="monotone" dataKey="revenue" stroke="#0950b9" strokeWidth={2.5} name="Revenue" dot={false} />
-                  <Line type="monotone" dataKey="cost" stroke="#94a3b8" strokeWidth={2} strokeDasharray="4 4" name="Cost" dot={false} />
-                  <Line type="monotone" dataKey="grossProfit" stroke="#0086cd" strokeWidth={2.5} name="Gross Profit" dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
+              <Suspense fallback={<div className="skeleton rounded-md w-full h-full" aria-hidden />}>
+                <MonthlyTrendChart points={monthly.data || []} currency={currency} />
+              </Suspense>
             </div>
           </div>
         )}

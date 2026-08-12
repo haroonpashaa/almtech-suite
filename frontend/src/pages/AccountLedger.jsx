@@ -1,10 +1,13 @@
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { api } from '../api/client.js';
 import { money, datetime } from '../lib/format.js';
+import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
+import DocumentActions from '../components/DocumentActions.jsx';
 import Table from '../components/Table.jsx';
+import Money from '../components/Money.jsx';
 import { Badge, LoadingBlock } from '../components/ui.jsx';
 
 const TYPE_LABELS = {
@@ -27,15 +30,25 @@ export default function AccountLedger() {
   const [to, setTo] = useState('');
   const [type, setType] = useState('');
 
+  // `page: 0` means "the newest page" — resolved below once the total is known.
+  // A ledger that silently showed the OLDEST 500 rows while presenting them
+  // newest-first was the defect this page is paged to fix.
+  const [page, setPage] = useState(0);
   const { data, isLoading } = useQuery({
-    queryKey: ['account-ledger', id, from, to, type],
-    queryFn: async () => (await api.get(`/accounts/${id}/ledger`, { params: { from: from || undefined, to: to || undefined, type: type || undefined } })).data,
+    placeholderData: keepPreviousData,
+    queryKey: ['account-ledger', id, from, to, type, page],
+    queryFn: async () => {
+      const params = { from: from || undefined, to: to || undefined, type: type || undefined, limit: 200 };
+      const first = (await api.get(`/accounts/${id}/ledger`, { params: { ...params, page: 1 } })).data;
+      // Land on the most recent activity by default rather than the start of history.
+      if (page === 0 && first.totalPages > 1) {
+        return (await api.get(`/accounts/${id}/ledger`, { params: { ...params, page: first.totalPages } })).data;
+      }
+      if (page === 0 || page === 1) return first;
+      return (await api.get(`/accounts/${id}/ledger`, { params: { ...params, page } })).data;
+    },
   });
-  const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: async () => (await api.get('/settings')).data,
-  });
-  const currency = settings?.currency || 'PKR';
+  const currency = useCurrency();
 
   if (isLoading && !data) return <LoadingBlock />;
   if (!data) return <LoadingBlock />;
@@ -46,25 +59,30 @@ export default function AccountLedger() {
         breadcrumb={[{ label: 'Accounts', to: '/accounts' }, { label: data.account.name }]}
         title={data.account.name}
         subtitle={`${data.account.type} account · ledger`}
-        actions={<Badge tone={data.reconciled ? 'success' : 'danger'} dot>{data.reconciled ? 'reconciled' : 'balance drift'}</Badge>}
+        actions={
+          <>
+            <Badge tone={data.reconciled ? 'success' : 'danger'} dot>{data.reconciled ? 'reconciled' : 'balance drift'}</Badge>
+            <DocumentActions path={`/accounts/${id}/statement/pdf`} filename={`statement-${data.account?.name || 'account'}`} label="Statement" />
+          </>
+        }
       />
-      <div className="p-6 sm:p-8 space-y-4 max-w-[1300px]">
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="page page-w space-y-4">
+        <div className="grid grid-cols-1 min-[420px]:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="card p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Opening Balance</div>
-            <div className="mt-2 text-xl font-semibold num text-ink-900">{money(data.openingBalance, currency)}</div>
+            <div className="mt-2 fig-md font-semibold num break-words text-ink-900">{money(data.openingBalance, currency)}</div>
           </div>
           <div className="card p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Money In</div>
-            <div className="mt-2 text-xl font-semibold num text-emerald-600">+ {money(data.totalIn, currency)}</div>
+            <div className="mt-2 fig-md font-semibold num break-words text-emerald-600">+ {money(data.totalIn, currency)}</div>
           </div>
           <div className="card p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Money Out</div>
-            <div className="mt-2 text-xl font-semibold num text-red-600">− {money(data.totalOut, currency)}</div>
+            <div className="mt-2 fig-md font-semibold num break-words text-red-600">− {money(data.totalOut, currency)}</div>
           </div>
           <div className="card p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Current Balance</div>
-            <div className={`mt-2 text-xl font-semibold num ${data.currentBalance < 0 ? 'text-red-600' : 'text-ink-900'}`}>
+            <div className={`mt-2 fig-md font-semibold num break-words ${data.currentBalance < 0 ? 'text-red-600' : 'text-ink-900'}`}>
               {money(data.currentBalance, currency)}
             </div>
             {!data.reconciled && (
@@ -75,16 +93,16 @@ export default function AccountLedger() {
 
         <div className="flex flex-wrap items-end gap-3">
           <div>
-            <label className="label">From</label>
-            <input className="input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+            <label htmlFor="accountledger-from-1" className="label">From</label>
+            <input id="accountledger-from-1" className="input" type="date" value={from} onChange={(e) => { setFrom(e.target.value); setPage(0); }} />
           </div>
           <div>
-            <label className="label">To</label>
-            <input className="input" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+            <label htmlFor="accountledger-to-2" className="label">To</label>
+            <input id="accountledger-to-2" className="input" type="date" value={to} onChange={(e) => { setTo(e.target.value); setPage(0); }} />
           </div>
           <div>
-            <label className="label">Type</label>
-            <select className="select" value={type} onChange={(e) => setType(e.target.value)}>
+            <label htmlFor="accountledger-type-3" className="label">Type</label>
+            <select id="accountledger-type-3" className="select" value={type} onChange={(e) => { setType(e.target.value); setPage(0); }}>
               <option value="">All types</option>
               {Object.entries(TYPE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
@@ -122,7 +140,7 @@ export default function AccountLedger() {
             { key: 'user', label: 'By', render: (e) => <span className="text-ink-500">{e.user || '—'}</span> },
             {
               key: 'amount',
-              label: 'Amount',
+              label: `Amount (${currency})`,
               className: 'text-right num font-medium',
               render: (e) => (
                 <span className={e.direction === 'in' ? 'text-emerald-600' : 'text-red-600'}>
@@ -130,9 +148,13 @@ export default function AccountLedger() {
                 </span>
               ),
             },
-            { key: 'balance', label: 'Balance', className: 'text-right num text-ink-700', render: (e) => money(e.balance, currency) },
+            { key: 'balance', label: `Balance (${currency})`, className: 'text-right num text-ink-700', render: (e) => <Money value={e.balance} /> },
           ]}
           rows={data.entries || []}
+          page={data.page}
+          limit={data.limit}
+          total={data.totalEntries}
+          onPageChange={setPage}
         />
       </div>
     </div>

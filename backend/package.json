@@ -1,6 +1,9 @@
 {
   "name": "almtech-business-suite-backend",
   "version": "0.1.0",
+  "engines": {
+    "node": ">=20"
+  },
   "description": "ALMTech Full Business Suite - MERN backend (Express + MongoDB)",
   "main": "src/server.js",
   "type": "module",
