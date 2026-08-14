@@ -10,6 +10,20 @@ export default function Modal({ open, onClose, title, subtitle, children, footer
   const panelRef = useRef(null);
   const restoreRef = useRef(null);
 
+  // Held in refs, and deliberately NOT in the effect's dependencies.
+  //
+  // Every caller passes an inline arrow — onClose={() => setShowAdd(false)} — which is
+  // a new function on every render. With onClose in the dependency array, typing a
+  // single character re-rendered the page, gave the effect a new identity, and tore it
+  // down and set it up again: focus was pulled out of the field the user was typing in
+  // and moved to the first control in the dialog, the close button. The second
+  // keystroke then went nowhere. Focus setup belongs to opening the dialog, not to
+  // every render while it is open.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const initialFocusHolder = useRef(initialFocusRef);
+  initialFocusHolder.current = initialFocusRef;
+
   useEffect(() => {
     if (!open) return;
 
@@ -27,13 +41,13 @@ export default function Modal({ open, onClose, title, subtitle, children, footer
 
     // Move focus in — the caller's preferred target, else the first control.
     const t = setTimeout(() => {
-      (initialFocusRef?.current || focusables()[0] || panelRef.current)?.focus?.();
+      (initialFocusHolder.current?.current || focusables()[0] || panelRef.current)?.focus?.();
     }, 0);
 
     function onKey(e) {
       if (e.key === 'Escape') {
         e.stopPropagation();
-        onClose?.();
+        onCloseRef.current?.();
         return;
       }
       if (e.key !== 'Tab') return;
@@ -57,7 +71,7 @@ export default function Modal({ open, onClose, title, subtitle, children, footer
       document.body.style.overflow = prevOverflow;
       restoreRef.current?.focus?.();
     };
-  }, [open, onClose, initialFocusRef]);
+  }, [open]);
 
   if (!open) return null;
 
