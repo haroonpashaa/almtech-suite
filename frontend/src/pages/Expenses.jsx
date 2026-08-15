@@ -5,6 +5,7 @@ import { api } from '../api/client.js';
 import { money, date as fmtDate, errorMessage } from '../lib/format.js';
 import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
+import { useAuth } from '../context/AuthContext.jsx';
 import Table from '../components/Table.jsx';
 import Money from '../components/Money.jsx';
 import Modal from '../components/Modal.jsx';
@@ -23,6 +24,7 @@ const emptyForm = () => ({
 });
 
 export default function Expenses() {
+  const { has } = useAuth();
   const qc = useQueryClient();
   const [showAdd, setShowAdd] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -283,13 +285,21 @@ export default function Expenses() {
               <div className="rounded-lg bg-ink-25 border border-ink-100 p-3">
                 <p className="text-xs text-ink-500">
                   Amount, account and date cannot be edited once posted — the money has already left the account.
-                  Void this expense and record a corrected one instead.
+                  {has('admin')
+                    ? ' Void this expense and record a corrected one instead.'
+                    : ' Ask an administrator to void it if it was recorded in error.'}
                 </p>
-                <label className="label mt-3">Void reason</label>
-                <input className="input" value={voidReason} onChange={(e) => setVoidReason(e.target.value)} placeholder="Optional" />
-                <button className="btn-secondary w-full mt-3 text-red-600 border-red-200 hover:bg-red-50" onClick={() => setConfirmVoid(true)} disabled={voiding}>
-                  {voiding ? <><Spinner className="w-4 h-4" /> Voiding…</> : 'Void & reverse this expense'}
-                </button>
+                {/* Voiding is not an edit: it posts a reversing entry that moves money
+                    back into the account. That stays an administrator's decision. */}
+                {has('admin') && (
+                  <>
+                    <label className="label mt-3">Void reason</label>
+                    <input className="input" value={voidReason} onChange={(e) => setVoidReason(e.target.value)} placeholder="Optional" />
+                    <button className="btn-secondary w-full mt-3 text-red-600 border-red-200 hover:bg-red-50" onClick={() => setConfirmVoid(true)} disabled={voiding}>
+                      {voiding ? <><Spinner className="w-4 h-4" /> Voiding…</> : 'Void & reverse this expense'}
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>

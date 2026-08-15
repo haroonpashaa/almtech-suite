@@ -28,6 +28,31 @@ function rethrowDuplicateBarcode(err, res, barcode) {
   throw err;
 }
 
+// ---------------------------------------------------------------------------
+// Cost price is administrator information: it is what the business pays, and from it
+// anyone can derive the margin on every sale. Sales maintains the catalogue but must
+// not see or set it, so it is stripped on the way out and ignored on the way in.
+// Stripping happens here rather than in the interface, so hiding a column cannot be
+// undone by calling the API directly.
+const COST_FIELDS = ['purchasePrice'];
+const seesCost = (req) => req.user?.role === 'admin' || req.user?.role === 'stock';
+
+function withoutCost(req, doc) {
+  if (!doc || seesCost(req)) return doc;
+  const plain = typeof doc.toObject === 'function' ? doc.toObject() : { ...doc };
+  for (const f of COST_FIELDS) delete plain[f];
+  return plain;
+}
+
+/** Drop any cost field a caller is not allowed to set, so an omitted field keeps its
+ *  stored value rather than being zeroed by someone who cannot see it. */
+function stripCostInput(req, payload) {
+  if (seesCost(req)) return payload;
+  const clean = { ...payload };
+  for (const f of COST_FIELDS) delete clean[f];
+  return clean;
+}
+
 export const listProducts = asyncHandler(async (req, res) => {
   const { q, category, lowStock, page = 1, limit = 50 } = req.query;
   const filter = {};
@@ -45,7 +70,7 @@ export const listProducts = asyncHandler(async (req, res) => {
   query = query.skip((page - 1) * limit).limit(Number(limit));
   let items = await query;
   if (lowStock === 'true') items = items.filter((p) => p.stock <= p.lowStockThreshold);
-  res.json({ items, total, page: Number(page), limit: Number(limit) });
+  res.json({ items: items.map((p) => withoutCost(req, p)), total, page: Number(page), limit: Number(limit) });
 });
 
 export const getProduct = asyncHandler(async (req, res) => {
@@ -54,11 +79,11 @@ export const getProduct = asyncHandler(async (req, res) => {
     res.status(404);
     throw new Error('Product not found');
   }
-  res.json(product);
+  res.json(withoutCost(req, product));
 });
 
 export const createProduct = asyncHandler(async (req, res) => {
-  const payload = { ...req.body };
+  const payload = stripCostInput(req, { ...req.body });
   const barcode = cleanBarcode(payload.barcode);
   if (barcode) {
     await assertBarcodeFree(res, barcode);
@@ -74,12 +99,12 @@ export const createProduct = asyncHandler(async (req, res) => {
     rethrowDuplicateBarcode(e, res, barcode);
   }
   await logActivity(req, 'product_created', { entity: 'Product', entityId: product._id, meta: { sku: product.sku } });
-  res.status(201).json(product);
+  res.status(201).json(withoutCost(req, product));
 });
 
 export const updateProduct = asyncHandler(async (req, res) => {
   const { barcode: rawBarcode, ...rest } = req.body;
-  const update = { $set: rest };
+  const update = { $set: stripCostInput(req, rest) };
   let barcode = '';
 
   // Only touch the barcode when the client actually sent the key, so partial updates
@@ -105,7 +130,7 @@ export const updateProduct = asyncHandler(async (req, res) => {
     throw new Error('Product not found');
   }
   await logActivity(req, 'product_updated', { entity: 'Product', entityId: product._id });
-  res.json(product);
+  res.json(withoutCost(req, product));
 });
 
 // POS barcode lookup. Read-only: this never touches stock — inventory continues to
@@ -121,7 +146,7 @@ export const lookupByBarcode = asyncHandler(async (req, res) => {
     res.status(404);
     throw new Error(`Product not found for barcode: ${code}`);
   }
-  res.json(product);
+  res.json(withoutCost(req, product));
 });
 
 export const deleteProduct = asyncHandler(async (req, res) => {
@@ -153,7 +178,7 @@ export const adjustStock = asyncHandler(async (req, res) => {
     createdBy: req.user._id,
   });
   await logActivity(req, 'stock_adjusted', { entity: 'Product', entityId: product._id, meta: { quantity, note } });
-  res.json(product);
+  res.json(withoutCost(req, product));
 });
 
 export const stockLedger = asyncHandler(async (req, res) => {

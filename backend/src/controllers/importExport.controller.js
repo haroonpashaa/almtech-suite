@@ -78,15 +78,36 @@ const publicRows = (prepared) =>
 // ---------------------------------------------------------------------------
 // Metadata
 // ---------------------------------------------------------------------------
-export const listTypes = asyncHandler(async (_req, res) => {
+// Sales loads the product catalogue and nothing else, so the screen is told about
+// products alone rather than being shown datasets every attempt at which would 403.
+const SALES_TYPES = new Set(['products']);
+const visibleTo = (role) => (key) => role === 'admin' || (role === 'sales' && SALES_TYPES.has(key));
+
+// A sales user may load the catalogue but not price the business's purchases, so any
+// cost column in their sheet is discarded before the rows are prepared. The importer
+// then treats it as "not supplied" and leaves the stored cost untouched.
+// readSheet maps every header spelling onto the importer's field name before rows
+// reach us, so the field to remove is the mapped one, not the sheet's heading.
+const COST_ALIASES = ['purchasePrice'];
+function dropCostColumns(req, rows) {
+  if (req.user?.role === 'admin' || req.user?.role === 'stock') return rows;
+  return rows.map((row) => {
+    const clean = { ...row };
+    for (const a of COST_ALIASES) delete clean[a];
+    return clean;
+  });
+}
+
+export const listTypes = asyncHandler(async (req, res) => {
+  const allowed = visibleTo(req.user?.role);
   res.json({
-    imports: Object.entries(IMPORTERS).map(([key, d]) => ({
+    imports: Object.entries(IMPORTERS).filter(([key]) => allowed(key)).map(([key, d]) => ({
       key, label: d.label,
       requiredColumns: d.required.map((f) => d.aliases[f][0]),
       allColumns: Object.values(d.aliases).map((a) => a[0]),
       instructions: d.instructions,
     })),
-    exports: Object.entries(EXPORTERS).map(([key, d]) => ({ key, label: d.label })),
+    exports: Object.entries(EXPORTERS).filter(([key]) => allowed(key)).map(([key, d]) => ({ key, label: d.label })),
   });
 });
 
@@ -99,7 +120,7 @@ export const validateImport = asyncHandler(async (req, res) => {
   let prepared;
   try {
     const rows = await readSheet(file.buffer, { requiredHeaders: def.required, aliases: def.aliases });
-    prepared = await def.prepare(rows, { user: req.user });
+    prepared = await def.prepare(dropCostColumns(req, rows), { user: req.user });
   } catch (e) {
     if (e instanceof ExcelError) {
       res.status(400);
@@ -129,7 +150,7 @@ export const commitImport = asyncHandler(async (req, res) => {
   let prepared;
   try {
     const rows = await readSheet(file.buffer, { requiredHeaders: def.required, aliases: def.aliases });
-    prepared = await def.prepare(rows, { user: req.user });
+    prepared = await def.prepare(dropCostColumns(req, rows), { user: req.user });
   } catch (e) {
     if (e instanceof ExcelError) {
       res.status(400);

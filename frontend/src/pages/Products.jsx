@@ -62,7 +62,7 @@ export default function Products() {
         title="Inventory"
         subtitle="Products, stock levels, and pricing"
         icon={<svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7l9-4 9 4-9 4-9-4zm0 0v10l9 4 9-4V7M12 11v10" /></svg>}
-        actions={has('admin', 'stock') && (
+        actions={has('admin', 'stock', 'sales') && (
           <Link to="/products/new" className="btn-primary">
             <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
             New Product
@@ -89,7 +89,7 @@ export default function Products() {
           empty="No products match your filters"
           columns={[
             { key: 'name', label: 'Name', render: (p) => (
-                has('admin') ? (
+                has('admin', 'stock', 'sales') ? (
                   <Link to={`/products/${p._id}/edit`} className="text-ink-900 hover:text-brand-700 font-medium">{p.name}</Link>
                 ) : (
                   <span className="text-ink-900 font-medium">{p.name}</span>
@@ -105,7 +105,10 @@ export default function Products() {
                   ) : p.stock}
                 </span>
               ) },
-            { key: 'purchasePrice', label: `Cost (${currency})`, className: 'text-right num', render: (p) => <Money value={p.purchasePrice} /> },
+            // Cost is what the business pays; from it anyone can work out the margin on
+            // every sale. The API withholds it from sales as well, so removing the
+            // column here is presentation, not the protection itself.
+            ...(has('admin', 'stock') ? [{ key: 'purchasePrice', label: `Cost (${currency})`, className: 'text-right num', render: (p) => <Money value={p.purchasePrice} /> }] : []),
             { key: 'sellingPrice', label: `Price (${currency})`, className: 'text-right num font-medium text-ink-900', render: (p) => <Money value={p.sellingPrice} /> },
             ...(canAdjustStock ? [{
               key: 'adjust',

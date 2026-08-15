@@ -49,20 +49,35 @@ function uploadSingle(req, res, next) {
   });
 }
 
-// The whole module is admin-only, enforced here at the API rather than by hiding a
-// route in the frontend. Sales and stock receive 403 on every endpoint below.
+// Administrators reach every dataset here. Sales reaches exactly one: products, so a
+// salesperson can load the catalogue from a spreadsheet. Everything else on this
+// screen — invoices, purchase orders, expenses, opening balances — moves money or
+// creates financial history and stays with the administrator.
+//
+// Enforced at the API, not by hiding a button: a sales user who calls
+// /data/import/invoices/commit directly is refused.
+const SALES_TYPES = new Set(['products']);
+
+function allowType(req, res, next) {
+  if (req.user?.role === 'admin') return next();
+  if (req.user?.role === 'sales' && SALES_TYPES.has(req.params.type)) return next();
+  res.status(403);
+  return next(new Error('You do not have access to this dataset'));
+}
+
 const r = Router();
 r.use(protect);
-r.use(requireRole('admin'));
 
-r.get('/types', listTypes);
-r.get('/history', importHistory);
-r.get('/history/:id', importBatchDetail);
-r.get('/templates/:type', downloadTemplate);
-r.get('/export/:type', runExport);
+// Listing is open to sales; listTypes itself returns only what the caller may use.
+r.get('/types', requireRole('admin', 'sales'), listTypes);
+r.get('/templates/:type', requireRole('admin', 'sales'), allowType, downloadTemplate);
+r.get('/export/:type', requireRole('admin', 'sales'), allowType, runExport);
+r.post('/import/:type/validate', requireRole('admin', 'sales'), allowType, uploadSingle, validateImport);
+r.post('/import/:type/commit', requireRole('admin', 'sales'), allowType, uploadSingle, commitImport);
+r.post('/import/:type/errors-file', requireRole('admin', 'sales'), allowType, errorsWorkbook);
 
-r.post('/import/:type/validate', uploadSingle, validateImport);
-r.post('/import/:type/commit', uploadSingle, commitImport);
-r.post('/import/:type/errors-file', errorsWorkbook);
+// Import history spans every dataset, so it stays with the administrator.
+r.get('/history', requireRole('admin'), importHistory);
+r.get('/history/:id', requireRole('admin'), importBatchDetail);
 
 export default r;

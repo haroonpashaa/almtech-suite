@@ -109,12 +109,15 @@ const products = {
       }
 
       const sellingPrice = money(row, 'Selling Price', 'Selling price', raw.sellingPrice);
+      // money() answers 0 for an absent column, so ask the sheet directly instead.
+      const costSupplied = raw.purchasePrice !== undefined && raw.purchasePrice !== null && String(raw.purchasePrice).trim() !== '';
       const purchasePrice = money(row, 'Purchase Price', 'Purchase price', raw.purchasePrice);
       const stock = money(row, 'Stock', 'Stock', raw.stock);
       const lowStockThreshold = money(row, 'Low Stock Threshold', 'Low stock threshold', raw.lowStockThreshold);
 
       if (row.action !== R.ERROR) {
         row.key = sku;
+        const isUpdate = bySku.has(sku);
         row.data = {
           sku, name,
           description: str(raw.description) || undefined,
@@ -122,13 +125,19 @@ const products = {
           brand: str(raw.brand) || undefined,
           model: str(raw.model) || undefined,
           sellingPrice: sellingPrice ?? 0,
-          purchasePrice: purchasePrice ?? 0,
           stock: stock ?? 0,
           lowStockThreshold: lowStockThreshold ?? 5,
           barcode: barcode || undefined,
           active: bool(raw.active, true),
         };
-        row.action = bySku.has(sku) ? R.UPDATE : R.CREATE;
+        // Cost is only written when the sheet actually carries it. It used to be set to
+        // `purchasePrice ?? 0`, so re-importing a catalogue whose sheet had no Purchase
+        // Price column silently zeroed the cost of every existing product — and with it
+        // every margin and profit figure derived from it. A new product with no cost
+        // still starts at zero; an existing one keeps what it has.
+        if (costSupplied) row.data.purchasePrice = purchasePrice ?? 0;
+        else if (!isUpdate) row.data.purchasePrice = 0;
+        row.action = isUpdate ? R.UPDATE : R.CREATE;
         if (row.action === R.UPDATE) row.note = `updates existing product ${sku}`;
       }
       out.push(row);

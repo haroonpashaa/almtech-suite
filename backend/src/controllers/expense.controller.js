@@ -264,16 +264,10 @@ export const dailyExpenses = asyncHandler(async (req, res) => {
     Expense.find(match).populate('account', 'name type').populate('createdBy', 'name').sort('date'),
   ]);
 
-  // A non-administrator gets the totals but not the individual payments. Sales needs
-  // to see what the business spent in a day; it has no business seeing each expense's
-  // description, account and who recorded it. The counts still come from the real rows,
-  // so the summary a sales user sees is complete and correct.
-  const isAdmin = req.user?.role === 'admin';
-
   res.json({
     date: start,
     byCategory: byCategory.map((c) => ({ category: c._id, total: c.total, count: c.count })),
-    items: isAdmin ? items : undefined,
+    items,
     total: byCategory.reduce((s, c) => s + c.total, 0),
     count: items.length,
   });

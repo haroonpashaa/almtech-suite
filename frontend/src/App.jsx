@@ -66,8 +66,8 @@ export default function App() {
       >
         <Route index element={<Dashboard />} />
         <Route path="products" element={<Products />} />
-        <Route path="products/new" element={<Protected roles={['admin', 'stock']}><ProductForm /></Protected>} />
-        <Route path="products/:id/edit" element={<Protected roles={['admin']}><ProductForm /></Protected>} />
+        <Route path="products/new" element={<Protected roles={['admin', 'stock', 'sales']}><ProductForm /></Protected>} />
+        <Route path="products/:id/edit" element={<Protected roles={['admin', 'stock', 'sales']}><ProductForm /></Protected>} />
         <Route path="customers" element={<Customers />} />
         <Route path="customers/:id" element={<CustomerDetail />} />
         <Route path="pos" element={<Protected roles={['admin', 'sales']}><POS /></Protected>} />
@@ -83,14 +83,14 @@ export default function App() {
         <Route path="suppliers/:id" element={<Protected roles={['admin', 'stock']}><SupplierDetail /></Protected>} />
         <Route path="accounts" element={<Protected roles={['admin']}><Accounts /></Protected>} />
         <Route path="accounts/:id" element={<Protected roles={['admin']}><AccountLedger /></Protected>} />
-        <Route path="data" element={<Protected roles={['admin']}><ImportExport /></Protected>} />
+        <Route path="data" element={<Protected roles={['admin', 'sales']}><ImportExport /></Protected>} />
         <Route path="deals" element={<Protected roles={['admin']}><Deals /></Protected>} />
         <Route path="deals/:kind/:id" element={<Protected roles={['admin']}><DealDetail /></Protected>} />
         <Route path="receivables" element={<Protected roles={['admin']}><Receivables /></Protected>} />
         <Route path="receivables/:id" element={<Protected roles={['admin']}><ReceivableDetail /></Protected>} />
         <Route path="payables" element={<Protected roles={['admin']}><Payables /></Protected>} />
         <Route path="payables/:id" element={<Protected roles={['admin']}><PayableDetail /></Protected>} />
-        <Route path="expenses" element={<Protected roles={['admin']}><Expenses /></Protected>} />
+        <Route path="expenses" element={<Protected roles={['admin', 'sales']}><Expenses /></Protected>} />
         <Route path="expense-reports" element={<Protected roles={['admin', 'sales']}><ExpenseReports /></Protected>} />
         <Route path="reports" element={<Reports />} />
         <Route path="settings" element={<Protected roles={['admin']}><Settings /></Protected>} />

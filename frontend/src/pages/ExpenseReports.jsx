@@ -89,10 +89,6 @@ export default function ExpenseReports() {
                 <CategoryRows rows={daily.data?.byCategory} currency={currency} total={daily.data?.total || 0} />
               )}
             </div>
-            {/* The individual payments are administrator-only. A sales user sees the
-                category totals above — what the business spent — without the
-                description, account and author of each separate expense. */}
-            {has('admin') && (
             <Table
               loading={daily.isLoading}
               empty="No expenses on this date"
@@ -104,7 +100,6 @@ export default function ExpenseReports() {
               ]}
               rows={daily.data?.items || []}
             />
-            )}
           </div>
         )}
 

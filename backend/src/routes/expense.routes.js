@@ -11,26 +11,28 @@ import {
   monthlyExpenses,
 } from '../controllers/expense.controller.js';
 
-// Expenses are financial data and stay with the administrator: listing them, creating,
-// editing and voiding are all admin-only.
+// Sales records the day's spending and keeps it tidy; the administrator verifies it in
+// the ERP afterwards, since every expense carries the user who created it and appears
+// in the activity log.
 //
-// The two reporting endpoints are the deliberate exception. They return totals — by
-// category, by day, by account — which the sales team needs for its own reporting.
-// dailyExpenses additionally withholds the itemised rows from a non-administrator, so
-// a sales user sees what was spent in total without seeing each individual payment.
+// Voiding is the exception and stays with the administrator: it is not an edit but a
+// reversing accounting entry that moves money back into the account.
+//
+// Worth knowing about the shape of this: an expense posts to the ledger the moment it
+// is saved. There is no pending state, so verification is after the fact.
 const r = Router();
 r.use(protect);
 
+const staffOrAdmin = requireRole('admin', 'sales');
+
 // Declared before '/:id' so the literal paths are not captured as ids.
-r.get('/daily', requireRole('admin', 'sales'), dailyExpenses);
-r.get('/monthly', requireRole('admin', 'sales'), monthlyExpenses);
+r.get('/daily', staffOrAdmin, dailyExpenses);
+r.get('/monthly', staffOrAdmin, monthlyExpenses);
+r.get('/categories', staffOrAdmin, listCategories);
 
-r.use(requireRole('admin'));
-r.get('/categories', listCategories);
-
-r.get('/', listExpenses);
-r.get('/:id', getExpense);
-r.post('/', createExpense);
-r.patch('/:id', updateExpense);
-r.post('/:id/void', voidExpense);
+r.get('/', staffOrAdmin, listExpenses);
+r.get('/:id', staffOrAdmin, getExpense);
+r.post('/', staffOrAdmin, createExpense);
+r.patch('/:id', staffOrAdmin, updateExpense);
+r.post('/:id/void', requireRole('admin'), voidExpense);
 export default r;

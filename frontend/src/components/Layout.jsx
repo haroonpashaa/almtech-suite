@@ -43,7 +43,7 @@ const sections = [
     items: [
       { to: '/accounts', label: 'Accounts', roles: ['admin'], icon: 'wallet' },
       { to: '/deals', label: 'Transactions', roles: ['admin'], icon: 'ledgerList' },
-      { to: '/expenses', label: 'Expenses', roles: ['admin'], icon: 'receipt' },
+      { to: '/expenses', label: 'Expenses', roles: ['admin', 'sales'], icon: 'receipt' },
       { to: '/receivables', label: 'Receivables', roles: ['admin'], icon: 'receivable' },
       { to: '/payables', label: 'Payables', roles: ['admin'], icon: 'payable' },
     ],
@@ -58,7 +58,7 @@ const sections = [
   {
     title: 'Administration',
     items: [
-      { to: '/data', label: 'Import / Export', roles: ['admin'], icon: 'exchange' },
+      { to: '/data', label: 'Import / Export', roles: ['admin', 'sales'], icon: 'exchange' },
       { to: '/users', label: 'Users', roles: ['admin'], icon: 'shield' },
       { to: '/activity', label: 'Activity', roles: ['admin'], icon: 'clock' },
       { to: '/settings', label: 'Settings', roles: ['admin'], icon: 'cog' },

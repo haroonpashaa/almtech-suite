@@ -5,6 +5,7 @@ import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
 import { errorMessage } from '../lib/format.js';
 import PageHeader from '../components/PageHeader.jsx';
+import { useAuth } from '../context/AuthContext.jsx';
 import { Spinner } from '../components/ui.jsx';
 
 const empty = {
@@ -26,6 +27,9 @@ function Section({ title, description, children }) {
 }
 
 export default function ProductForm() {
+  const { has } = useAuth();
+  // Cost is administrator/stock information; sales maintains the catalogue without it.
+  const seesCost = has('admin', 'stock');
   const { id } = useParams();
   const navigate = useNavigate();
   const qc = useQueryClient();
@@ -54,6 +58,10 @@ export default function ProductForm() {
       ['purchasePrice', 'sellingPrice', 'stock', 'lowStockThreshold'].forEach((k) => {
         payload[k] = Number(payload[k]);
       });
+      // Never post a cost the user was not shown. Without this, a sales user editing a
+      // product would send the form's default of 0 and, but for the server also
+      // stripping it, would wipe the real purchase price.
+      if (!seesCost) delete payload.purchasePrice;
       payload.barcode = (payload.barcode || '').trim();
       if (id) await api.patch(`/products/${id}`, payload);
       else await api.post('/products', payload);
@@ -117,12 +125,14 @@ export default function ProductForm() {
           </div>
         </Section>
 
-        <Section title="Pricing & Stock" description="Cost, sell price, and reorder levels">
+        <Section title="Pricing & Stock" description={seesCost ? 'Cost, sell price, and reorder levels' : 'Sell price and reorder levels'}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {seesCost && (
             <div>
               <label htmlFor="productform-purchase-price-47" className="label">Purchase Price</label>
               <input id="productform-purchase-price-47" className="input num" type="number" step="0.01" value={form.purchasePrice} onChange={(e) => set('purchasePrice', e.target.value)} />
             </div>
+            )}
             <div>
               <label htmlFor="productform-selling-price-48" className="label">Selling Price</label>
               <input id="productform-selling-price-48" className="input num" type="number" step="0.01" value={form.sellingPrice} onChange={(e) => set('sellingPrice', e.target.value)} />
@@ -136,7 +146,7 @@ export default function ProductForm() {
               <input id="productform-low-stock-threshold-50" className="input num" type="number" value={form.lowStockThreshold} onChange={(e) => set('lowStockThreshold', e.target.value)} />
             </div>
           </div>
-          {form.sellingPrice > 0 && (
+          {seesCost && form.sellingPrice > 0 && (
             <div className="mt-3 text-xs text-ink-500">
               Margin per unit:{' '}
               <span className={`font-medium num ${margin >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
