@@ -5,6 +5,7 @@ import { money, date as fmtDate } from '../lib/format.js';
 import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
+import { useAuth } from '../context/AuthContext.jsx';
 import Money from '../components/Money.jsx';
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -37,6 +38,7 @@ function CategoryRows({ rows, currency, total }) {
 }
 
 export default function ExpenseReports() {
+  const { has } = useAuth();
   const [tab, setTab] = useState('daily');
   const [day, setDay] = useState(todayISO());
   const [month, setMonth] = useState(thisMonth());
@@ -87,6 +89,10 @@ export default function ExpenseReports() {
                 <CategoryRows rows={daily.data?.byCategory} currency={currency} total={daily.data?.total || 0} />
               )}
             </div>
+            {/* The individual payments are administrator-only. A sales user sees the
+                category totals above — what the business spent — without the
+                description, account and author of each separate expense. */}
+            {has('admin') && (
             <Table
               loading={daily.isLoading}
               empty="No expenses on this date"
@@ -98,6 +104,7 @@ export default function ExpenseReports() {
               ]}
               rows={daily.data?.items || []}
             />
+            )}
           </div>
         )}
 

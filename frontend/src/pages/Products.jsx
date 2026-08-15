@@ -1,19 +1,54 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
+import { errorMessage } from '../lib/format.js';
 import { money } from '../lib/format.js';
 import { useCurrency } from '../hooks/useSettings.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
 import Money from '../components/Money.jsx';
-import { Badge } from '../components/ui.jsx';
+import Modal from '../components/Modal.jsx';
+import { Badge, Spinner } from '../components/ui.jsx';
 
 export default function Products() {
   const { has } = useAuth();
+  const qc = useQueryClient();
   const [q, setQ] = useState('');
   const [lowStock, setLowStock] = useState(false);
+  // Recording that stock arrived. The endpoint has always existed and writes an
+  // audited StockMovement; until now nothing in the interface reached it, so stock
+  // could only move by creating a product, receiving a purchase order or selling.
+  const [adjusting, setAdjusting] = useState(null);
+  const [delta, setDelta] = useState('');
+  const [note, setNote] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const canAdjustStock = has('admin', 'stock', 'sales');
+
+  function openAdjust(product) {
+    setAdjusting(product);
+    setDelta('');
+    setNote('');
+  }
+
+  async function saveAdjustment() {
+    const quantity = Number(delta);
+    if (!Number.isFinite(quantity) || quantity === 0) return;
+    setSaving(true);
+    try {
+      await api.post(`/products/${adjusting._id}/adjust`, { quantity, note });
+      toast.success(`${adjusting.name}: stock ${quantity > 0 ? 'increased' : 'reduced'} by ${Math.abs(quantity)}`);
+      setAdjusting(null);
+      qc.invalidateQueries({ queryKey: ['products'] });
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setSaving(false);
+    }
+  }
 
   const { data, isLoading } = useQuery({
     queryKey: ['products', q, lowStock],
@@ -72,10 +107,67 @@ export default function Products() {
               ) },
             { key: 'purchasePrice', label: `Cost (${currency})`, className: 'text-right num', render: (p) => <Money value={p.purchasePrice} /> },
             { key: 'sellingPrice', label: `Price (${currency})`, className: 'text-right num font-medium text-ink-900', render: (p) => <Money value={p.sellingPrice} /> },
+            ...(canAdjustStock ? [{
+              key: 'adjust',
+              label: 'Stock in/out',
+              className: 'text-right',
+              render: (p) => (
+                <button type="button" className="btn-sm border border-ink-200 bg-white text-ink-600 hover:bg-ink-50" onClick={() => openAdjust(p)}>
+                  Adjust
+                </button>
+              ),
+            }] : []),
           ]}
           rows={data?.items || []}
         />
       </div>
+
+      <Modal
+        open={!!adjusting}
+        onClose={() => setAdjusting(null)}
+        title="Adjust stock"
+        subtitle={adjusting ? `${adjusting.name} · currently ${adjusting.stock} in stock` : ''}
+        size="sm"
+        footer={
+          <>
+            <button className="btn-secondary" onClick={() => setAdjusting(null)}>Cancel</button>
+            <button className="btn-primary" onClick={saveAdjustment} disabled={!Number(delta) || saving}>
+              {saving ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Save adjustment'}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <div>
+            <label htmlFor="products-adjust-qty" className="label">Quantity</label>
+            <input
+              id="products-adjust-qty"
+              className="input"
+              type="number"
+              inputMode="numeric"
+              placeholder="e.g. 25 to add, -5 to remove"
+              value={delta}
+              onChange={(e) => setDelta(e.target.value)}
+            />
+            <p className="t-meta mt-1">
+              A positive number adds stock, a negative number removes it.
+              {Number(delta) && adjusting
+                ? ` ${adjusting.stock} → ${Math.max(0, adjusting.stock + Number(delta))}`
+                : ''}
+            </p>
+          </div>
+          <div>
+            <label htmlFor="products-adjust-note" className="label">Reason</label>
+            <input
+              id="products-adjust-note"
+              className="input"
+              placeholder="Delivery received, stock count correction…"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+            />
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

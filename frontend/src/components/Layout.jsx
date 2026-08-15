@@ -52,7 +52,7 @@ const sections = [
     title: 'Reports',
     items: [
       { to: '/reports', label: 'Reports', icon: 'chart' },
-      { to: '/expense-reports', label: 'Expense Reports', roles: ['admin'], icon: 'chartBar' },
+      { to: '/expense-reports', label: 'Expense Reports', roles: ['admin', 'sales'], icon: 'chartBar' },
     ],
   },
   {

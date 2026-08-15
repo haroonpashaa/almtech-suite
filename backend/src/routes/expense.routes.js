@@ -11,17 +11,22 @@ import {
   monthlyExpenses,
 } from '../controllers/expense.controller.js';
 
-// Expenses are financial data, so the whole module is admin-only — the same policy
-// that already governs account balances, ledgers, profit-loss and monthly summary.
-// No existing role gains anything here.
+// Expenses are financial data and stay with the administrator: listing them, creating,
+// editing and voiding are all admin-only.
+//
+// The two reporting endpoints are the deliberate exception. They return totals — by
+// category, by day, by account — which the sales team needs for its own reporting.
+// dailyExpenses additionally withholds the itemised rows from a non-administrator, so
+// a sales user sees what was spent in total without seeing each individual payment.
 const r = Router();
 r.use(protect);
-r.use(requireRole('admin'));
 
 // Declared before '/:id' so the literal paths are not captured as ids.
+r.get('/daily', requireRole('admin', 'sales'), dailyExpenses);
+r.get('/monthly', requireRole('admin', 'sales'), monthlyExpenses);
+
+r.use(requireRole('admin'));
 r.get('/categories', listCategories);
-r.get('/daily', dailyExpenses);
-r.get('/monthly', monthlyExpenses);
 
 r.get('/', listExpenses);
 r.get('/:id', getExpense);

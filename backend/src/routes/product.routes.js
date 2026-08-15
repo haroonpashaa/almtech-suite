@@ -23,6 +23,9 @@ r.post('/', requireRole('admin', 'stock'), createProduct);
 // Editing product information (including the barcode) is admin-only.
 r.patch('/:id', requireRole('admin'), updateProduct);
 r.delete('/:id', requireRole('admin'), deleteProduct);
-r.post('/:id/adjust', requireRole('admin', 'stock'), adjustStock);
+// Sales adjusts stock too: recording that goods arrived is counter work, not an
+// administrative act. Every adjustment writes a StockMovement naming the user, so it
+// stays auditable. Creating and editing products, and bulk import, are unchanged.
+r.post('/:id/adjust', requireRole('admin', 'stock', 'sales'), adjustStock);
 r.post('/import', requireRole('admin'), importProducts);
 export default r;
