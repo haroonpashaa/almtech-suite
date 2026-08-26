@@ -9,7 +9,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { Spinner } from '../components/ui.jsx';
 
 const empty = {
-  name: '', sku: '', brand: '', model: '', category: 'Laptops', description: '',
+  name: '', sku: '', brand: '', model: '', description: '',
   processor: '', ram: '', storage: '', graphics: '', screen: '', condition: 'new', warranty: '', comments: '',
   purchasePrice: 0, sellingPrice: 0, stock: 0, lowStockThreshold: 5,
   tracksSerials: false, barcode: '',
@@ -89,11 +89,11 @@ export default function ProductForm() {
         <Section title="Basics" description="How this product is identified across the suite">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label htmlFor="productform-name-40" className="label">Name <span className="text-red-500">*</span></label>
+              <label htmlFor="productform-name-40" className="label">Product Name <span className="text-red-500">*</span></label>
               <input id="productform-name-40" className="input" required value={form.name} onChange={(e) => set('name', e.target.value)} />
             </div>
             <div>
-              <label htmlFor="productform-sku-41" className="label">SKU <span className="text-red-500">*</span></label>
+              <label htmlFor="productform-sku-41" className="label">Serial Number <span className="text-red-500">*</span></label>
               <input id="productform-sku-41" className="input font-mono" required value={form.sku} onChange={(e) => set('sku', e.target.value)} />
             </div>
             <div>
@@ -103,10 +103,6 @@ export default function ProductForm() {
             <div>
               <label htmlFor="productform-model-43" className="label">Model</label>
               <input id="productform-model-43" className="input" value={form.model} onChange={(e) => set('model', e.target.value)} />
-            </div>
-            <div>
-              <label htmlFor="productform-category-44" className="label">Category</label>
-              <input id="productform-category-44" className="input" value={form.category} onChange={(e) => set('category', e.target.value)} />
             </div>
             <div>
               <label htmlFor="productform-barcode-45" className="label">Barcode</label>

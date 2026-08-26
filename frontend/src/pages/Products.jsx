@@ -78,7 +78,7 @@ export default function Products() {
         <div className="flex flex-wrap items-center gap-3 mb-4">
           <div className="field-search max-w-xs w-full">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
-            <input className="input" placeholder="Search by name, SKU, brand…" value={q} onChange={(e) => setQ(e.target.value)} />
+            <input className="input" placeholder="Search by processor, serial number, brand…" value={q} onChange={(e) => setQ(e.target.value)} />
           </div>
           <button
             onClick={() => setLowStock((v) => !v)}
@@ -93,7 +93,7 @@ export default function Products() {
           loading={isLoading}
           empty="No products match your filters"
           columns={[
-            { key: 'name', label: 'Name', render: (p) => (
+            { key: 'name', label: 'Product Name', render: (p) => (
               <span className="block">
                 {has('admin', 'stock', 'sales') ? (
                   <Link to={`/products/${p._id}/edit`} className="text-ink-900 hover:text-brand-700 font-medium">{p.name}</Link>
@@ -105,8 +105,7 @@ export default function Products() {
                 {specLine(p) && <span className="block t-meta truncate">{specLine(p)}</span>}
               </span>
             ) },
-            { key: 'sku', label: 'SKU', render: (p) => <span className="font-mono text-[12px] text-ink-400">{p.sku}</span> },
-            { key: 'category', label: 'Category', render: (p) => p.category || <span className="text-ink-300">—</span> },
+            { key: 'sku', label: 'Serial Number', render: (p) => <span className="font-mono text-[12px] text-ink-400">{p.sku}</span> },
             { key: 'brand', label: 'Brand', render: (p) => p.brand || <span className="text-ink-300">—</span> },
             { key: 'comments', label: 'Comments', render: (p) => (
                 p.comments ? <span className="t-meta truncate block max-w-[16rem]" title={p.comments}>{p.comments}</span> : <span className="text-ink-300">—</span>
