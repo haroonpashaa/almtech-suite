@@ -58,6 +58,14 @@ const products = {
     category: ['Category'],
     brand: ['Brand'],
     model: ['Model'],
+    processor: ['Processor', 'CPU'],
+    ram: ['RAM', 'Memory'],
+    storage: ['Storage', 'ROM', 'SSD', 'Hard Disk', 'HDD'],
+    graphics: ['Graphics', 'GPU'],
+    screen: ['Screen', 'Display'],
+    condition: ['Condition'],
+    warranty: ['Warranty'],
+    comments: ['Comments', 'Notes', 'Condition Notes'],
     sellingPrice: ['Selling Price', 'Price'],
     purchasePrice: ['Purchase Price', 'Cost'],
     stock: ['Stock', 'Quantity'],
@@ -69,11 +77,18 @@ const products = {
   instructions: [
     'SKU and Name are required. SKU identifies the product — re-importing the same SKU updates it.',
     'Barcode is optional but must be unique across all products when supplied (Change 2 rule).',
+    'Specification columns (Processor, RAM, Storage/ROM, Graphics, Screen, Condition, Warranty) are optional. Leave a column out entirely and existing products keep what they already have.',
+    'Condition accepts new, used or refurbished. Anything else is reported as an error rather than guessed at.',
+    'Comments is free text for defects, cosmetic condition, or missing accessories on this specific unit. Leave the column out and existing comments are kept.',
     'Delete the example row before importing.',
   ],
   example: {
     sku: 'EXAMPLE-001', name: 'Example Laptop', description: 'Delete this row before importing',
-    category: 'Laptops', brand: 'Acme', model: 'X1', sellingPrice: 150000, purchasePrice: 120000,
+    category: 'Laptops', brand: 'Acme', model: 'X1',
+    processor: 'Intel Core i7-1355U', ram: '16GB DDR5', storage: '512GB NVMe SSD',
+    graphics: 'Intel Iris Xe', screen: '14\" FHD', condition: 'new', warranty: '1 year',
+    comments: 'Minor scratch on lid',
+    sellingPrice: 150000, purchasePrice: 120000,
     stock: 10, lowStockThreshold: 5, barcode: '', active: 'Yes',
   },
 
@@ -137,6 +152,20 @@ const products = {
         // still starts at zero; an existing one keeps what it has.
         if (costSupplied) row.data.purchasePrice = purchasePrice ?? 0;
         else if (!isUpdate) row.data.purchasePrice = 0;
+
+        // Specifications follow the same rule as cost: a column the sheet does not
+        // carry leaves the stored value alone, so a partial catalogue upload cannot
+        // blank out the specs of everything it touches.
+        for (const f of ['processor', 'ram', 'storage', 'graphics', 'screen', 'warranty', 'comments']) {
+          const v = str(raw[f]);
+          if (v) row.data[f] = v;
+        }
+        const cond = str(raw.condition);
+        if (cond) {
+          const normalised = cond.toLowerCase();
+          if (['new', 'used', 'refurbished'].includes(normalised)) row.data.condition = normalised;
+          else err(row, 'Condition', cond, 'Condition must be new, used or refurbished');
+        }
         row.action = isUpdate ? R.UPDATE : R.CREATE;
         if (row.action === R.UPDATE) row.note = `updates existing product ${sku}`;
       }

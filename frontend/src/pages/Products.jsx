@@ -13,6 +13,11 @@ import Money from '../components/Money.jsx';
 import Modal from '../components/Modal.jsx';
 import { Badge, Spinner } from '../components/ui.jsx';
 
+/** "16GB · 512GB NVMe SSD · i7-1355U" — blank for anything with no specification. */
+export function specLine(p) {
+  return [p.ram, p.storage, p.processor].filter(Boolean).join(' · ');
+}
+
 export default function Products() {
   const { has } = useAuth();
   const qc = useQueryClient();
@@ -89,15 +94,23 @@ export default function Products() {
           empty="No products match your filters"
           columns={[
             { key: 'name', label: 'Name', render: (p) => (
-                has('admin', 'stock', 'sales') ? (
+              <span className="block">
+                {has('admin', 'stock', 'sales') ? (
                   <Link to={`/products/${p._id}/edit`} className="text-ink-900 hover:text-brand-700 font-medium">{p.name}</Link>
                 ) : (
                   <span className="text-ink-900 font-medium">{p.name}</span>
-                )
-              ) },
+                )}
+                {/* What is actually inside the machine, under its name — the figures
+                    staff are asked for across the counter. */}
+                {specLine(p) && <span className="block t-meta truncate">{specLine(p)}</span>}
+              </span>
+            ) },
             { key: 'sku', label: 'SKU', render: (p) => <span className="font-mono text-[12px] text-ink-400">{p.sku}</span> },
             { key: 'category', label: 'Category', render: (p) => p.category || <span className="text-ink-300">—</span> },
             { key: 'brand', label: 'Brand', render: (p) => p.brand || <span className="text-ink-300">—</span> },
+            { key: 'comments', label: 'Comments', render: (p) => (
+                p.comments ? <span className="t-meta truncate block max-w-[16rem]" title={p.comments}>{p.comments}</span> : <span className="text-ink-300">—</span>
+              ) },
             { key: 'stock', label: 'Stock', className: 'text-right', render: (p) => (
                 <span className="num">
                   {p.stock <= p.lowStockThreshold ? (

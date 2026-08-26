@@ -17,6 +17,23 @@ const productSchema = new mongoose.Schema(
     model: { type: String, trim: true },
     category: { type: String, trim: true, index: true },
     description: String,
+
+    // Hardware specification. This is a computer business: a laptop is identified by
+    // what is inside it, not by its name alone, and staff need those figures at the
+    // counter and on the invoice. Every field is optional free text, because the same
+    // catalogue holds laptops, monitors, RAM sticks and cables — an accessory simply
+    // leaves them blank. `storage` is what a customer usually calls ROM.
+    processor: { type: String, trim: true },
+    ram: { type: String, trim: true },
+    storage: { type: String, trim: true },
+    graphics: { type: String, trim: true },
+    screen: { type: String, trim: true },
+    condition: { type: String, enum: ['new', 'used', 'refurbished'], default: 'new' },
+    warranty: { type: String, trim: true },
+    // Free-text condition notes — screen scratch, battery health, missing charger, etc.
+    // Distinct from `condition` (new/used/refurbished): this is the specific detail a
+    // customer or salesperson needs about THIS unit, not a category.
+    comments: { type: String, trim: true, default: '' },
     image: String,
     purchasePrice: { type: Number, default: 0, min: 0 },
     sellingPrice: { type: Number, default: 0, min: 0 },
@@ -30,7 +47,9 @@ const productSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-productSchema.index({ name: 'text', sku: 'text', brand: 'text', model: 'text' });
+// Specifications are searchable: staff look for "16GB" or "i7" far more often than
+// they look for a product's formal name.
+productSchema.index({ name: 'text', sku: 'text', brand: 'text', model: 'text', processor: 'text', ram: 'text', storage: 'text' });
 
 // Barcodes are optional, but must be unique when present.
 // The partial filter `{ $gt: '' }` is type-bracketed, so it indexes only documents

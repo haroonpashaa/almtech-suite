@@ -134,7 +134,14 @@ export const getInvoice = asyncHandler(async (req, res) => {
   res.json(inv);
 });
 
-async function buildLineFromProduct({ product, quantity, unitPrice, discount = 0, serials = [] }) {
+// A sale-time comment defaults to whatever is already on the product (e.g. "screen
+// scratch"), but the salesperson may override or add to it for this specific sale —
+// so an explicit `comments` on the line wins, and only falls back when omitted.
+export function resolveLineComments(comments, product) {
+  return comments ?? product.comments ?? '';
+}
+
+async function buildLineFromProduct({ product, quantity, unitPrice, discount = 0, serials = [], comments }) {
   return {
     product: product._id,
     name: product.name,
@@ -144,6 +151,7 @@ async function buildLineFromProduct({ product, quantity, unitPrice, discount = 0
     unitCost: product.purchasePrice,
     discount,
     serials,
+    comments: resolveLineComments(comments, product),
     lineTotal: Math.max(0, quantity * unitPrice - discount),
   };
 }

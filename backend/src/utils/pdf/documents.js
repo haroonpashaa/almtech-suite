@@ -23,7 +23,7 @@ function itemColumns(doc, { priceLabel = 'Unit price', showDiscount = true, show
     {
       key: 'name', label: 'Description', width: 0, color: COLOR.ink900, font: FONT.bold,
       render: (r) => r.name || '—',
-      sub: (r) => r.sku || null,
+      sub: (r) => [r.sku, r.comments].filter(Boolean).join(' · ') || null,
     },
     { key: 'qty', label: 'Qty', width: 40, align: 'right', render: (r) => String(r.quantity ?? 0) },
   ];

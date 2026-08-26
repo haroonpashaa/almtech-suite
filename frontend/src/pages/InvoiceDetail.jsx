@@ -121,6 +121,7 @@ export default function InvoiceDetail() {
                     <>
                       <div className="font-medium text-ink-900">{it.name}</div>
                       <div className="t-meta font-mono">{it.sku}</div>
+                      {it.comments && <div className="text-xs text-amber-600 mt-0.5">{it.comments}</div>}
                     </>
                   ),
                 },

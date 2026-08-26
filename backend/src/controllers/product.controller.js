@@ -58,11 +58,16 @@ export const listProducts = asyncHandler(async (req, res) => {
   const filter = {};
   if (category) filter.category = category;
   if (q) {
+    // Specifications are part of the search because "16GB" or "i7" is how staff
+    // actually look for a machine at the counter.
     filter.$or = [
       { name: new RegExp(q, 'i') },
       { sku: new RegExp(q, 'i') },
       { brand: new RegExp(q, 'i') },
       { model: new RegExp(q, 'i') },
+      { processor: new RegExp(q, 'i') },
+      { ram: new RegExp(q, 'i') },
+      { storage: new RegExp(q, 'i') },
     ];
   }
   let query = Product.find(filter).sort('-createdAt');

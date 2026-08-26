@@ -10,6 +10,7 @@ import { Spinner } from '../components/ui.jsx';
 
 const empty = {
   name: '', sku: '', brand: '', model: '', category: 'Laptops', description: '',
+  processor: '', ram: '', storage: '', graphics: '', screen: '', condition: 'new', warranty: '', comments: '',
   purchasePrice: 0, sellingPrice: 0, stock: 0, lowStockThreshold: 5,
   tracksSerials: false, barcode: '',
 };
@@ -154,6 +155,58 @@ export default function ProductForm() {
               </span>
             </div>
           )}
+        </Section>
+
+        {/* A laptop is identified by what is inside it. Every field here is optional,
+            because the same catalogue holds monitors, RAM sticks and cables — an
+            accessory simply leaves them blank. */}
+        <Section title="Specification" description="Leave blank for anything that is not a computer">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label htmlFor="productform-processor" className="label">Processor</label>
+              <input id="productform-processor" className="input" placeholder="Intel Core i7-1355U" value={form.processor} onChange={(e) => set('processor', e.target.value)} />
+            </div>
+            <div>
+              <label htmlFor="productform-ram" className="label">RAM</label>
+              <input id="productform-ram" className="input" placeholder="16GB DDR5" value={form.ram} onChange={(e) => set('ram', e.target.value)} />
+            </div>
+            <div>
+              <label htmlFor="productform-storage" className="label">Storage (ROM)</label>
+              <input id="productform-storage" className="input" placeholder="512GB NVMe SSD" value={form.storage} onChange={(e) => set('storage', e.target.value)} />
+            </div>
+            <div>
+              <label htmlFor="productform-graphics" className="label">Graphics</label>
+              <input id="productform-graphics" className="input" placeholder="Intel Iris Xe" value={form.graphics} onChange={(e) => set('graphics', e.target.value)} />
+            </div>
+            <div>
+              <label htmlFor="productform-screen" className="label">Screen</label>
+              <input id="productform-screen" className="input" placeholder={'14" FHD 1920x1080'} value={form.screen} onChange={(e) => set('screen', e.target.value)} />
+            </div>
+            <div>
+              <label htmlFor="productform-condition" className="label">Condition</label>
+              <select id="productform-condition" className="select" value={form.condition} onChange={(e) => set('condition', e.target.value)}>
+                <option value="new">New</option>
+                <option value="used">Used</option>
+                <option value="refurbished">Refurbished</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor="productform-warranty" className="label">Warranty</label>
+              <input id="productform-warranty" className="input" placeholder="1 year" value={form.warranty} onChange={(e) => set('warranty', e.target.value)} />
+            </div>
+          </div>
+          <div className="mt-4">
+            <label htmlFor="productform-comments" className="label">Comments</label>
+            <textarea
+              id="productform-comments"
+              className="input"
+              rows="2"
+              placeholder="Screen scratch, battery health issue, missing charger…"
+              value={form.comments}
+              onChange={(e) => set('comments', e.target.value)}
+            />
+            <p className="text-xs text-ink-400 mt-1">Defects, cosmetic condition, or missing accessories for this specific unit.</p>
+          </div>
         </Section>
 
         <Section title="Options">

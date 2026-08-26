@@ -10,6 +10,9 @@ const lineSchema = new mongoose.Schema(
     unitCost: { type: Number, default: 0, min: 0 },
     discount: { type: Number, default: 0, min: 0 },
     serials: [String],
+    // Sale-time note about this specific unit — defaults from the product's own
+    // comments at the time of sale, editable by the salesperson for this sale.
+    comments: { type: String, trim: true, default: '' },
     lineTotal: { type: Number, required: true, min: 0 },
   },
   { _id: false }

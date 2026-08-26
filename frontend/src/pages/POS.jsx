@@ -5,9 +5,11 @@ import { useQuery } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
 import { money, errorMessage } from '../lib/format.js';
+import { clampQuantity, isValidQuantity } from '../lib/quantity.js';
 import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Combobox from '../components/Combobox.jsx';
+import { specLine } from './Products.jsx';
 import { Spinner } from '../components/ui.jsx';
 
 export default function POS() {
@@ -41,12 +43,15 @@ export default function POS() {
       const existing = c.find((x) => x.product === p._id);
       if (existing) {
         return c.map((x) =>
-          x.product === p._id ? { ...x, quantity: Math.min(p.stock, x.quantity + 1) } : x
+          x.product === p._id ? { ...x, quantity: clampQuantity(Number(x.quantity || 0) + 1, p.stock) } : x
         );
       }
       return [
         ...c,
-        { product: p._id, name: p.name, sku: p.sku, unitPrice: p.sellingPrice, quantity: 1, discount: 0, stock: p.stock },
+        {
+          product: p._id, name: p.name, sku: p.sku, unitPrice: p.sellingPrice,
+          quantity: 1, discount: 0, stock: p.stock, comments: p.comments || '',
+        },
       ];
     });
   }
@@ -90,7 +95,7 @@ export default function POS() {
 
   const totals = useMemo(() => {
     const subtotal = cart.reduce(
-      (s, l) => s + Math.max(0, l.quantity * l.unitPrice - (l.discount || 0)),
+      (s, l) => s + Math.max(0, (Number(l.quantity) || 0) * l.unitPrice - (l.discount || 0)),
       0
     );
     const afterDisc = Math.max(0, subtotal - Number(discount || 0));
@@ -104,17 +109,20 @@ export default function POS() {
   async function doSubmit() {
     if (!customer) return toast.error('Select a customer');
     if (!cart.length) return toast.error('Cart is empty');
+    const invalidLine = cart.find((l) => !isValidQuantity(l.quantity, l.stock));
+    if (invalidLine) return toast.error(`Enter a valid quantity for ${invalidLine.name} (1–${invalidLine.stock})`);
     // An initial payment has to land somewhere — a sale with no payment is unaffected.
     if (paymentAmount > 0 && !paymentAccount) return toast.error('Select the account the payment goes into');
     setSaving(true);
     try {
       const payload = {
         customer,
-        items: cart.map(({ product, quantity, unitPrice, discount }) => ({
+        items: cart.map(({ product, quantity, unitPrice, discount, comments }) => ({
           product,
           quantity: Number(quantity),
           unitPrice: Number(unitPrice),
           discount: Number(discount || 0),
+          comments: comments || '',
         })),
         discount: Number(discount || 0),
         taxRate: Number(taxRate || 0),
@@ -210,6 +218,9 @@ export default function POS() {
                           <div className="min-w-0">
                             <div className="font-medium text-ink-900 text-sm truncate">{p.name}</div>
                             <div className="text-[11px] text-ink-400 font-mono mt-0.5">{p.sku}</div>
+                            {/* Two machines often differ only by memory and storage, so
+                                the specification belongs on the card the salesperson picks. */}
+                            {specLine(p) && <div className="text-[11px] text-ink-500 mt-0.5 truncate">{specLine(p)}</div>}
                           </div>
                           <span className={`badge shrink-0 ${out ? 'badge-danger' : p.stock <= (p.reorderLevel ?? 5) ? 'badge-warning' : 'badge-neutral'}`}>
                             {out ? 'Out' : `${p.stock} in stock`}
@@ -252,6 +263,7 @@ export default function POS() {
                   <thead>
                     <tr>
                       <th scope="col" className="th">Item</th>
+                      <th scope="col" className="th">Comments</th>
                       <th scope="col" className="th text-center w-28">Qty</th>
                       <th scope="col" className="th text-right">Price</th>
                       <th scope="col" className="th text-right">Disc.</th>
@@ -267,15 +279,24 @@ export default function POS() {
                           <div className="t-meta font-mono">{line.sku} · {line.stock} avail.</div>
                         </td>
                         <td className="td">
+                          <input
+                            className="input input-sm w-36"
+                            placeholder="Note about this unit…"
+                            value={line.comments || ''}
+                            onChange={(e) => updateLine(i, { comments: e.target.value })}
+                          />
+                        </td>
+                        <td className="td">
                           <div className="inline-flex items-center rounded-lg border border-ink-200 overflow-hidden">
-                            <button type="button" onClick={() => updateLine(i, { quantity: Math.max(1, line.quantity - 1) })} className="px-2 py-1 text-ink-500 hover:bg-ink-50">−</button>
+                            <button type="button" onClick={() => updateLine(i, { quantity: clampQuantity((Number(line.quantity) || 0) - 1, line.stock) })} className="px-2 py-1 text-ink-500 hover:bg-ink-50">−</button>
                             <input
                               type="number" min="1" max={line.stock}
                               className="w-10 text-center text-sm py-1 outline-none num [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
                               value={line.quantity}
-                              onChange={(e) => updateLine(i, { quantity: Math.min(line.stock, Math.max(1, Number(e.target.value))) })}
+                              onChange={(e) => updateLine(i, { quantity: clampQuantity(e.target.value, line.stock) })}
+                              onBlur={() => { if (!isValidQuantity(line.quantity, line.stock)) updateLine(i, { quantity: 1 }); }}
                             />
-                            <button type="button" onClick={() => updateLine(i, { quantity: Math.min(line.stock, line.quantity + 1) })} className="px-2 py-1 text-ink-500 hover:bg-ink-50">+</button>
+                            <button type="button" onClick={() => updateLine(i, { quantity: clampQuantity((Number(line.quantity) || 0) + 1, line.stock) })} className="px-2 py-1 text-ink-500 hover:bg-ink-50">+</button>
                           </div>
                         </td>
                         <td className="td text-right">
@@ -285,7 +306,7 @@ export default function POS() {
                           <input type="number" step="0.01" className="input input-sm w-20 text-right num" value={line.discount} onChange={(e) => updateLine(i, { discount: Number(e.target.value) })} />
                         </td>
                         <td className="td text-right font-semibold text-ink-900 num whitespace-nowrap">
-                          {money(Math.max(0, line.quantity * line.unitPrice - (line.discount || 0)), currency)}
+                          {money(Math.max(0, (Number(line.quantity) || 0) * line.unitPrice - (line.discount || 0)), currency)}
                         </td>
                         <td className="td text-right">
                           <button className="btn-icon text-ink-300 hover:text-red-600 hover:bg-red-50" onClick={() => removeLine(i)} aria-label="Remove">
@@ -323,23 +344,24 @@ export default function POS() {
                     <div className="mt-2.5 flex items-center gap-2">
                       <div className="inline-flex items-center rounded-md border border-ink-200 overflow-hidden shrink-0">
                         <button type="button" aria-label="Decrease quantity"
-                                onClick={() => updateLine(i, { quantity: Math.max(1, line.quantity - 1) })}
+                                onClick={() => updateLine(i, { quantity: clampQuantity((Number(line.quantity) || 0) - 1, line.stock) })}
                                 className="w-11 h-11 text-lg text-ink-600 active:bg-ink-100">−</button>
                         <input
                           type="number" inputMode="numeric" min="1" max={line.stock}
                           aria-label={`Quantity of ${line.name}`}
                           className="w-12 h-11 text-center text-sm outline-none num [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
                           value={line.quantity}
-                          onChange={(e) => updateLine(i, { quantity: Math.min(line.stock, Math.max(1, Number(e.target.value))) })}
+                          onChange={(e) => updateLine(i, { quantity: clampQuantity(e.target.value, line.stock) })}
+                          onBlur={() => { if (!isValidQuantity(line.quantity, line.stock)) updateLine(i, { quantity: 1 }); }}
                         />
                         <button type="button" aria-label="Increase quantity"
-                                onClick={() => updateLine(i, { quantity: Math.min(line.stock, line.quantity + 1) })}
+                                onClick={() => updateLine(i, { quantity: clampQuantity((Number(line.quantity) || 0) + 1, line.stock) })}
                                 className="w-11 h-11 text-lg text-ink-600 active:bg-ink-100">+</button>
                       </div>
                       <span className="ml-auto text-right">
                         <span className="block t-meta">Line total</span>
                         <span className="num font-semibold text-ink-900 whitespace-nowrap">
-                          {money(Math.max(0, line.quantity * line.unitPrice - (line.discount || 0)), currency)}
+                          {money(Math.max(0, (Number(line.quantity) || 0) * line.unitPrice - (line.discount || 0)), currency)}
                         </span>
                       </span>
                     </div>
@@ -357,6 +379,12 @@ export default function POS() {
                                className="input input-sm text-right num w-full" value={line.discount}
                                onChange={(e) => updateLine(i, { discount: Number(e.target.value) })} />
                       </div>
+                    </div>
+                    <div className="mt-2.5">
+                      <label htmlFor={`pos-comments-${i}`} className="t-meta block mb-1">Comments</label>
+                      <input id={`pos-comments-${i}`} className="input input-sm w-full"
+                             placeholder="Note about this unit…" value={line.comments || ''}
+                             onChange={(e) => updateLine(i, { comments: e.target.value })} />
                     </div>
                   </li>
                 ))}
