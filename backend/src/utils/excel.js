@@ -25,8 +25,11 @@ export async function readSheet(buffer, { requiredHeaders = [], aliases = {} } =
 
   const headerRow = ws.getRow(1);
   const headers = [];
+  const rawHeaders = [];
   headerRow.eachCell({ includeEmpty: true }, (cell, col) => {
-    headers[col] = norm(cellText(cell));
+    const text = cellText(cell);
+    headers[col] = norm(text);
+    rawHeaders[col] = text.trim();
   });
   if (!headers.filter(Boolean).length) throw new ExcelError('The first row must contain column headers.');
 
@@ -50,6 +53,16 @@ export async function readSheet(buffer, { requiredHeaders = [], aliases = {} } =
     );
   }
 
+  // Columns present in the file that no alias recognised. Never guessed at, never
+  // silently dropped without a trace — surfaced to the caller so it can tell the
+  // admin exactly what was not imported.
+  const mappedCols = new Set(Object.values(index));
+  const unmappedColumns = [];
+  headers.forEach((h, col) => {
+    if (!h || mappedCols.has(col)) return;
+    unmappedColumns.push(rawHeaders[col]);
+  });
+
   const rows = [];
   for (let r = 2; r <= ws.rowCount; r++) {
     const row = ws.getRow(r);
@@ -65,7 +78,7 @@ export async function readSheet(buffer, { requiredHeaders = [], aliases = {} } =
     rows.push(record);
   }
   if (!rows.length) throw new ExcelError('The workbook contains headers but no data rows.');
-  return rows;
+  return { rows, unmappedColumns };
 }
 
 function cellText(cell) {

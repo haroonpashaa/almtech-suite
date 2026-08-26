@@ -118,9 +118,11 @@ export const validateImport = asyncHandler(async (req, res) => {
   const def = importer(res, req.params.type);
   const file = requireFile(res, req);
   let prepared;
+  let unmappedColumns = [];
   try {
-    const rows = await readSheet(file.buffer, { requiredHeaders: def.required, aliases: def.aliases });
-    prepared = await def.prepare(dropCostColumns(req, rows), { user: req.user });
+    const sheet = await readSheet(file.buffer, { requiredHeaders: def.required, aliases: def.aliases });
+    unmappedColumns = sheet.unmappedColumns;
+    prepared = await def.prepare(dropCostColumns(req, sheet.rows), { user: req.user });
   } catch (e) {
     if (e instanceof ExcelError) {
       res.status(400);
@@ -134,6 +136,7 @@ export const validateImport = asyncHandler(async (req, res) => {
     filename: file.originalname,
     summary: summarise(prepared),
     rows: publicRows(prepared),
+    unmappedColumns,
   });
 });
 
@@ -148,9 +151,11 @@ export const commitImport = asyncHandler(async (req, res) => {
   const started = Date.now();
 
   let prepared;
+  let unmappedColumns = [];
   try {
-    const rows = await readSheet(file.buffer, { requiredHeaders: def.required, aliases: def.aliases });
-    prepared = await def.prepare(dropCostColumns(req, rows), { user: req.user });
+    const sheet = await readSheet(file.buffer, { requiredHeaders: def.required, aliases: def.aliases });
+    unmappedColumns = sheet.unmappedColumns;
+    prepared = await def.prepare(dropCostColumns(req, sheet.rows), { user: req.user });
   } catch (e) {
     if (e instanceof ExcelError) {
       res.status(400);
@@ -204,6 +209,7 @@ export const commitImport = asyncHandler(async (req, res) => {
     },
     errors: allErrors,
     status: batch.status,
+    unmappedColumns,
   });
 });
 

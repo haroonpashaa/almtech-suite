@@ -48,24 +48,65 @@ const money = (row, field, label, v, { required = false, min = 0 } = {}) => {
 // ===========================================================================
 // PRODUCTS
 // ===========================================================================
+
+// "N/A" (any case, with or without the dot/slash) is a placeholder for "no value",
+// not text to store. Real stock-intake spreadsheets use this constantly for columns
+// like Media Serial or Media Mfg when a unit has no drive fitted.
+function cleanText(v) {
+  const s = str(v);
+  return /^n\.?\/?a\.?$/i.test(s) ? '' : s;
+}
+
+// Grade, cosmetic-condition columns, the drive's own serial, and a secondary Notes
+// column all describe the same physical unit COMMENTS already describes — none of
+// them get a database field of their own (none exists), so they are folded into one
+// deterministic Comments value. Order is fixed and nothing here is ever dropped: a
+// value that IS supplied always produces its line, and the original Comments text is
+// always included verbatim, never rewritten.
+export function composeComments({ grade, comments, usageSigns, casingCondition, screenCondition, notes, mediaSerial }) {
+  const lines = [];
+  if (grade) lines.push(`Grade: ${grade}`);
+  if (comments) lines.push(comments);
+  if (usageSigns) lines.push(`Usage signs: ${usageSigns}`);
+  if (casingCondition) lines.push(`Casing: ${casingCondition}`);
+  if (screenCondition) lines.push(`Screen: ${screenCondition}`);
+  if (notes) lines.push(`Notes: ${notes}`);
+  if (mediaSerial) lines.push(`Media serial: ${mediaSerial}`);
+  return lines.join('\n');
+}
+
+// The storage drive's make and model, exactly as supplied — never a guess at capacity.
+// A model number like "MZVLB256HBHQ" may have a capacity buried in it, but parsing
+// that out is inference, not data the sheet actually states, so it is never attempted.
+export function composeStorageDescription({ mediaMfg, mediaModel }) {
+  return [mediaMfg, mediaModel].filter(Boolean).join(' — ');
+}
+
 const products = {
   label: 'Products',
   sheetName: 'Products',
   aliases: {
-    sku: ['SKU'],
+    sku: ['Serial Number', 'SKU', 'Serial', 'Serial No'],
     name: ['Name', 'Product Name'],
-    description: ['Description'],
     category: ['Category'],
-    brand: ['Brand'],
+    brand: ['Brand', 'MFG', 'MAKE'],
     model: ['Model'],
-    processor: ['Processor', 'CPU'],
+    processor: ['Processor', 'CPU', 'CPU ( IF APPLICABLE )'],
     ram: ['RAM', 'Memory'],
     storage: ['Storage', 'ROM', 'SSD', 'Hard Disk', 'HDD'],
+    mediaMfg: ['Media Mfg', 'Media Make'],
+    mediaModel: ['Media Model', 'Media Model Number'],
+    mediaSerial: ['Media Serial', 'Media Serial No'],
     graphics: ['Graphics', 'GPU'],
     screen: ['Screen', 'Display'],
     condition: ['Condition'],
     warranty: ['Warranty'],
-    comments: ['Comments', 'Notes', 'Condition Notes'],
+    comments: ['Comments', 'Condition Notes'],
+    notes: ['Notes'],
+    grade: ['Grade'],
+    usageSigns: ['Usage Signs'],
+    casingCondition: ['Casing Condition'],
+    screenCondition: ['Screen Condition'],
     sellingPrice: ['Selling Price', 'Price'],
     purchasePrice: ['Purchase Price', 'Cost'],
     stock: ['Stock', 'Quantity'],
@@ -73,17 +114,22 @@ const products = {
     barcode: ['Barcode'],
     active: ['Active'],
   },
-  required: ['sku', 'name'],
+  required: ['sku'],
   instructions: [
-    'SKU and Name are required. SKU identifies the product — re-importing the same SKU updates it.',
+    'Serial Number is required and uniquely identifies each physical unit — SKU is accepted as an alternative header for the same column. Re-importing the same Serial Number updates that unit.',
+    'Name is optional. If absent, it is taken from Model. If both Name and Model are missing, the row is rejected.',
     'Barcode is optional but must be unique across all products when supplied (Change 2 rule).',
     'Specification columns (Processor, RAM, Storage/ROM, Graphics, Screen, Condition, Warranty) are optional. Leave a column out entirely and existing products keep what they already have.',
-    'Condition accepts new, used or refurbished. Anything else is reported as an error rather than guessed at.',
-    'Comments is free text for defects, cosmetic condition, or missing accessories on this specific unit. Leave the column out and existing comments are kept.',
+    'Condition accepts new, used or refurbished. A row with none supplied defaults to used when creating a new product; an existing product keeps its condition unless the sheet supplies a valid one.',
+    'Comments is free text for defects, cosmetic condition, or missing accessories. Grade, Usage Signs, Casing Condition, Screen Condition, Notes and Media Serial — when present — are automatically folded into Comments alongside the original Comments text; nothing is discarded.',
+    'Media Mfg/Make and Media Model/Model Number (the storage drive\'s own make and model) are combined into Storage as descriptive text. Capacity is never guessed from a model number.',
+    '"N/A" (any case) in any column is treated as empty, not stored as text.',
+    'Columns this importer does not recognize are never guessed at — they are reported as not imported rather than mapped to the wrong field.',
+    '"Description" is not currently imported to any field — a real stock spreadsheet\'s Description column has ambiguous, unconfirmed meaning and is deliberately left unmapped rather than guessed at.',
     'Delete the example row before importing.',
   ],
   example: {
-    sku: 'EXAMPLE-001', name: 'Example Laptop', description: 'Delete this row before importing',
+    sku: 'EXAMPLE-001', name: 'Example Laptop',
     category: 'Laptops', brand: 'Acme', model: 'X1',
     processor: 'Intel Core i7-1355U', ram: '16GB DDR5', storage: '512GB NVMe SSD',
     graphics: 'Intel Iris Xe', screen: '14\" FHD', condition: 'new', warranty: '1 year',
@@ -93,12 +139,18 @@ const products = {
   },
 
   async prepare(rows) {
-    const skus = rows.map((r) => str(r.sku).toUpperCase()).filter(Boolean);
-    const barcodes = rows.map((r) => str(r.barcode)).filter(Boolean);
+    const skus = rows.map((r) => cleanText(r.sku).toUpperCase()).filter(Boolean);
+    const barcodes = rows.map((r) => cleanText(r.barcode)).filter(Boolean);
     const existing = await Product.find({ $or: [{ sku: { $in: skus } }, { barcode: { $in: barcodes } }] })
       .select('sku barcode name');
     const bySku = new Map(existing.map((p) => [p.sku, p]));
     const byBarcode = new Map(existing.filter((p) => p.barcode).map((p) => [p.barcode, p]));
+
+    // Whether Stock/Quantity has a column in this file at all. readSheet() only ever
+    // puts a key in every row record when a header actually matched it, so its
+    // presence on one row means it is present on all of them — this is a fact about
+    // the file, not about any single row.
+    const hasStockColumn = rows.length > 0 && Object.prototype.hasOwnProperty.call(rows[0], 'stock');
 
     const seenSku = new Map();
     const seenBarcode = new Map();
@@ -106,14 +158,36 @@ const products = {
 
     for (const raw of rows) {
       const row = mkRow(raw);
-      const sku = str(raw.sku).toUpperCase();
-      const name = str(raw.name);
-      const barcode = str(raw.barcode);
+      const warnings = [];
 
-      if (!sku) err(row, 'SKU', raw.sku, 'SKU is required');
-      if (!name) err(row, 'Name', raw.name, 'Name is required');
+      const skuRaw = raw.sku;
+      const skuIsNumeric = typeof skuRaw === 'number';
+      const sku = cleanText(skuRaw).toUpperCase();
+      const name = cleanText(raw.name);
+      const model = cleanText(raw.model);
+      const barcode = cleanText(raw.barcode);
 
-      if (sku && seenSku.has(sku)) err(row, 'SKU', sku, `duplicate SKU — already used on row ${seenSku.get(sku)} of this file`);
+      if (!sku) {
+        err(row, 'Serial Number', raw.sku, 'Serial Number is required');
+      } else if (skuIsNumeric) {
+        // Excel storing a serial as a number can silently drop leading zeros before
+        // this code ever sees the value — that loss already happened and cannot be
+        // recovered. What CAN be prevented is trusting a value large enough that
+        // JavaScript's own number type can no longer represent it exactly.
+        if (Math.abs(skuRaw) > Number.MAX_SAFE_INTEGER) {
+          err(
+            row, 'Serial Number', sku,
+            'This Serial Number is too large to be stored safely as a number in the spreadsheet — ' +
+              'format the Serial column as Text in Excel and re-upload.'
+          );
+        } else {
+          warnings.push('Serial Number was stored as a number in the spreadsheet — verify no leading zeros were lost.');
+        }
+      }
+
+      if (!name && !model) err(row, 'Name', raw.name, 'Name or Model is required');
+
+      if (sku && seenSku.has(sku)) err(row, 'Serial Number', sku, `duplicate Serial Number — already used on row ${seenSku.get(sku)} of this file`);
       else if (sku) seenSku.set(sku, raw.__row);
 
       if (barcode) {
@@ -123,8 +197,9 @@ const products = {
         if (owner && owner.sku !== sku) err(row, 'Barcode', barcode, `barcode already belongs to ${owner.name} (SKU ${owner.sku})`);
       }
 
-      const sellingPrice = money(row, 'Selling Price', 'Selling price', raw.sellingPrice);
       // money() answers 0 for an absent column, so ask the sheet directly instead.
+      const sellingPriceSupplied = raw.sellingPrice !== undefined && raw.sellingPrice !== null && String(raw.sellingPrice).trim() !== '';
+      const sellingPrice = money(row, 'Selling Price', 'Selling price', raw.sellingPrice);
       const costSupplied = raw.purchasePrice !== undefined && raw.purchasePrice !== null && String(raw.purchasePrice).trim() !== '';
       const purchasePrice = money(row, 'Purchase Price', 'Purchase price', raw.purchasePrice);
       const stock = money(row, 'Stock', 'Stock', raw.stock);
@@ -134,17 +209,30 @@ const products = {
         row.key = sku;
         const isUpdate = bySku.has(sku);
         row.data = {
-          sku, name,
-          description: str(raw.description) || undefined,
-          category: str(raw.category) || undefined,
-          brand: str(raw.brand) || undefined,
-          model: str(raw.model) || undefined,
-          sellingPrice: sellingPrice ?? 0,
-          stock: stock ?? 0,
+          sku,
+          name: name || model, // Model substitutes for a missing Name — never the reverse.
+          category: cleanText(raw.category) || undefined,
+          brand: cleanText(raw.brand) || undefined,
+          model: model || undefined,
           lowStockThreshold: lowStockThreshold ?? 5,
           barcode: barcode || undefined,
           active: bool(raw.active, true),
         };
+
+        // Selling price follows the same rule as cost, for the same reason: these
+        // stock-intake sheets never carry a price at all, so re-importing one must
+        // never zero out a price a staff member set by hand after the first import.
+        if (sellingPriceSupplied) row.data.sellingPrice = sellingPrice ?? 0;
+        else if (!isUpdate) row.data.sellingPrice = 0;
+
+        // Stock/Quantity: a genuine Stock or Quantity column keeps behaving exactly as
+        // it always has. These real stock-intake sheets carry no such column — QTY is
+        // not one of its aliases — and every row on them is one physical laptop, so a
+        // newly created product from a sheet with no Stock column starts at 1, not 0.
+        // An existing product with no Stock column supplied is never touched.
+        if (hasStockColumn) row.data.stock = stock ?? 0;
+        else if (!isUpdate) row.data.stock = 1;
+
         // Cost is only written when the sheet actually carries it. It used to be set to
         // `purchasePrice ?? 0`, so re-importing a catalogue whose sheet had no Purchase
         // Price column silently zeroed the cost of every existing product — and with it
@@ -156,19 +244,60 @@ const products = {
         // Specifications follow the same rule as cost: a column the sheet does not
         // carry leaves the stored value alone, so a partial catalogue upload cannot
         // blank out the specs of everything it touches.
-        for (const f of ['processor', 'ram', 'storage', 'graphics', 'screen', 'warranty', 'comments']) {
-          const v = str(raw[f]);
+        for (const f of ['processor', 'graphics', 'screen', 'warranty']) {
+          const v = cleanText(raw[f]);
           if (v) row.data[f] = v;
         }
-        const cond = str(raw.condition);
+
+        // RAM: a bare number ("8", "16") means gigabytes; anything already carrying
+        // its own unit or description ("16 GB", "BUILT IN") is kept exactly as given.
+        const ramRaw = cleanText(raw.ram);
+        if (ramRaw) row.data.ram = /^\d+$/.test(ramRaw) ? `${ramRaw} GB` : ramRaw;
+
+        // Storage: a direct Storage/ROM/SSD column wins if the sheet has one. Failing
+        // that, the drive's own make + model (Media Mfg/Make + Media Model/Model
+        // Number) becomes the descriptive text — never a capacity guess.
+        const directStorage = cleanText(raw.storage);
+        const mediaMfg = cleanText(raw.mediaMfg);
+        const mediaModel = cleanText(raw.mediaModel);
+        const composedStorage = composeStorageDescription({ mediaMfg, mediaModel });
+        if (directStorage) row.data.storage = directStorage;
+        else if (composedStorage) row.data.storage = composedStorage;
+
+        // Comments: the original value is never lost, only ever extended with Grade,
+        // the cosmetic-condition columns, a secondary Notes column, and the drive's
+        // own serial — whichever of those the sheet actually supplies.
+        const composedComments = composeComments({
+          grade: cleanText(raw.grade),
+          comments: cleanText(raw.comments),
+          usageSigns: cleanText(raw.usageSigns),
+          casingCondition: cleanText(raw.casingCondition),
+          screenCondition: cleanText(raw.screenCondition),
+          notes: cleanText(raw.notes),
+          mediaSerial: cleanText(raw.mediaSerial),
+        });
+        if (composedComments) row.data.comments = composedComments;
+
+        const cond = cleanText(raw.condition);
         if (cond) {
           const normalised = cond.toLowerCase();
           if (['new', 'used', 'refurbished'].includes(normalised)) row.data.condition = normalised;
           else err(row, 'Condition', cond, 'Condition must be new, used or refurbished');
+        } else if (!isUpdate) {
+          // These sheets describe physical units that have already been received and
+          // graded — never new-in-box stock — so a newly created product with no
+          // Condition column defaults to used rather than the schema's own "new".
+          row.data.condition = 'used';
         }
+
         row.action = isUpdate ? R.UPDATE : R.CREATE;
-        if (row.action === R.UPDATE) row.note = `updates existing product ${sku}`;
+        row.note = isUpdate ? `updates existing product ${sku}` : null;
       }
+
+      if (warnings.length) {
+        row.note = row.note ? `${row.note} — ⚠ ${warnings.join('; ')}` : `⚠ ${warnings.join('; ')}`;
+      }
+
       out.push(row);
     }
     return out;
@@ -188,7 +317,7 @@ const products = {
         existed ? res.updated++ : res.created++;
       } catch (e) {
         res.failed++;
-        res.errors.push({ row: row.excelRow, field: 'SKU', value: row.key, message: friendly(e) });
+        res.errors.push({ row: row.excelRow, field: 'Serial Number', value: row.key, message: friendly(e) });
       }
     }
     return res;

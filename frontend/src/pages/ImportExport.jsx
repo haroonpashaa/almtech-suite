@@ -211,6 +211,11 @@ export default function ImportExport() {
 
             {preview && (
               <>
+                {preview.unmappedColumns?.length > 0 && (
+                  <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm text-amber-800">
+                    Columns not recognized and not imported: {preview.unmappedColumns.join(', ')}
+                  </div>
+                )}
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
                   {[
                     ['Total rows', preview.summary.totalRows, ''],
@@ -280,6 +285,11 @@ export default function ImportExport() {
                   <h3 className="text-sm font-semibold text-ink-900">Import complete</h3>
                   <Badge tone={STATUS_TONE[result.status]} dot>{result.status.replace(/_/g, ' ')}</Badge>
                 </div>
+                {result.unmappedColumns?.length > 0 && (
+                  <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm text-amber-800 mb-3">
+                    Columns not recognized and not imported: {result.unmappedColumns.join(', ')}
+                  </div>
+                )}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   {[['Created', result.result.created, 'text-emerald-600'], ['Updated', result.result.updated, 'text-amber-600'], ['Skipped', result.result.skipped, 'text-ink-400'], ['Failed', result.result.failed, result.result.failed ? 'text-red-600' : 'text-ink-400']].map(([l, v, c]) => (
                     <div key={l}>
