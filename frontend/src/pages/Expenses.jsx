@@ -33,6 +33,10 @@ export default function Expenses() {
   const [voiding, setVoiding] = useState(false);
   const [voidReason, setVoidReason] = useState('');
   const [confirmVoid, setConfirmVoid] = useState(false);
+  const [editingExpense, setEditingExpense] = useState(false);
+  const [editForm, setEditForm] = useState(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState(null);
 
   // Filters
   const [from, setFrom] = useState('');
@@ -88,6 +92,41 @@ export default function Expenses() {
       toast.error(errorMessage(e));
     } finally {
       setSaving(false);
+    }
+  }
+
+  // Only the fields the backend allows on a posted expense — amount, account and date
+  // stay display-only everywhere in this component, matching updateExpense's own
+  // IMMUTABLE_FIELDS guard, which is the real boundary this UI is only reflecting.
+  function openEditExpense() {
+    setEditForm({
+      category: detail.category || '',
+      description: detail.description || '',
+      reference: detail.reference || '',
+      notes: detail.notes || '',
+    });
+    setEditError(null);
+    setEditingExpense(true);
+  }
+  function cancelEditExpense() {
+    setEditingExpense(false);
+    setEditForm(null);
+    setEditError(null);
+  }
+  async function saveEditExpense() {
+    setSavingEdit(true);
+    setEditError(null);
+    try {
+      const { data: updated } = await api.patch(`/expenses/${detail._id}`, editForm);
+      toast.success('Expense updated');
+      setDetail(updated);
+      setEditingExpense(false);
+      setEditForm(null);
+      refresh();
+    } catch (e) {
+      setEditError(errorMessage(e));
+    } finally {
+      setSavingEdit(false);
     }
   }
 
@@ -258,9 +297,44 @@ export default function Expenses() {
         </div>
       </Modal>
 
-      {/* Detail / void */}
-      <Modal open={!!detail} onClose={() => setDetail(null)} title={detail ? `${detail.category} · ${money(detail.amount, currency)}` : ''} size="md">
-        {detail && (
+      {/* Detail / edit / void */}
+      <Modal
+        open={!!detail}
+        onClose={() => { setDetail(null); setEditingExpense(false); setEditForm(null); setEditError(null); }}
+        title={detail ? `${detail.category} · ${money(detail.amount, currency)}` : ''}
+        size="md"
+      >
+        {detail && editingExpense && (
+          <div className="space-y-3 text-sm">
+            {editError && <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-700">{editError}</p>}
+            <div>
+              <label htmlFor="expenses-edit-category" className="label">Category</label>
+              <select id="expenses-edit-category" className="select" value={editForm.category} onChange={(e) => setEditForm((f) => ({ ...f, category: e.target.value }))}>
+                {(categories || []).map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="expenses-edit-description" className="label">Description</label>
+              <input id="expenses-edit-description" className="input" value={editForm.description} onChange={(e) => setEditForm((f) => ({ ...f, description: e.target.value }))} />
+            </div>
+            <div>
+              <label htmlFor="expenses-edit-reference" className="label">Reference</label>
+              <input id="expenses-edit-reference" className="input font-mono" value={editForm.reference} onChange={(e) => setEditForm((f) => ({ ...f, reference: e.target.value }))} />
+            </div>
+            <div>
+              <label htmlFor="expenses-edit-notes" className="label">Notes</label>
+              <textarea id="expenses-edit-notes" className="input" rows="2" value={editForm.notes} onChange={(e) => setEditForm((f) => ({ ...f, notes: e.target.value }))} />
+            </div>
+            <p className="text-xs text-ink-400">Amount, account and date cannot be changed here — void and re-record instead.</p>
+            <div className="flex gap-2 pt-1">
+              <button className="btn-primary" onClick={saveEditExpense} disabled={savingEdit}>
+                {savingEdit ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Save changes'}
+              </button>
+              <button className="btn-secondary" onClick={cancelEditExpense} disabled={savingEdit}>Cancel</button>
+            </div>
+          </div>
+        )}
+        {detail && !editingExpense && (
           <div className="space-y-3 text-sm">
             <div className="grid grid-cols-2 gap-3">
               <div><div className="section-title">Date</div><div className="mt-1 text-ink-800">{fmtDate(detail.date)}</div></div>
@@ -270,6 +344,10 @@ export default function Expenses() {
             </div>
             <div><div className="section-title">Description</div><div className="mt-1 text-ink-800">{detail.description || '—'}</div></div>
             {detail.notes && <div><div className="section-title">Notes</div><div className="mt-1 text-ink-800 whitespace-pre-wrap">{detail.notes}</div></div>}
+
+            {detail.status !== 'voided' && has('admin', 'sales') && (
+              <button className="btn-secondary" onClick={openEditExpense}>Edit details</button>
+            )}
 
             {detail.status === 'voided' ? (
               <div className="rounded-lg bg-red-50 border border-red-100 p-3">

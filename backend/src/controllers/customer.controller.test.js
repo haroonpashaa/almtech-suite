@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import Customer from '../models/Customer.js';
-import { pickWritableCustomerFields, updateCustomer } from './customer.controller.js';
+import { pickWritableCustomerFields, createCustomer, updateCustomer } from './customer.controller.js';
 
 describe('pickWritableCustomerFields', () => {
   it('keeps legitimate profile fields', () => {
@@ -95,5 +95,91 @@ describe('updateCustomer (DB-backed)', () => {
     await call(customer._id.toString(), { phone: '03000000000' });
     const reloaded = await Customer.findById(customer._id);
     expect(reloaded.balance).toBe(42000);
+  });
+});
+
+// ===========================================================================
+// createCustomer — the same allowlist, now proven against Customer.create(req.body)
+// directly, not just findByIdAndUpdate.
+// ===========================================================================
+describe('createCustomer (DB-backed)', () => {
+  let mem;
+
+  beforeAll(async () => {
+    mem = await MongoMemoryServer.create();
+    await mongoose.connect(mem.getUri());
+  });
+
+  afterEach(async () => {
+    await Customer.deleteMany({});
+  });
+
+  afterAll(async () => {
+    await mongoose.disconnect();
+    await mem.stop();
+  });
+
+  function mockRes() {
+    const res = { json: (body) => { res.body = body; return res; }, status: () => res };
+    return res;
+  }
+
+  async function call(body) {
+    const req = { body };
+    const res = mockRes();
+    await createCustomer(req, res);
+    return res.body;
+  }
+
+  it('valid customer fields are accepted', async () => {
+    const result = await call({ name: 'Acme', company: 'Acme Corp', phone: '0300', email: 'a@a.com' });
+    expect(result.name).toBe('Acme');
+    expect(result.company).toBe('Acme Corp');
+  });
+
+  it('balance supplied in the request cannot be persisted', async () => {
+    const result = await call({ name: 'Acme', balance: 500000 });
+    expect(result.balance).toBe(0);
+    const reloaded = await Customer.findById(result._id);
+    expect(reloaded.balance).toBe(0);
+  });
+
+  it('_id supplied in the request cannot override the generated id', async () => {
+    const fakeId = new mongoose.Types.ObjectId().toString();
+    const result = await call({ name: 'Acme', _id: fakeId });
+    expect(result._id.toString()).not.toBe(fakeId);
+  });
+
+  it('createdAt/updatedAt cannot be arbitrarily injected', async () => {
+    const bogusDate = new Date('2000-01-01').toISOString();
+    const result = await call({ name: 'Acme', createdAt: bogusDate, updatedAt: bogusDate });
+    expect(new Date(result.createdAt).getFullYear()).not.toBe(2000);
+  });
+
+  it('arbitrary unknown fields are not persisted', async () => {
+    const result = await call({ name: 'Acme', hackerField: 'pwned' });
+    expect(result).not.toHaveProperty('hackerField');
+    const reloaded = await Customer.findById(result._id).lean();
+    expect(reloaded).not.toHaveProperty('hackerField');
+  });
+
+  it('legitimate customer fields still persist', async () => {
+    const result = await call({
+      name: 'Acme', company: 'Acme Trading', phone: '03001234567', email: 'sales@acme.test',
+      cnicNtn: '12345-6789012-3', address: '123 Main St', creditLimit: 50000, notes: 'VIP', active: true,
+    });
+    expect(result.creditLimit).toBe(50000);
+    expect(result.notes).toBe('VIP');
+  });
+
+  it('active is left at the schema default when the request omits it, rather than being forced', async () => {
+    const result = await call({ name: 'Acme' });
+    expect(result.active).toBe(true); // Customer schema default
+  });
+
+  it('existing customer creation behaviour still works (required name enforced)', async () => {
+    const req = { body: { company: 'No Name Co' } };
+    const res = mockRes();
+    await expect(createCustomer(req, res)).rejects.toThrow();
   });
 });

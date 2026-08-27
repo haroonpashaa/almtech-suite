@@ -32,16 +32,10 @@ export const getCustomer = asyncHandler(async (req, res) => {
   res.json(customer);
 });
 
-export const createCustomer = asyncHandler(async (req, res) => {
-  const customer = await Customer.create(req.body);
-  await logActivity(req, 'customer_created', { entity: 'Customer', entityId: customer._id });
-  res.status(201).json(customer);
-});
-
 // Profile fields only. `balance` is system-maintained — it moves exclusively through
 // invoice creation, payments and returns (see invoice.controller.js) and must never be
-// settable directly from this endpoint, so it (and _id/timestamps) are left off this
-// list rather than trusted from the request body.
+// settable directly from either endpoint below, so it (and _id/timestamps) are left off
+// this list rather than trusted from the request body.
 const CUSTOMER_WRITABLE_FIELDS = ['name', 'company', 'phone', 'email', 'cnicNtn', 'address', 'creditLimit', 'notes', 'active'];
 
 export function pickWritableCustomerFields(body) {
@@ -51,6 +45,16 @@ export function pickWritableCustomerFields(body) {
   }
   return clean;
 }
+
+export const createCustomer = asyncHandler(async (req, res) => {
+  // `active` is left out entirely when the caller doesn't supply it (rather than
+  // defaulted here), so the schema's own default (`true`) still applies exactly as
+  // before — this only filters what's on the request, it doesn't add anything new.
+  const fields = pickWritableCustomerFields(req.body);
+  const customer = await Customer.create(fields);
+  await logActivity(req, 'customer_created', { entity: 'Customer', entityId: customer._id });
+  res.status(201).json(customer);
+});
 
 export const updateCustomer = asyncHandler(async (req, res) => {
   const updates = pickWritableCustomerFields(req.body);
