@@ -11,6 +11,7 @@ import { streamInvoicePDF } from '../utils/pdf.js';
 import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting } from '../utils/ledger.js';
 import { resolvePayment, requireReason, assertReversible, postReversal } from '../services/paymentReversal.js';
 import { resolvePaging, runPaged } from '../utils/pagination.js';
+import { requirePositiveWholeQuantity } from '../utils/quantity.js';
 
 // Single implementation of "money received against an invoice", shared by the POS
 // initial payment and by later payments on the invoice detail screen.
@@ -141,6 +142,13 @@ export function resolveLineComments(comments, product) {
   return comments ?? product.comments ?? '';
 }
 
+// The Invoice schema itself rejects quantity < 1, but only once Invoice.create()
+// runs — well after stock has already been decremented below for the *other* lines
+// in this sale. A non-integer quantity (e.g. 1.7) passes that schema check outright,
+// since `min: 1` doesn't require a whole number, and would otherwise silently leave
+// the product with fractional stock.
+export const normalizeSaleQuantity = requirePositiveWholeQuantity;
+
 async function buildLineFromProduct({ product, quantity, unitPrice, discount = 0, serials = [], comments }) {
   return {
     product: product._id,
@@ -175,14 +183,15 @@ export const createInvoice = asyncHandler(async (req, res) => {
       res.status(400);
       throw new Error(`Product not found: ${it.product}`);
     }
-    if (product.stock < it.quantity) {
+    const quantity = normalizeSaleQuantity(it.quantity, product.name);
+    if (product.stock < quantity) {
       res.status(400);
-      throw new Error(`Insufficient stock for ${product.name} (have ${product.stock}, need ${it.quantity})`);
+      throw new Error(`Insufficient stock for ${product.name} (have ${product.stock}, need ${quantity})`);
     }
     // Order matters: `it.product` is the raw id string from the request, so it must be
     // spread BEFORE `product` or it overwrites the fetched document and the line loses
     // its product ref.
-    lines.push(await buildLineFromProduct({ ...it, product }));
+    lines.push(await buildLineFromProduct({ ...it, quantity, product }));
   }
 
   const { items: enriched, subtotal } = computeItemTotals(lines);

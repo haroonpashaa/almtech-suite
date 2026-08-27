@@ -8,6 +8,7 @@ import { logActivity } from '../utils/activity.js';
 import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting } from '../utils/ledger.js';
 import { resolvePayment, requireReason, assertReversible, postReversal } from '../services/paymentReversal.js';
 import { resolvePaging, runPaged } from '../utils/pagination.js';
+import { requirePositiveWholeQuantity } from '../utils/quantity.js';
 
 export const listPOs = asyncHandler(async (req, res) => {
   const { supplier, status } = req.query;
@@ -47,12 +48,13 @@ export const createPO = asyncHandler(async (req, res) => {
       res.status(400);
       throw new Error(`Product not found: ${it.product}`);
     }
-    const lineTotal = it.quantity * it.unitCost;
+    const quantity = requirePositiveWholeQuantity(it.quantity, product.name);
+    const lineTotal = quantity * it.unitCost;
     lines.push({
       product: product._id,
       name: product.name,
       sku: product.sku,
-      quantity: it.quantity,
+      quantity,
       received: 0,
       unitCost: it.unitCost,
       serials: it.serials || [],
@@ -88,6 +90,17 @@ export const receiveItems = asyncHandler(async (req, res) => {
   if (!po) {
     res.status(404);
     throw new Error('Purchase order not found');
+  }
+  // Validate every receipt before touching any stock — a malformed quantity anywhere
+  // in the batch rejects the whole request rather than silently skipping that one
+  // line while applying the rest (the atomic claim below has no way to undo a
+  // partially-applied batch). Zero/negative/NaN were already harmless no-ops via the
+  // `Math.max(0, Math.min(...))` clamp below, but a decimal (e.g. 1.5) was not — it
+  // passed straight through and left the product with fractional stock.
+  for (const r of receipts) {
+    const line = po.items.find((l) => l.product.toString() === r.product);
+    if (!line) continue;
+    requirePositiveWholeQuantity(r.quantity, line.name);
   }
   for (const r of receipts) {
     const line = po.items.find((l) => l.product.toString() === r.product);

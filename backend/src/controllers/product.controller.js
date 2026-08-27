@@ -2,6 +2,7 @@ import asyncHandler from 'express-async-handler';
 import Product from '../models/Product.js';
 import StockMovement from '../models/StockMovement.js';
 import { logActivity } from '../utils/activity.js';
+import { requireNonZeroWholeQuantity } from '../utils/quantity.js';
 
 // Barcodes are optional. Treat blank/whitespace-only input as "no barcode" so the
 // partial unique index never sees an empty string, and so clearing the field in the
@@ -46,7 +47,7 @@ function withoutCost(req, doc) {
 
 /** Drop any cost field a caller is not allowed to set, so an omitted field keeps its
  *  stored value rather than being zeroed by someone who cannot see it. */
-function stripCostInput(req, payload) {
+export function stripCostInput(req, payload) {
   if (seesCost(req)) return payload;
   const clean = { ...payload };
   for (const f of COST_FIELDS) delete clean[f];
@@ -171,12 +172,13 @@ export const adjustStock = asyncHandler(async (req, res) => {
     res.status(404);
     throw new Error('Product not found');
   }
-  product.stock = Math.max(0, product.stock + Number(quantity));
+  const delta = requireNonZeroWholeQuantity(quantity, product.name);
+  product.stock = Math.max(0, product.stock + delta);
   await product.save();
   await StockMovement.create({
     product: product._id,
     type: 'adjustment',
-    quantity: Number(quantity),
+    quantity: delta,
     balanceAfter: product.stock,
     refType: 'Adjustment',
     note,
@@ -200,13 +202,16 @@ export const importProducts = asyncHandler(async (req, res) => {
   const results = { created: 0, updated: 0, errors: [] };
   for (const row of rows) {
     try {
-      const existing = await Product.findOne({ sku: row.sku?.toUpperCase() });
+      // createProduct/updateProduct both strip cost from a sales user's input; this
+      // route bypassed that and let a sales user set purchasePrice directly.
+      const cleanRow = stripCostInput(req, row);
+      const existing = await Product.findOne({ sku: cleanRow.sku?.toUpperCase() });
       if (existing) {
-        Object.assign(existing, row);
+        Object.assign(existing, cleanRow);
         await existing.save();
         results.updated++;
       } else {
-        await Product.create(row);
+        await Product.create(cleanRow);
         results.created++;
       }
     } catch (e) {
