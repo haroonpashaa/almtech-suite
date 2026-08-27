@@ -4,14 +4,14 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
 import { errorMessage } from '../lib/format.js';
+import { buildProductPayload } from '../lib/productPayload.js';
 import PageHeader from '../components/PageHeader.jsx';
-import { useAuth } from '../context/AuthContext.jsx';
 import { Spinner } from '../components/ui.jsx';
 
 const empty = {
   name: '', sku: '', brand: '', model: '', description: '',
   processor: '', ram: '', storage: '', graphics: '', screen: '', condition: 'new', warranty: '', comments: '',
-  purchasePrice: 0, sellingPrice: 0, stock: 0, lowStockThreshold: 5,
+  stock: 0, lowStockThreshold: 5, sellingPrice: 0,
   tracksSerials: false, barcode: '',
 };
 
@@ -28,9 +28,6 @@ function Section({ title, description, children }) {
 }
 
 export default function ProductForm() {
-  const { has } = useAuth();
-  // Cost is administrator/stock information; sales maintains the catalogue without it.
-  const seesCost = has('admin', 'stock');
   const { id } = useParams();
   const navigate = useNavigate();
   const qc = useQueryClient();
@@ -55,15 +52,7 @@ export default function ProductForm() {
     e.preventDefault();
     setSaving(true);
     try {
-      const payload = { ...form };
-      ['purchasePrice', 'sellingPrice', 'stock', 'lowStockThreshold'].forEach((k) => {
-        payload[k] = Number(payload[k]);
-      });
-      // Never post a cost the user was not shown. Without this, a sales user editing a
-      // product would send the form's default of 0 and, but for the server also
-      // stripping it, would wipe the real purchase price.
-      if (!seesCost) delete payload.purchasePrice;
-      payload.barcode = (payload.barcode || '').trim();
+      const payload = buildProductPayload(form, { isNew: !id });
       if (id) await api.patch(`/products/${id}`, payload);
       else await api.post('/products', payload);
       qc.invalidateQueries({ queryKey: ['products'] });
@@ -76,14 +65,12 @@ export default function ProductForm() {
     }
   }
 
-  const margin = Number(form.sellingPrice) - Number(form.purchasePrice);
-
   return (
     <div>
       <PageHeader
         breadcrumb={[{ label: 'Inventory', to: '/products' }, { label: id ? 'Edit' : 'New' }]}
         title={id ? 'Edit Product' : 'New Product'}
-        subtitle="Define product details, pricing, and stock"
+        subtitle="Define product details and stock"
       />
       <form onSubmit={submit} className="page page-narrow space-y-5">
         <Section title="Basics" description="How this product is identified across the suite">
@@ -122,18 +109,31 @@ export default function ProductForm() {
           </div>
         </Section>
 
-        <Section title="Pricing & Stock" description={seesCost ? 'Cost, sell price, and reorder levels' : 'Sell price and reorder levels'}>
+        {/* Cost is deliberately not part of this form — receiving a purchase order
+            already sets it automatically, so a manual entry point here would just be
+            a second, driftable source of truth. Selling price has no such automatic
+            mechanism, so it's set once here at creation and left alone after that;
+            editing an existing product never reads or writes either price field. */}
+        {!id && (
+          <Section title="Pricing" description="Set once, when the product is first catalogued">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="productform-selling-price" className="label">Selling Price</label>
+                <input
+                  id="productform-selling-price"
+                  className="input num"
+                  type="number"
+                  min="0"
+                  value={form.sellingPrice}
+                  onChange={(e) => set('sellingPrice', e.target.value)}
+                />
+                <p className="text-xs text-ink-400 mt-1">Used as the starting price in POS and quotations — can still be overridden at the time of sale.</p>
+              </div>
+            </div>
+          </Section>
+        )}
+        <Section title="Stock" description="Reorder levels">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {seesCost && (
-            <div>
-              <label htmlFor="productform-purchase-price-47" className="label">Purchase Price</label>
-              <input id="productform-purchase-price-47" className="input num" type="number" step="0.01" value={form.purchasePrice} onChange={(e) => set('purchasePrice', e.target.value)} />
-            </div>
-            )}
-            <div>
-              <label htmlFor="productform-selling-price-48" className="label">Selling Price</label>
-              <input id="productform-selling-price-48" className="input num" type="number" step="0.01" value={form.sellingPrice} onChange={(e) => set('sellingPrice', e.target.value)} />
-            </div>
             <div>
               <label htmlFor="productform-stock-49" className="label">Stock</label>
               <input id="productform-stock-49" className="input num" type="number" value={form.stock} onChange={(e) => set('stock', e.target.value)} />
@@ -143,14 +143,6 @@ export default function ProductForm() {
               <input id="productform-low-stock-threshold-50" className="input num" type="number" value={form.lowStockThreshold} onChange={(e) => set('lowStockThreshold', e.target.value)} />
             </div>
           </div>
-          {seesCost && form.sellingPrice > 0 && (
-            <div className="mt-3 text-xs text-ink-500">
-              Margin per unit:{' '}
-              <span className={`font-medium num ${margin >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                {margin >= 0 ? '+' : ''}{margin.toLocaleString()}
-              </span>
-            </div>
-          )}
         </Section>
 
         {/* A laptop is identified by what is inside it. Every field here is optional,

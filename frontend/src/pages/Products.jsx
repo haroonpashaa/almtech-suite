@@ -4,12 +4,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
 import { errorMessage } from '../lib/format.js';
-import { money } from '../lib/format.js';
-import { useCurrency } from '../hooks/useSettings.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
-import Money from '../components/Money.jsx';
 import Modal from '../components/Modal.jsx';
 import { Badge, Spinner } from '../components/ui.jsx';
 
@@ -59,13 +56,12 @@ export default function Products() {
     queryKey: ['products', q, lowStock],
     queryFn: async () => (await api.get('/products', { params: { q, lowStock } })).data,
   });
-  const currency = useCurrency();
 
   return (
     <div>
       <PageHeader
         title="Inventory"
-        subtitle="Products, stock levels, and pricing"
+        subtitle="Products and stock levels"
         icon={<svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7l9-4 9 4-9 4-9-4zm0 0v10l9 4 9-4V7M12 11v10" /></svg>}
         actions={has('admin', 'stock', 'sales') && (
           <Link to="/products/new" className="btn-primary">
@@ -117,11 +113,9 @@ export default function Products() {
                   ) : p.stock}
                 </span>
               ) },
-            // Cost is what the business pays; from it anyone can work out the margin on
-            // every sale. The API withholds it from sales as well, so removing the
-            // column here is presentation, not the protection itself.
-            ...(has('admin', 'stock') ? [{ key: 'purchasePrice', label: `Cost (${currency})`, className: 'text-right num', render: (p) => <Money value={p.purchasePrice} /> }] : []),
-            { key: 'sellingPrice', label: `Price (${currency})`, className: 'text-right num font-medium text-ink-900', render: (p) => <Money value={p.sellingPrice} /> },
+            // Pricing is deliberately absent from this screen — cost and selling price
+            // are entered at the appropriate sales/financial stage (New Sale, invoices,
+            // purchase orders), not while browsing or editing the laptop catalogue.
             ...(canAdjustStock ? [{
               key: 'adjust',
               label: 'Stock in/out',
