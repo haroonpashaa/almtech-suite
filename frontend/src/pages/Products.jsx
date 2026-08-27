@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
 import { errorMessage } from '../lib/format.js';
 import { useAuth } from '../context/AuthContext.jsx';
+import { usePagedList } from '../hooks/usePagedList.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
 import Modal from '../components/Modal.jsx';
@@ -52,10 +53,21 @@ export default function Products() {
     }
   }
 
-  const { data, isLoading } = useQuery({
-    queryKey: ['products', q, lowStock],
-    queryFn: async () => (await api.get('/products', { params: { q, lowStock } })).data,
+  // Same paged-list architecture as Invoices/Customers/Suppliers — resets to page 1
+  // whenever q/lowStock change, and reads the true total so paging never silently
+  // hides records the way the old unpaginated call did past its first 50.
+  const list = usePagedList({
+    key: ['products', q, lowStock],
+    path: '/products',
+    params: { q: q || undefined, lowStock: lowStock || undefined },
+    limit: 50,
   });
+  // If the current page no longer exists (e.g. the result set shrank), land on the
+  // last real page instead of showing an empty page for no visible reason.
+  const totalPages = list.total != null ? Math.max(1, Math.ceil(list.total / list.limit)) : null;
+  if (!list.isLoading && totalPages != null && list.page > totalPages) {
+    list.setPage(totalPages);
+  }
 
   return (
     <div>
@@ -83,10 +95,10 @@ export default function Products() {
             <span className={`dot ${lowStock ? 'bg-amber-500' : 'bg-ink-300'}`} />
             Low stock only
           </button>
-          <span className="text-sm text-ink-400 ml-auto">{data?.total ?? 0} products</span>
+          <span className="text-sm text-ink-400 ml-auto">{list.total ?? 0} products</span>
         </div>
         <Table
-          loading={isLoading}
+          {...list.tableProps}
           empty="No products match your filters"
           columns={[
             { key: 'name', label: 'Product Name', render: (p) => (
@@ -127,7 +139,6 @@ export default function Products() {
               ),
             }] : []),
           ]}
-          rows={data?.items || []}
         />
       </div>
 

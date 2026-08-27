@@ -25,7 +25,13 @@ export function usePagedList({ key, path, params = {}, limit = 50, enabled = tru
       const res = await api.get(path, { params: { ...params, page, limit } });
       const header = res.headers?.['x-total-count'];
       const total = header == null ? null : Number(header);
-      return { rows: res.data || [], total: Number.isFinite(total) ? total : null };
+      // Most paged endpoints return the rows as a plain array. /products is the one
+      // exception — it keeps its existing { items, total, page, limit } body because
+      // POS, QuotationForm and PurchaseOrderForm also call it and already read
+      // `data.items`, so its rows arrive wrapped instead of bare.
+      const body = res.data;
+      const rows = Array.isArray(body) ? body : (body?.items ?? []);
+      return { rows, total: Number.isFinite(total) ? total : null };
     },
   });
 

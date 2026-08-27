@@ -57,16 +57,17 @@ function cleanText(v) {
   return /^n\.?\/?a\.?$/i.test(s) ? '' : s;
 }
 
-// Grade, cosmetic-condition columns, the drive's own serial, and a secondary Notes
-// column all describe the same physical unit COMMENTS already describes — none of
-// them get a database field of their own (none exists), so they are folded into one
+// Grade, Battery, cosmetic-condition columns, the drive's own serial, and a secondary
+// Notes column all describe the same physical unit COMMENTS already describes — none
+// of them get a database field of their own (none exists), so they are folded into one
 // deterministic Comments value. Order is fixed and nothing here is ever dropped: a
 // value that IS supplied always produces its line, and the original Comments text is
 // always included verbatim, never rewritten.
-export function composeComments({ grade, comments, usageSigns, casingCondition, screenCondition, notes, mediaSerial }) {
+export function composeComments({ grade, comments, battery, usageSigns, casingCondition, screenCondition, notes, mediaSerial }) {
   const lines = [];
   if (grade) lines.push(`Grade: ${grade}`);
   if (comments) lines.push(comments);
+  if (battery) lines.push(`Battery: ${battery}`);
   if (usageSigns) lines.push(`Usage signs: ${usageSigns}`);
   if (casingCondition) lines.push(`Casing: ${casingCondition}`);
   if (screenCondition) lines.push(`Screen: ${screenCondition}`);
@@ -102,6 +103,7 @@ const products = {
     condition: ['Condition'],
     warranty: ['Warranty'],
     comments: ['Comments', 'Condition Notes'],
+    battery: ['Battery'],
     notes: ['Notes'],
     grade: ['Grade'],
     usageSigns: ['Usage Signs'],
@@ -121,7 +123,7 @@ const products = {
     'Barcode is optional but must be unique across all products when supplied (Change 2 rule).',
     'Specification columns (Processor, RAM, Storage/ROM, Graphics, Screen, Condition, Warranty) are optional. Leave a column out entirely and existing products keep what they already have.',
     'Condition accepts new, used or refurbished. A row with none supplied defaults to used when creating a new product; an existing product keeps its condition unless the sheet supplies a valid one.',
-    'Comments is free text for defects, cosmetic condition, or missing accessories. Grade, Usage Signs, Casing Condition, Screen Condition, Notes and Media Serial — when present — are automatically folded into Comments alongside the original Comments text; nothing is discarded.',
+    'Comments is free text for defects, cosmetic condition, or missing accessories. Grade, Battery, Usage Signs, Casing Condition, Screen Condition, Notes and Media Serial — when present — are automatically folded into Comments alongside the original Comments text; nothing is discarded.',
     'Media Mfg/Make and Media Model/Model Number (the storage drive\'s own make and model) are combined into Storage as descriptive text. Capacity is never guessed from a model number.',
     '"N/A" (any case) in any column is treated as empty, not stored as text.',
     'Columns this importer does not recognize are never guessed at — they are reported as not imported rather than mapped to the wrong field.',
@@ -270,6 +272,7 @@ const products = {
         const composedComments = composeComments({
           grade: cleanText(raw.grade),
           comments: cleanText(raw.comments),
+          battery: cleanText(raw.battery),
           usageSigns: cleanText(raw.usageSigns),
           casingCondition: cleanText(raw.casingCondition),
           screenCondition: cleanText(raw.screenCondition),

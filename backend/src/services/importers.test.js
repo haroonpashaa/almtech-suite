@@ -114,19 +114,19 @@ describe('products importer — automatic column detection', () => {
     expect(b.rows[0].ram).toBe('16 GB');
   });
 
-  it('reports DESCRIPTION and BATTERY as unmapped columns', async () => {
+  it('reports DESCRIPTION as an unmapped column — genuinely unrecognized columns are still reported', async () => {
     const { unmappedColumns } = await readProductsSheet(
-      ['SERIAL', 'MODEL', 'DESCRIPTION', 'BATTERY'],
-      [['S1', 'EliteBook', 60, 'Y']]
+      ['SERIAL', 'MODEL', 'DESCRIPTION'],
+      [['S1', 'EliteBook', 60]]
     );
     expect(unmappedColumns).toContain('DESCRIPTION');
-    expect(unmappedColumns).toContain('BATTERY');
   });
 
   it('does not report a recognized column as unmapped', async () => {
-    const { unmappedColumns } = await readProductsSheet(['SERIAL', 'MODEL', 'Grade'], [['S1', 'X1', 'B']]);
+    const { unmappedColumns } = await readProductsSheet(['SERIAL', 'MODEL', 'Grade', 'BATTERY'], [['S1', 'X1', 'B', '85%']]);
     expect(unmappedColumns).not.toContain('MODEL');
     expect(unmappedColumns).not.toContain('Grade');
+    expect(unmappedColumns).not.toContain('BATTERY');
   });
 });
 
@@ -282,6 +282,97 @@ describe('products importer — Grade and comments composition', () => {
     await IMPORTERS.products.commit(prepared);
     const product = await Product.findOne({ sku: 'S1' });
     expect(product.comments).toBe('Existing note');
+  });
+});
+
+// ===========================================================================
+// BATTERY — folded into Comments, same mechanism as Grade/Usage Signs/etc.
+// ===========================================================================
+describe('products importer — Battery composition', () => {
+  it('folds Battery into Comments with a labeled line, never as a new field', async () => {
+    const prepared = await IMPORTERS.products.prepare([{ sku: 'S1', name: 'L', battery: '85%' }]);
+    expect(prepared[0].data.comments).toBe('Battery: 85%');
+    expect(prepared[0].data.battery).toBeUndefined();
+  });
+
+  it('preserves existing Comments text and folds Battery alongside it', async () => {
+    const prepared = await IMPORTERS.products.prepare([{
+      sku: 'S1', name: 'L', comments: 'Minor scratch on lid', battery: '85%',
+    }]);
+    expect(prepared[0].data.comments).toBe('Minor scratch on lid\nBattery: 85%');
+  });
+
+  it('composes Grade + Comments + Battery + Usage Signs + Casing + Screen + Notes + Media Serial in the fixed order', async () => {
+    const prepared = await IMPORTERS.products.prepare([{
+      sku: 'S1', name: 'L',
+      grade: 'B',
+      comments: 'MODERATE USAGE SIGNS ALL OVER, GRADE B',
+      battery: '85%',
+      usageSigns: 'MODERATE',
+      casingCondition: 'MODERATE',
+      screenCondition: 'OK',
+      notes: 'NO MEDIA UPON PHYSICAL INSPECTION',
+      mediaSerial: '60HA11Q0KN21',
+    }]);
+    expect(prepared[0].data.comments).toBe(
+      'Grade: B\n' +
+      'MODERATE USAGE SIGNS ALL OVER, GRADE B\n' +
+      'Battery: 85%\n' +
+      'Usage signs: MODERATE\n' +
+      'Casing: MODERATE\n' +
+      'Screen: OK\n' +
+      'Notes: NO MEDIA UPON PHYSICAL INSPECTION\n' +
+      'Media serial: 60HA11Q0KN21'
+    );
+  });
+
+  it('treats a blank Battery as empty — no "Battery:" line, existing comments untouched', async () => {
+    await Product.create({ sku: 'S1', name: 'L', comments: 'Existing note' });
+    const prepared = await IMPORTERS.products.prepare([{ sku: 'S1', name: 'L', battery: '' }]);
+    expect(prepared[0].data.comments).toBeUndefined();
+    await IMPORTERS.products.commit(prepared);
+    const product = await Product.findOne({ sku: 'S1' });
+    expect(product.comments).toBe('Existing note');
+  });
+
+  it('treats "N/A" Battery as empty, same as any other N/A column', async () => {
+    const prepared = await IMPORTERS.products.prepare([{ sku: 'S1', name: 'L', battery: 'n/a' }]);
+    expect(prepared[0].data.comments).toBeUndefined();
+  });
+
+  it('re-importing the same Battery value does not duplicate it in Comments', async () => {
+    const first = await IMPORTERS.products.prepare([{ sku: 'S1', name: 'L', comments: 'Minor scratch on lid', battery: '85%' }]);
+    await IMPORTERS.products.commit(first);
+    let product = await Product.findOne({ sku: 'S1' });
+    expect(product.comments).toBe('Minor scratch on lid\nBattery: 85%');
+
+    const second = await IMPORTERS.products.prepare([{ sku: 'S1', name: 'L', comments: 'Minor scratch on lid', battery: '85%' }]);
+    await IMPORTERS.products.commit(second);
+    product = await Product.findOne({ sku: 'S1' });
+    expect(product.comments).toBe('Minor scratch on lid\nBattery: 85%');
+    expect((product.comments.match(/Battery: 85%/g) || []).length).toBe(1);
+  });
+
+  it('a later re-import without a Battery column recomposes from what that sheet currently states', async () => {
+    // Same rule that already applies to Grade/Usage Signs/etc — each import recomposes
+    // Comments from what THAT sheet currently supplies, it does not merge with a prior
+    // import's columns.
+    const first = await IMPORTERS.products.prepare([{ sku: 'S1', name: 'L', comments: 'Minor scratch on lid', battery: '85%' }]);
+    await IMPORTERS.products.commit(first);
+
+    const second = await IMPORTERS.products.prepare([{ sku: 'S1', name: 'L', comments: 'Minor scratch on lid' }]);
+    await IMPORTERS.products.commit(second);
+    const product = await Product.findOne({ sku: 'S1' });
+    expect(product.comments).toBe('Minor scratch on lid');
+  });
+
+  it('leaves Battery-derived comments untouched when a later sheet supplies no comment-related columns at all', async () => {
+    await Product.create({ sku: 'S1', name: 'L', comments: 'Minor scratch on lid\nBattery: 85%' });
+    const prepared = await IMPORTERS.products.prepare([{ sku: 'S1', name: 'L' }]);
+    expect(prepared[0].data.comments).toBeUndefined();
+    await IMPORTERS.products.commit(prepared);
+    const product = await Product.findOne({ sku: 'S1' });
+    expect(product.comments).toBe('Minor scratch on lid\nBattery: 85%');
   });
 });
 

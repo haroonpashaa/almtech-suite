@@ -3,6 +3,7 @@ import Product from '../models/Product.js';
 import StockMovement from '../models/StockMovement.js';
 import { logActivity } from '../utils/activity.js';
 import { requireNonZeroWholeQuantity } from '../utils/quantity.js';
+import { resolvePaging, runPaged } from '../utils/pagination.js';
 
 // Barcodes are optional. Treat blank/whitespace-only input as "no barcode" so the
 // partial unique index never sees an empty string, and so clearing the field in the
@@ -55,7 +56,7 @@ export function stripCostInput(req, payload) {
 }
 
 export const listProducts = asyncHandler(async (req, res) => {
-  const { q, category, lowStock, page = 1, limit = 50 } = req.query;
+  const { q, category, lowStock } = req.query;
   const filter = {};
   if (category) filter.category = category;
   if (q) {
@@ -71,12 +72,19 @@ export const listProducts = asyncHandler(async (req, res) => {
       { storage: new RegExp(q, 'i') },
     ];
   }
-  let query = Product.find(filter).sort('-createdAt');
-  const total = await Product.countDocuments(filter);
-  query = query.skip((page - 1) * limit).limit(Number(limit));
-  let items = await query;
-  if (lowStock === 'true') items = items.filter((p) => p.stock <= p.lowStockThreshold);
-  res.json({ items: items.map((p) => withoutCost(req, p)), total, page: Number(page), limit: Number(limit) });
+  // Expressed as a query condition (not a post-fetch filter) so it composes correctly
+  // with pagination — a post-fetch filter on just the current page would silently
+  // under-count and mis-paginate the low-stock view once the list is paged rather
+  // than fully loaded.
+  if (lowStock === 'true') filter.$expr = { $lte: ['$stock', '$lowStockThreshold'] };
+
+  // Same pagination utility as Invoices/Customers/Suppliers (resolvePaging/runPaged) —
+  // the response body keeps its existing {items, total, page, limit} shape, since POS,
+  // QuotationForm and PurchaseOrderForm all read `data.items` from this same endpoint.
+  const paging = resolvePaging(req.query, 50);
+  const items = await runPaged(res, Product, filter, { sort: '-createdAt', paging });
+  const total = Number(res.get('X-Total-Count'));
+  res.json({ items: items.map((p) => withoutCost(req, p)), total, page: paging.page, limit: paging.limit });
 });
 
 export const getProduct = asyncHandler(async (req, res) => {
