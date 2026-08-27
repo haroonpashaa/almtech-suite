@@ -77,6 +77,7 @@ export default function App() {
         <Route path="quotations/new" element={<Protected roles={['admin', 'sales']}><QuotationForm /></Protected>} />
         <Route path="purchase-orders" element={<PurchaseOrders />} />
         <Route path="purchase-orders/new" element={<Protected roles={['admin', 'stock']}><PurchaseOrderForm /></Protected>} />
+        <Route path="purchase-orders/:id/edit" element={<Protected roles={['admin', 'stock']}><PurchaseOrderForm /></Protected>} />
         <Route path="purchase-orders/:id" element={<PurchaseOrderDetail />} />
         {/* Supplier screens mirror the API: admin and stock only. */}
         <Route path="suppliers" element={<Protected roles={['admin', 'stock']}><Suppliers /></Protected>} />

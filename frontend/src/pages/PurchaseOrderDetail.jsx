@@ -111,6 +111,7 @@ export default function PurchaseOrderDetail() {
           <>
             <Badge tone={statusTone[po.status]} dot>{po.status}</Badge>
             <DocumentActions path={`/purchase-orders/${id}/pdf`} filename={po.number} label="PO PDF" />
+            {has('admin', 'stock') && po.status !== 'cancelled' && <Link to={`/purchase-orders/${id}/edit`} className="btn-secondary">Edit</Link>}
             {has('admin') && <Link to={`/deals/purchases/${id}`} className="btn-secondary">Deal history</Link>}
           </>
         }

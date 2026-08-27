@@ -84,6 +84,246 @@ export const createPO = asyncHandler(async (req, res) => {
   res.status(201).json(po);
 });
 
+// ---------------------------------------------------------------------------
+// Edit an existing purchase order.
+//
+// Only an explicit, enumerated set of inputs is ever read from the request body:
+// supplier, items ([{product, quantity, unitCost}]), taxRate, notes, expectedAt.
+// Nothing else — not `received`, `paid`, `balance`, `status`, `payments`, `_id` or
+// any other field — is ever trusted from the client; `received` in particular is
+// always taken from the PO's own stored line, never from the request.
+//
+// Financial fields (supplier, items, taxRate) are editable only while the PO has
+// no payments recorded and is not fully received (Rules 3 & 4) — this system has
+// no per-receipt cost history, so a partially-received line's already-received
+// units cannot be separated from its unreceived remainder for pricing purposes,
+// and a PO with money already applied against it cannot have its total changed
+// without risking an inconsistent balance. Within a still-editable PO, a line
+// that has itself received any units keeps its quantity floor and its cost
+// locked (Rule 2); a line with nothing received on it is fully editable, and may
+// be removed or added freely. Notes/expectedAt are pure metadata and stay
+// editable regardless of receiving/payment state, as long as the PO is not
+// cancelled.
+//
+// Concurrency: rather than a multi-document transaction (unavailable on the
+// standalone MongoDB this project runs against in development — see
+// utils/ledger.js), this reuses the project's established atomic
+// conditional-update idiom (the same shape as receiveItems' claim and
+// recordSupplierPayment's balance check) — with one addition those don't need.
+// receiveItems/recordSupplierPayment only ever *add* to a running figure, so
+// re-reading fresh at request-start and matching against itself is enough to
+// make the write atomic. An edit instead REPLACES fields based on what the
+// client had on screen, so atomicity alone isn't sufficient — the check has to
+// be against what the client last SAW, not what the server just re-read (those
+// are the same thing if you only re-read inside this one request, which would
+// make the check trivially pass every time and catch nothing).
+//
+// The client is therefore required to echo back `expectedUpdatedAt` — the PO's
+// own `updatedAt` from when it loaded the PO into the edit form. `updatedAt` is
+// the right signal for this rather than the Mongoose version key (`__v`):
+// verified directly against this schema that receiveItems/recordSupplierPayment/
+// reverseSupplierPayment all update `updatedAt` (Mongoose's automatic timestamps
+// apply to every findOneAndUpdate/updateOne/save on this document, exactly
+// because {timestamps: true} is on), but none of them touch `__v` (that only
+// auto-increments on `.save()`, which none of those three use for their actual
+// mutation). `__v` would therefore silently miss a receive or a payment that
+// landed while the edit form was open — `updatedAt` does not.
+export const updatePO = asyncHandler(async (req, res) => {
+  const po = await PurchaseOrder.findById(req.params.id);
+  if (!po) {
+    res.status(404);
+    throw new Error('Purchase order not found');
+  }
+  if (po.status === 'cancelled') {
+    res.status(409);
+    throw new Error('This purchase order is cancelled and cannot be edited');
+  }
+  if (!req.body.expectedUpdatedAt) {
+    res.status(400);
+    throw new Error('Missing expectedUpdatedAt — reload the purchase order before editing it');
+  }
+  const expected = new Date(req.body.expectedUpdatedAt);
+  if (Number.isNaN(expected.getTime()) || expected.getTime() !== po.updatedAt.getTime()) {
+    res.status(409);
+    throw new Error('This purchase order changed since you opened it (received, paid, or edited elsewhere) — reload and try again.');
+  }
+
+  const { notes, expectedAt } = req.body;
+  const wantsFinancialEdit = ['supplier', 'items', 'taxRate'].some((k) => req.body[k] !== undefined);
+
+  if (!wantsFinancialEdit) {
+    // Metadata-only edit — safe at any receiving/payment state.
+    const setFields = {};
+    if (notes !== undefined) setFields.notes = notes;
+    if (expectedAt !== undefined) setFields.expectedAt = expectedAt;
+    if (!Object.keys(setFields).length) {
+      res.status(400);
+      throw new Error('Nothing to update');
+    }
+    // Mongoose's automatic timestamps update `updatedAt` on this write, which is
+    // exactly what makes it a valid "nothing changed since" proof for the *next*
+    // request — no manual version bump needed.
+    const updated = await PurchaseOrder.findOneAndUpdate(
+      { _id: po._id, updatedAt: po.updatedAt },
+      { $set: setFields },
+      { new: true }
+    );
+    if (!updated) {
+      res.status(409);
+      throw new Error('This purchase order changed since you opened it — reload and try again.');
+    }
+    await logActivity(req, 'po_updated', { entity: 'PurchaseOrder', entityId: po._id });
+    return res.json(await PurchaseOrder.findById(po._id).populate('supplier').populate('createdBy', 'name'));
+  }
+
+  // --- Financial edit: supplier, items and/or taxRate ---
+  if (po.paid > 0) {
+    res.status(409);
+    throw new Error(
+      'This purchase order has payments recorded against it, so its financial details can no longer be edited. ' +
+        'Reverse the payment first if it was recorded in error.'
+    );
+  }
+  if (po.status === 'received') {
+    res.status(409);
+    throw new Error('This purchase order has been fully received and its financial details can no longer be edited.');
+  }
+  if (!Array.isArray(req.body.items) || !req.body.items.length) {
+    res.status(400);
+    throw new Error('At least one item is required');
+  }
+
+  const anyReceivedAnywhere = po.items.some((l) => l.received > 0);
+  const newSupplierId = req.body.supplier !== undefined ? String(req.body.supplier) : po.supplier.toString();
+  const oldSupplierId = po.supplier.toString();
+  const supplierChanged = newSupplierId !== oldSupplierId;
+  if (supplierChanged && anyReceivedAnywhere) {
+    res.status(409);
+    throw new Error('The supplier cannot be changed once any item on this purchase order has been received.');
+  }
+  let newSupplier = null;
+  if (supplierChanged) {
+    newSupplier = await Supplier.findById(newSupplierId);
+    if (!newSupplier) {
+      res.status(404);
+      throw new Error('Supplier not found');
+    }
+  }
+
+  const existingByProduct = new Map(po.items.map((l) => [l.product.toString(), l]));
+  const seenProducts = new Set();
+  const newLines = [];
+  let subtotal = 0;
+
+  for (const it of req.body.items) {
+    const product = await Product.findById(it.product);
+    if (!product) {
+      res.status(400);
+      throw new Error(`Product not found: ${it.product}`);
+    }
+    const key = product._id.toString();
+    if (seenProducts.has(key)) {
+      res.status(400);
+      throw new Error(`Duplicate product on this purchase order: ${product.name}`);
+    }
+    seenProducts.add(key);
+
+    const existing = existingByProduct.get(key);
+    const receivedSoFar = existing?.received || 0;
+    const quantity = requirePositiveWholeQuantity(it.quantity, product.name);
+    if (quantity < receivedSoFar) {
+      res.status(400);
+      throw new Error(`${product.name}: ordered quantity (${quantity}) cannot be less than the ${receivedSoFar} already received`);
+    }
+
+    let unitCost;
+    if (receivedSoFar > 0) {
+      // Cost is locked once any unit on this line has been received — see the
+      // function-level comment for why. A request that doesn't even attempt to
+      // change it (or resends the same value) is not an error.
+      unitCost = existing.unitCost;
+      if (it.unitCost !== undefined && Number(it.unitCost) !== unitCost) {
+        res.status(409);
+        throw new Error(`${product.name}: unit cost cannot be changed — ${receivedSoFar} unit(s) have already been received on this line at ${unitCost}.`);
+      }
+    } else {
+      unitCost = Number(it.unitCost);
+      if (!Number.isFinite(unitCost) || unitCost < 0) {
+        res.status(400);
+        throw new Error(`Enter a valid unit cost for ${product.name}`);
+      }
+    }
+
+    const lineTotal = quantity * unitCost;
+    newLines.push({
+      product: product._id,
+      name: product.name,
+      sku: product.sku,
+      quantity,
+      received: receivedSoFar,
+      unitCost,
+      serials: existing?.serials || [],
+      lineTotal,
+    });
+    subtotal += lineTotal;
+  }
+
+  // A line missing from the new items array is a removal — only safe if nothing
+  // was ever received against it.
+  for (const [key, existing] of existingByProduct) {
+    if (!seenProducts.has(key) && existing.received > 0) {
+      res.status(400);
+      throw new Error(`${existing.name}: cannot be removed — ${existing.received} unit(s) have already been received on this line.`);
+    }
+  }
+
+  const taxRate = req.body.taxRate !== undefined ? Number(req.body.taxRate) : po.taxRate;
+  if (!Number.isFinite(taxRate) || taxRate < 0) {
+    res.status(400);
+    throw new Error('Invalid tax rate');
+  }
+  const taxAmount = Math.round(subtotal * (taxRate / 100) * 100) / 100;
+  const total = Math.round((subtotal + taxAmount) * 100) / 100;
+  const oldTotal = po.total;
+
+  // Status follows the same derivation receiveItems uses — reducing an ordered
+  // quantity down to exactly what's already received can legitimately close the
+  // PO out as 'received' here, the same as receiving the last unit would.
+  const allReceived = newLines.every((l) => l.received >= l.quantity);
+  const anyReceived = newLines.some((l) => l.received > 0);
+  const newStatus = allReceived ? 'received' : anyReceived ? 'partial' : po.status;
+
+  const setFields = { items: newLines, subtotal, taxRate, taxAmount, total, balance: total, status: newStatus };
+  if (supplierChanged) setFields.supplier = newSupplierId;
+  if (notes !== undefined) setFields.notes = notes;
+  if (expectedAt !== undefined) setFields.expectedAt = expectedAt;
+
+  const updated = await PurchaseOrder.findOneAndUpdate(
+    { _id: po._id, updatedAt: po.updatedAt },
+    { $set: setFields },
+    { new: true }
+  );
+  if (!updated) {
+    res.status(409);
+    throw new Error('This purchase order changed since you opened it (received, paid, or edited elsewhere) — reload and try again.');
+  }
+
+  // Supplier.payable is a plain running total (not ledger-backed — createPO simply
+  // increments it, recordSupplierPayment/reverseSupplierPayment simply adjust it),
+  // so keeping it correct here is the same kind of plain delta adjustment, applied
+  // only after the PO write above is confirmed to have landed against the exact
+  // state that was validated.
+  if (supplierChanged) {
+    await Supplier.updateOne({ _id: oldSupplierId }, { $inc: { payable: -oldTotal } });
+    await Supplier.updateOne({ _id: newSupplierId }, { $inc: { payable: total } });
+  } else {
+    await Supplier.updateOne({ _id: oldSupplierId }, { $inc: { payable: total - oldTotal } });
+  }
+
+  await logActivity(req, 'po_updated', { entity: 'PurchaseOrder', entityId: po._id, meta: { total } });
+  res.json(await PurchaseOrder.findById(po._id).populate('supplier').populate('createdBy', 'name'));
+});
+
 export const receiveItems = asyncHandler(async (req, res) => {
   const { receipts } = req.body;
   const po = await PurchaseOrder.findById(req.params.id);

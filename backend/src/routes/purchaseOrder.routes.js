@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { protect, requireRole } from '../middleware/auth.js';
 import { purchaseOrderPDF, purchaseOrderReceiptPDF } from '../controllers/document.controller.js';
-import { listPOs, getPO, createPO, receiveItems, recordSupplierPayment, reverseSupplierPayment } from '../controllers/purchaseOrder.controller.js';
+import { listPOs, getPO, createPO, updatePO, receiveItems, recordSupplierPayment, reverseSupplierPayment } from '../controllers/purchaseOrder.controller.js';
 
 const r = Router();
 r.use(protect);
@@ -12,6 +12,7 @@ r.get('/:id', getPO);
 r.get('/:id/pdf', purchaseOrderPDF);
 r.get('/:id/payments/:paymentIndex/receipt', requireRole('admin'), purchaseOrderReceiptPDF);
 r.post('/', requireRole('admin', 'stock'), createPO);
+r.patch('/:id', requireRole('admin', 'stock'), updatePO);
 r.post('/:id/receive', requireRole('admin', 'stock'), receiveItems);
 r.post('/:id/payments', requireRole('admin'), recordSupplierPayment);
 r.post('/:id/payments/:paymentId/reverse', requireRole('admin'), reverseSupplierPayment);
