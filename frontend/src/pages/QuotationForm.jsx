@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
 import { money, errorMessage } from '../lib/format.js';
+import { clampQuantity, isValidQuantity } from '../lib/quantity.js';
 import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Combobox from '../components/Combobox.jsx';
@@ -40,7 +41,7 @@ export default function QuotationForm() {
   }
 
   const totals = useMemo(() => {
-    const subtotal = cart.reduce((s, l) => s + Math.max(0, l.quantity * l.unitPrice - (l.discount || 0)), 0);
+    const subtotal = cart.reduce((s, l) => s + Math.max(0, (Number(l.quantity) || 0) * (Number(l.unitPrice) || 0) - (Number(l.discount) || 0)), 0);
     const afterDisc = Math.max(0, subtotal - Number(discount || 0));
     const tax = Math.round(afterDisc * (Number(taxRate || 0) / 100) * 100) / 100;
     return { subtotal, tax, total: afterDisc + tax };
@@ -48,6 +49,10 @@ export default function QuotationForm() {
 
   async function submit() {
     if (!customer || !cart.length) return toast.error('Customer and items required');
+    const invalidQty = cart.find((l) => !isValidQuantity(l.quantity));
+    if (invalidQty) return toast.error(`Enter a valid quantity for ${invalidQty.name}`);
+    const invalidPrice = cart.find((l) => l.unitPrice === '' || !Number.isFinite(Number(l.unitPrice)) || Number(l.unitPrice) < 0);
+    if (invalidPrice) return toast.error(`Enter a valid price for ${invalidPrice.name}`);
     setSaving(true);
     try {
       const r = await api.post('/quotations', {
@@ -110,10 +115,14 @@ export default function QuotationForm() {
                   {cart.map((line, i) => (
                     <tr key={i} className="tr">
                       <td className="td"><div className="font-medium text-ink-900">{line.name}</div><div className="t-meta font-mono">{line.sku}</div></td>
-                      <td className="td text-right"><input className="input input-sm w-16 text-right num" type="number" min="1" value={line.quantity} onChange={(e) => setLine(i, { quantity: Number(e.target.value) })} /></td>
-                      <td className="td text-right"><input className="input input-sm w-24 text-right num" type="number" value={line.unitPrice} onChange={(e) => setLine(i, { unitPrice: Number(e.target.value) })} /></td>
-                      <td className="td text-right"><input className="input input-sm w-20 text-right num" type="number" value={line.discount} onChange={(e) => setLine(i, { discount: Number(e.target.value) })} /></td>
-                      <td className="td text-right num font-semibold text-ink-900 whitespace-nowrap">{money(Math.max(0, line.quantity * line.unitPrice - (line.discount || 0)), currency)}</td>
+                      <td className="td text-right">
+                        <input className="input input-sm w-16 text-right num" type="number" min="1" value={line.quantity}
+                               onChange={(e) => setLine(i, { quantity: clampQuantity(e.target.value) })}
+                               onBlur={() => { if (!isValidQuantity(line.quantity)) setLine(i, { quantity: 1 }); }} />
+                      </td>
+                      <td className="td text-right"><input className="input input-sm w-24 text-right num" type="number" value={line.unitPrice} onChange={(e) => setLine(i, { unitPrice: e.target.value })} /></td>
+                      <td className="td text-right"><input className="input input-sm w-20 text-right num" type="number" value={line.discount} onChange={(e) => setLine(i, { discount: e.target.value })} /></td>
+                      <td className="td text-right num font-semibold text-ink-900 whitespace-nowrap">{money(Math.max(0, (Number(line.quantity) || 0) * (Number(line.unitPrice) || 0) - (Number(line.discount) || 0)), currency)}</td>
                       <td className="td text-right"><button className="btn-icon text-ink-300 hover:text-red-600 hover:bg-red-50" onClick={() => removeLine(i)} aria-label="Remove"><svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m2 0v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6" /></svg></button></td>
                     </tr>
                   ))}
@@ -140,23 +149,25 @@ export default function QuotationForm() {
                       <div>
                         <label htmlFor={`qt-qty-${i}`} className="t-meta block mb-1">Qty</label>
                         <input id={`qt-qty-${i}`} className="input input-sm text-right num w-full" type="number" inputMode="numeric" min="1"
-                               value={line.quantity} onChange={(e) => setLine(i, { quantity: Number(e.target.value) })} />
+                               value={line.quantity}
+                               onChange={(e) => setLine(i, { quantity: clampQuantity(e.target.value) })}
+                               onBlur={() => { if (!isValidQuantity(line.quantity)) setLine(i, { quantity: 1 }); }} />
                       </div>
                       <div>
                         <label htmlFor={`qt-price-${i}`} className="t-meta block mb-1">Price</label>
                         <input id={`qt-price-${i}`} className="input input-sm text-right num w-full" type="number" inputMode="decimal" step="0.01"
-                               value={line.unitPrice} onChange={(e) => setLine(i, { unitPrice: Number(e.target.value) })} />
+                               value={line.unitPrice} onChange={(e) => setLine(i, { unitPrice: e.target.value })} />
                       </div>
                       <div>
                         <label htmlFor={`qt-disc-${i}`} className="t-meta block mb-1">Disc.</label>
                         <input id={`qt-disc-${i}`} className="input input-sm text-right num w-full" type="number" inputMode="decimal" step="0.01"
-                               value={line.discount} onChange={(e) => setLine(i, { discount: Number(e.target.value) })} />
+                               value={line.discount} onChange={(e) => setLine(i, { discount: e.target.value })} />
                       </div>
                     </div>
                     <div className="mt-2.5 flex items-baseline justify-between">
                       <span className="t-meta">Line total</span>
                       <span className="num font-semibold text-ink-900">
-                        {money(Math.max(0, line.quantity * line.unitPrice - (line.discount || 0)), currency)}
+                        {money(Math.max(0, (Number(line.quantity) || 0) * (Number(line.unitPrice) || 0) - (Number(line.discount) || 0)), currency)}
                       </span>
                     </div>
                   </li>

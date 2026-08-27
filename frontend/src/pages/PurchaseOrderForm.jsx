@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
 import { money, errorMessage } from '../lib/format.js';
+import { clampQuantity, isValidQuantity } from '../lib/quantity.js';
 import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Combobox from '../components/Combobox.jsx';
@@ -38,13 +39,17 @@ export default function PurchaseOrderForm() {
     setCart((c) => c.filter((_, j) => j !== i));
   }
   const totals = useMemo(() => {
-    const subtotal = cart.reduce((s, l) => s + l.quantity * l.unitCost, 0);
+    const subtotal = cart.reduce((s, l) => s + (Number(l.quantity) || 0) * (Number(l.unitCost) || 0), 0);
     const tax = Math.round(subtotal * (Number(taxRate || 0) / 100) * 100) / 100;
     return { subtotal, tax, total: subtotal + tax };
   }, [cart, taxRate]);
 
   async function submit() {
     if (!supplier || !cart.length) return toast.error('Supplier and items required');
+    const invalidQty = cart.find((l) => !isValidQuantity(l.quantity));
+    if (invalidQty) return toast.error(`Enter a valid quantity for ${invalidQty.name}`);
+    const invalidCost = cart.find((l) => l.unitCost === '' || !Number.isFinite(Number(l.unitCost)) || Number(l.unitCost) < 0);
+    if (invalidCost) return toast.error(`Enter a valid unit cost for ${invalidCost.name}`);
     setSaving(true);
     try {
       const r = await api.post('/purchase-orders', {
@@ -105,9 +110,13 @@ export default function PurchaseOrderForm() {
                   {cart.map((line, i) => (
                     <tr key={i} className="tr">
                       <td className="td"><div className="font-medium text-ink-900">{line.name}</div><div className="t-meta font-mono">{line.sku}</div></td>
-                      <td className="td text-right"><input className="input input-sm w-16 text-right num" type="number" min="1" value={line.quantity} onChange={(e) => setLine(i, { quantity: Number(e.target.value) })} /></td>
-                      <td className="td text-right"><input className="input input-sm w-24 text-right num" type="number" step="0.01" value={line.unitCost} onChange={(e) => setLine(i, { unitCost: Number(e.target.value) })} /></td>
-                      <td className="td text-right num font-semibold text-ink-900 whitespace-nowrap">{money(line.quantity * line.unitCost, currency)}</td>
+                      <td className="td text-right">
+                        <input className="input input-sm w-16 text-right num" type="number" min="1" value={line.quantity}
+                               onChange={(e) => setLine(i, { quantity: clampQuantity(e.target.value) })}
+                               onBlur={() => { if (!isValidQuantity(line.quantity)) setLine(i, { quantity: 1 }); }} />
+                      </td>
+                      <td className="td text-right"><input className="input input-sm w-24 text-right num" type="number" step="0.01" value={line.unitCost} onChange={(e) => setLine(i, { unitCost: e.target.value })} /></td>
+                      <td className="td text-right num font-semibold text-ink-900 whitespace-nowrap">{money((Number(line.quantity) || 0) * (Number(line.unitCost) || 0), currency)}</td>
                       <td className="td text-right"><button className="btn-icon text-ink-300 hover:text-red-600 hover:bg-red-50" onClick={() => removeLine(i)} aria-label="Remove"><svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m2 0v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6" /></svg></button></td>
                     </tr>
                   ))}
@@ -136,18 +145,20 @@ export default function PurchaseOrderForm() {
                       <div>
                         <label htmlFor={`po-line-qty-${i}`} className="t-meta block mb-1">Quantity</label>
                         <input id={`po-line-qty-${i}`} className="input input-sm text-right num w-full" type="number" inputMode="numeric" min="1"
-                               value={line.quantity} onChange={(e) => setLine(i, { quantity: Number(e.target.value) })} />
+                               value={line.quantity}
+                               onChange={(e) => setLine(i, { quantity: clampQuantity(e.target.value) })}
+                               onBlur={() => { if (!isValidQuantity(line.quantity)) setLine(i, { quantity: 1 }); }} />
                       </div>
                       <div>
                         <label htmlFor={`po-line-cost-${i}`} className="t-meta block mb-1">Unit cost</label>
                         <input id={`po-line-cost-${i}`} className="input input-sm text-right num w-full" type="number" inputMode="decimal" step="0.01"
-                               value={line.unitCost} onChange={(e) => setLine(i, { unitCost: Number(e.target.value) })} />
+                               value={line.unitCost} onChange={(e) => setLine(i, { unitCost: e.target.value })} />
                       </div>
                     </div>
-                    
+
                     <div className="mt-2.5 flex items-baseline justify-between">
                       <span className="t-meta">Line total</span>
-                      <span className="num font-semibold text-ink-900">{money(line.quantity * line.unitCost, currency)}</span>
+                      <span className="num font-semibold text-ink-900">{money((Number(line.quantity) || 0) * (Number(line.unitCost) || 0), currency)}</span>
                     </div>
                   </li>
                 ))}

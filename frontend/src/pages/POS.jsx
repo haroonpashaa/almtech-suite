@@ -49,8 +49,12 @@ export default function POS() {
       return [
         ...c,
         {
+          // The catalog comment (often auto-composed grading/inspection text from
+          // import) is internal/product-level information, not a sale-time note —
+          // the salesperson starts blank and types whatever this specific sale needs,
+          // rather than having to delete boilerplate first.
           product: p._id, name: p.name, sku: p.sku, unitPrice: p.sellingPrice,
-          quantity: 1, discount: 0, stock: p.stock, comments: p.comments || '',
+          quantity: 1, discount: 0, stock: p.stock, comments: '',
         },
       ];
     });
@@ -95,7 +99,7 @@ export default function POS() {
 
   const totals = useMemo(() => {
     const subtotal = cart.reduce(
-      (s, l) => s + Math.max(0, (Number(l.quantity) || 0) * l.unitPrice - (l.discount || 0)),
+      (s, l) => s + Math.max(0, (Number(l.quantity) || 0) * (Number(l.unitPrice) || 0) - (Number(l.discount) || 0)),
       0
     );
     const afterDisc = Math.max(0, subtotal - Number(discount || 0));
@@ -111,6 +115,12 @@ export default function POS() {
     if (!cart.length) return toast.error('Cart is empty');
     const invalidLine = cart.find((l) => !isValidQuantity(l.quantity, l.stock));
     if (invalidLine) return toast.error(`Enter a valid quantity for ${invalidLine.name} (1–${invalidLine.stock})`);
+    // A blank price field can now genuinely stay blank while editing (that's the fix —
+    // it no longer snaps back to a confusing "0" on every keystroke), so unlike before,
+    // it really can still be blank at submit time. Catch that here rather than letting
+    // it silently become a $0 line.
+    const invalidPriceLine = cart.find((l) => l.unitPrice === '' || !Number.isFinite(Number(l.unitPrice)) || Number(l.unitPrice) < 0);
+    if (invalidPriceLine) return toast.error(`Enter a valid price for ${invalidPriceLine.name}`);
     // An initial payment has to land somewhere — a sale with no payment is unaffected.
     if (paymentAmount > 0 && !paymentAccount) return toast.error('Select the account the payment goes into');
     setSaving(true);
@@ -300,13 +310,13 @@ export default function POS() {
                           </div>
                         </td>
                         <td className="td text-right">
-                          <input type="number" step="0.01" className="input input-sm w-24 text-right num" value={line.unitPrice} onChange={(e) => updateLine(i, { unitPrice: Number(e.target.value) })} />
+                          <input type="number" step="0.01" className="input input-sm w-24 text-right num" value={line.unitPrice} onChange={(e) => updateLine(i, { unitPrice: e.target.value })} />
                         </td>
                         <td className="td text-right">
-                          <input type="number" step="0.01" className="input input-sm w-20 text-right num" value={line.discount} onChange={(e) => updateLine(i, { discount: Number(e.target.value) })} />
+                          <input type="number" step="0.01" className="input input-sm w-20 text-right num" value={line.discount} onChange={(e) => updateLine(i, { discount: e.target.value })} />
                         </td>
                         <td className="td text-right font-semibold text-ink-900 num whitespace-nowrap">
-                          {money(Math.max(0, (Number(line.quantity) || 0) * line.unitPrice - (line.discount || 0)), currency)}
+                          {money(Math.max(0, (Number(line.quantity) || 0) * (Number(line.unitPrice) || 0) - (Number(line.discount) || 0)), currency)}
                         </td>
                         <td className="td text-right">
                           <button className="btn-icon text-ink-300 hover:text-red-600 hover:bg-red-50" onClick={() => removeLine(i)} aria-label="Remove">
@@ -361,7 +371,7 @@ export default function POS() {
                       <span className="ml-auto text-right">
                         <span className="block t-meta">Line total</span>
                         <span className="num font-semibold text-ink-900 whitespace-nowrap">
-                          {money(Math.max(0, (Number(line.quantity) || 0) * line.unitPrice - (line.discount || 0)), currency)}
+                          {money(Math.max(0, (Number(line.quantity) || 0) * (Number(line.unitPrice) || 0) - (Number(line.discount) || 0)), currency)}
                         </span>
                       </span>
                     </div>
@@ -371,13 +381,13 @@ export default function POS() {
                         <label htmlFor={`pos-price-${i}`} className="t-meta block mb-1">Unit price</label>
                         <input id={`pos-price-${i}`} type="number" inputMode="decimal" step="0.01"
                                className="input input-sm text-right num w-full" value={line.unitPrice}
-                               onChange={(e) => updateLine(i, { unitPrice: Number(e.target.value) })} />
+                               onChange={(e) => updateLine(i, { unitPrice: e.target.value })} />
                       </div>
                       <div>
                         <label htmlFor={`pos-disc-${i}`} className="t-meta block mb-1">Discount</label>
                         <input id={`pos-disc-${i}`} type="number" inputMode="decimal" step="0.01"
                                className="input input-sm text-right num w-full" value={line.discount}
-                               onChange={(e) => updateLine(i, { discount: Number(e.target.value) })} />
+                               onChange={(e) => updateLine(i, { discount: e.target.value })} />
                       </div>
                     </div>
                     <div className="mt-2.5">

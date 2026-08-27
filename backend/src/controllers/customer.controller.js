@@ -38,8 +38,23 @@ export const createCustomer = asyncHandler(async (req, res) => {
   res.status(201).json(customer);
 });
 
+// Profile fields only. `balance` is system-maintained — it moves exclusively through
+// invoice creation, payments and returns (see invoice.controller.js) and must never be
+// settable directly from this endpoint, so it (and _id/timestamps) are left off this
+// list rather than trusted from the request body.
+const CUSTOMER_WRITABLE_FIELDS = ['name', 'company', 'phone', 'email', 'cnicNtn', 'address', 'creditLimit', 'notes', 'active'];
+
+export function pickWritableCustomerFields(body) {
+  const clean = {};
+  for (const f of CUSTOMER_WRITABLE_FIELDS) {
+    if (body[f] !== undefined) clean[f] = body[f];
+  }
+  return clean;
+}
+
 export const updateCustomer = asyncHandler(async (req, res) => {
-  const customer = await Customer.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
+  const updates = pickWritableCustomerFields(req.body);
+  const customer = await Customer.findByIdAndUpdate(req.params.id, updates, { new: true, runValidators: true });
   if (!customer) {
     res.status(404);
     throw new Error('Customer not found');
