@@ -55,6 +55,34 @@ export function stripCostInput(req, payload) {
   return clean;
 }
 
+// Comments are free-text condition notes about a specific unit (screen scratch,
+// missing charger, etc.) that Sales must not see in the product catalogue. Unlike
+// cost, this is one-directional and sales-specific only — admin and stock keep
+// seeing it exactly as before. Stripped here (not just hidden in the interface) so
+// calling the API directly cannot recover it, same reasoning as withoutCost.
+const COMMENT_FIELDS = ['comments'];
+const seesComments = (req) => req.user?.role !== 'sales';
+
+function withoutComments(req, doc) {
+  if (!doc || seesComments(req)) return doc;
+  const plain = typeof doc.toObject === 'function' ? doc.toObject() : { ...doc };
+  for (const f of COMMENT_FIELDS) delete plain[f];
+  return plain;
+}
+
+/** Drop comments from a sales user's input, so an edit that can't see the field
+ *  can't blank it out either. */
+export function stripCommentsInput(req, payload) {
+  if (seesComments(req)) return payload;
+  const clean = { ...payload };
+  for (const f of COMMENT_FIELDS) delete clean[f];
+  return clean;
+}
+
+function sanitizeProduct(req, doc) {
+  return withoutComments(req, withoutCost(req, doc));
+}
+
 export const listProducts = asyncHandler(async (req, res) => {
   const { q, category, lowStock } = req.query;
   const filter = {};
@@ -84,7 +112,7 @@ export const listProducts = asyncHandler(async (req, res) => {
   const paging = resolvePaging(req.query, 50);
   const items = await runPaged(res, Product, filter, { sort: '-createdAt', paging });
   const total = Number(res.get('X-Total-Count'));
-  res.json({ items: items.map((p) => withoutCost(req, p)), total, page: paging.page, limit: paging.limit });
+  res.json({ items: items.map((p) => sanitizeProduct(req, p)), total, page: paging.page, limit: paging.limit });
 });
 
 export const getProduct = asyncHandler(async (req, res) => {
@@ -93,11 +121,11 @@ export const getProduct = asyncHandler(async (req, res) => {
     res.status(404);
     throw new Error('Product not found');
   }
-  res.json(withoutCost(req, product));
+  res.json(sanitizeProduct(req, product));
 });
 
 export const createProduct = asyncHandler(async (req, res) => {
-  const payload = stripCostInput(req, { ...req.body });
+  const payload = stripCommentsInput(req, stripCostInput(req, { ...req.body }));
   const barcode = cleanBarcode(payload.barcode);
   if (barcode) {
     await assertBarcodeFree(res, barcode);
@@ -113,12 +141,12 @@ export const createProduct = asyncHandler(async (req, res) => {
     rethrowDuplicateBarcode(e, res, barcode);
   }
   await logActivity(req, 'product_created', { entity: 'Product', entityId: product._id, meta: { sku: product.sku } });
-  res.status(201).json(withoutCost(req, product));
+  res.status(201).json(sanitizeProduct(req, product));
 });
 
 export const updateProduct = asyncHandler(async (req, res) => {
   const { barcode: rawBarcode, ...rest } = req.body;
-  const update = { $set: stripCostInput(req, rest) };
+  const update = { $set: stripCommentsInput(req, stripCostInput(req, rest)) };
   let barcode = '';
 
   // Only touch the barcode when the client actually sent the key, so partial updates
@@ -144,7 +172,7 @@ export const updateProduct = asyncHandler(async (req, res) => {
     throw new Error('Product not found');
   }
   await logActivity(req, 'product_updated', { entity: 'Product', entityId: product._id });
-  res.json(withoutCost(req, product));
+  res.json(sanitizeProduct(req, product));
 });
 
 // POS barcode lookup. Read-only: this never touches stock — inventory continues to
@@ -160,7 +188,7 @@ export const lookupByBarcode = asyncHandler(async (req, res) => {
     res.status(404);
     throw new Error(`Product not found for barcode: ${code}`);
   }
-  res.json(withoutCost(req, product));
+  res.json(sanitizeProduct(req, product));
 });
 
 export const deleteProduct = asyncHandler(async (req, res) => {
@@ -193,7 +221,7 @@ export const adjustStock = asyncHandler(async (req, res) => {
     createdBy: req.user._id,
   });
   await logActivity(req, 'stock_adjusted', { entity: 'Product', entityId: product._id, meta: { quantity, note } });
-  res.json(withoutCost(req, product));
+  res.json(sanitizeProduct(req, product));
 });
 
 export const stockLedger = asyncHandler(async (req, res) => {

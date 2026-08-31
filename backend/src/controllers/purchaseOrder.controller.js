@@ -10,6 +10,20 @@ import { resolvePayment, requireReason, assertReversible, postReversal } from '.
 import { resolvePaging, runPaged } from '../utils/pagination.js';
 import { requirePositiveWholeQuantity } from '../utils/quantity.js';
 
+// Notes are free-text metadata on the order (see updatePO's comment on "pure
+// metadata"), not something Sales is authorized to see. Sales cannot create, edit,
+// receive or pay a purchase order at all (routes below stay admin/stock-only), so
+// this is the only place notes reach a sales response — stripped here rather than
+// only in the interface, same reasoning as Product's withoutCost.
+const seesPONotes = (req) => req.user?.role !== 'sales';
+
+function withoutPONotes(req, doc) {
+  if (!doc || seesPONotes(req)) return doc;
+  const plain = typeof doc.toObject === 'function' ? doc.toObject() : { ...doc };
+  delete plain.notes;
+  return plain;
+}
+
 export const listPOs = asyncHandler(async (req, res) => {
   const { supplier, status } = req.query;
   const filter = {};
@@ -21,7 +35,7 @@ export const listPOs = asyncHandler(async (req, res) => {
     populate: [['supplier', 'name']],
     paging,
   });
-  res.json(items);
+  res.json(items.map((po) => withoutPONotes(req, po)));
 });
 
 export const getPO = asyncHandler(async (req, res) => {
@@ -30,7 +44,7 @@ export const getPO = asyncHandler(async (req, res) => {
     res.status(404);
     throw new Error('Purchase order not found');
   }
-  res.json(po);
+  res.json(withoutPONotes(req, po));
 });
 
 export const createPO = asyncHandler(async (req, res) => {

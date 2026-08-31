@@ -89,8 +89,12 @@ export const purchaseOrderPDF = asyncHandler(async (req, res) => {
     throw new Error('Purchase order not found');
   }
   const settings = await loadSettings();
+  // Mirrors getPO: Sales does not see PO notes, so the printable copy must not
+  // print them either — a PDF must never become a way around that.
+  const poData = po.toObject();
+  if (req.user?.role === 'sales') delete poData.notes;
   buildPurchaseOrder({
-    po: po.toObject(),
+    po: poData,
     supplier: po.supplier,
     settings,
     res,

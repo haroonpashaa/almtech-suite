@@ -7,7 +7,7 @@ import Account from '../models/Account.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 import '../models/User.js'; // registers the schema so .populate('createdBy') can resolve it
 import {
-  createPO, updatePO, receiveItems, recordSupplierPayment, reverseSupplierPayment,
+  createPO, updatePO, receiveItems, recordSupplierPayment, reverseSupplierPayment, listPOs, getPO,
 } from './purchaseOrder.controller.js';
 
 describe('Purchase Order editing (DB-backed)', () => {
@@ -404,5 +404,87 @@ describe('Purchase Order editing (DB-backed)', () => {
     expect(revRes.body.balance).toBe(500);
     const s = await Supplier.findById(supplier._id);
     expect(s.payable).toBe(500);
+  });
+});
+
+// ===========================================================================
+// Notes visibility (DB-backed) — Sales can only ever reach listPOs/getPO (every
+// write route is admin/stock-only at the router level), so those are the only
+// two places notes could leak to Sales. Admin and Stock keep seeing notes
+// exactly as before.
+// ===========================================================================
+describe('Purchase order notes visibility (DB-backed)', () => {
+  let mem;
+  const userId = new mongoose.Types.ObjectId();
+
+  beforeAll(async () => {
+    mem = await MongoMemoryServer.create();
+    await mongoose.connect(mem.getUri());
+  });
+
+  afterEach(async () => {
+    await PurchaseOrder.deleteMany({});
+    await Product.deleteMany({});
+    await Supplier.deleteMany({});
+  });
+
+  afterAll(async () => {
+    await mongoose.disconnect();
+    await mem.stop();
+  });
+
+  function mockRes() {
+    const headers = {};
+    const res = {
+      statusCode: 200,
+      status(code) { this.statusCode = code; return this; },
+      set: (k, v) => { headers[String(k).toLowerCase()] = String(v); return res; },
+      get: (k) => headers[String(k).toLowerCase()],
+      json(body) { this.body = body; return this; },
+    };
+    return res;
+  }
+
+  async function makePO(notes = 'Call supplier before delivery') {
+    const supplier = await Supplier.create({ name: 'Supplier A' });
+    const product = await Product.create({ sku: 'PO-NOTE-1', name: 'Product', stock: 0 });
+    return PurchaseOrder.create({
+      number: 'PO-0001',
+      supplier: supplier._id,
+      items: [{ product: product._id, name: product.name, sku: product.sku, quantity: 1, unitCost: 10, lineTotal: 10 }],
+      subtotal: 10,
+      total: 10,
+      balance: 10,
+      notes,
+      createdBy: userId,
+    });
+  }
+
+  it('getPO hides notes from a sales user but keeps them for admin/stock', async () => {
+    const po = await makePO();
+
+    const salesRes = mockRes();
+    await getPO({ params: { id: po._id.toString() }, user: { role: 'sales' } }, salesRes);
+    expect(salesRes.body.notes).toBeUndefined();
+
+    const adminRes = mockRes();
+    await getPO({ params: { id: po._id.toString() }, user: { role: 'admin' } }, adminRes);
+    expect(adminRes.body.notes).toBe('Call supplier before delivery');
+
+    const stockRes = mockRes();
+    await getPO({ params: { id: po._id.toString() }, user: { role: 'stock' } }, stockRes);
+    expect(stockRes.body.notes).toBe('Call supplier before delivery');
+  });
+
+  it('listPOs hides notes from a sales user but keeps them for admin', async () => {
+    await makePO();
+
+    const salesRes = mockRes();
+    await listPOs({ query: {}, user: { role: 'sales' } }, salesRes);
+    expect(salesRes.body[0].notes).toBeUndefined();
+
+    const adminRes = mockRes();
+    await listPOs({ query: {}, user: { role: 'admin' } }, adminRes);
+    expect(adminRes.body[0].notes).toBe('Call supplier before delivery');
   });
 });

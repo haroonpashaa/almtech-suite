@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import Product from '../models/Product.js';
-import { stripCostInput, listProducts } from './product.controller.js';
+import { stripCostInput, stripCommentsInput, listProducts, getProduct, createProduct, updateProduct } from './product.controller.js';
 
 describe('stripCostInput', () => {
   it('strips purchasePrice for a sales user', () => {
@@ -21,6 +21,120 @@ describe('stripCostInput', () => {
   it('is a no-op when purchasePrice is already absent', () => {
     const req = { user: { role: 'sales' } };
     expect(stripCostInput(req, { name: 'X' })).toEqual({ name: 'X' });
+  });
+});
+
+describe('stripCommentsInput', () => {
+  it('strips comments for a sales user', () => {
+    const req = { user: { role: 'sales' } };
+    expect(stripCommentsInput(req, { name: 'X', comments: 'Screen scratch' })).toEqual({ name: 'X' });
+  });
+
+  it('keeps comments for admin and stock', () => {
+    const payload = { name: 'X', comments: 'Screen scratch' };
+    expect(stripCommentsInput({ user: { role: 'admin' } }, payload)).toEqual(payload);
+    expect(stripCommentsInput({ user: { role: 'stock' } }, payload)).toEqual(payload);
+  });
+
+  it('is a no-op when comments is already absent', () => {
+    const req = { user: { role: 'sales' } };
+    expect(stripCommentsInput(req, { name: 'X' })).toEqual({ name: 'X' });
+  });
+});
+
+// ===========================================================================
+// Comments visibility (DB-backed) — Sales must never receive the `comments`
+// field, on read or on write, while Admin and Stock keep seeing it exactly as
+// before. Mirrors the existing cost-price visibility tests above; this is the
+// same withoutCost/stripCostInput architecture applied to a second field.
+// ===========================================================================
+describe('Product comments visibility (DB-backed)', () => {
+  let mem;
+
+  beforeAll(async () => {
+    mem = await MongoMemoryServer.create();
+    await mongoose.connect(mem.getUri());
+  });
+
+  afterEach(async () => {
+    await Product.deleteMany({});
+  });
+
+  afterAll(async () => {
+    await mongoose.disconnect();
+    await mem.stop();
+  });
+
+  function mockRes() {
+    const headers = {};
+    const res = {
+      statusCode: 200,
+      status(code) { this.statusCode = code; return this; },
+      set: (k, v) => { headers[String(k).toLowerCase()] = String(v); return res; },
+      get: (k) => headers[String(k).toLowerCase()],
+      json(body) { this.body = body; return this; },
+    };
+    return res;
+  }
+
+  async function makeProduct(comments = 'Screen scratch on lid') {
+    return Product.create({ sku: 'CMT-1', name: 'Commented Laptop', stock: 3, comments });
+  }
+
+  it('getProduct hides comments from a sales user but keeps them for admin/stock', async () => {
+    const p = await makeProduct();
+
+    const salesRes = mockRes();
+    await getProduct({ params: { id: p._id.toString() }, user: { role: 'sales' } }, salesRes);
+    expect(salesRes.body.comments).toBeUndefined();
+
+    const adminRes = mockRes();
+    await getProduct({ params: { id: p._id.toString() }, user: { role: 'admin' } }, adminRes);
+    expect(adminRes.body.comments).toBe('Screen scratch on lid');
+
+    const stockRes = mockRes();
+    await getProduct({ params: { id: p._id.toString() }, user: { role: 'stock' } }, stockRes);
+    expect(stockRes.body.comments).toBe('Screen scratch on lid');
+  });
+
+  it('listProducts hides comments from a sales user but keeps them for admin', async () => {
+    await makeProduct();
+
+    const salesRes = mockRes();
+    await listProducts({ query: {}, user: { role: 'sales' } }, salesRes);
+    expect(salesRes.body.items[0].comments).toBeUndefined();
+
+    const adminRes = mockRes();
+    await listProducts({ query: {}, user: { role: 'admin' } }, adminRes);
+    expect(adminRes.body.items[0].comments).toBe('Screen scratch on lid');
+  });
+
+  it('createProduct ignores comments sent by a sales user', async () => {
+    const res = mockRes();
+    await createProduct({ body: { sku: 'CMT-2', name: 'New Laptop', comments: 'Should not be saved' }, user: { role: 'sales' } }, res);
+    expect(res.body.comments).toBeUndefined();
+    const stored = await Product.findOne({ sku: 'CMT-2' });
+    expect(stored.comments).toBe('');
+  });
+
+  it('updateProduct from a sales user does not wipe an existing comment', async () => {
+    const p = await makeProduct('Original comment');
+    // Simulates the sales edit form: the comments field is hidden, so nothing in
+    // the payload carries a comments key at all — but even an explicit blank
+    // must not be trusted from a sales user (stripCommentsInput drops the key
+    // outright rather than relying on the client to omit it).
+    const res = mockRes();
+    await updateProduct({ params: { id: p._id.toString() }, body: { name: 'Commented Laptop', comments: '' }, user: { role: 'sales' } }, res);
+    expect(res.statusCode).toBe(200);
+    const stored = await Product.findById(p._id);
+    expect(stored.comments).toBe('Original comment');
+  });
+
+  it('updateProduct from an admin can still change comments', async () => {
+    const p = await makeProduct('Original comment');
+    const res = mockRes();
+    await updateProduct({ params: { id: p._id.toString() }, body: { comments: 'Updated by admin' }, user: { role: 'admin' } }, res);
+    expect(res.body.comments).toBe('Updated by admin');
   });
 });
 

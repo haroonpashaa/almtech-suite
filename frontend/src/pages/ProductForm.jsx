@@ -5,6 +5,7 @@ import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
 import { errorMessage } from '../lib/format.js';
 import { buildProductPayload } from '../lib/productPayload.js';
+import { useAuth } from '../context/AuthContext.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import { Spinner } from '../components/ui.jsx';
 
@@ -29,6 +30,7 @@ function Section({ title, description, children }) {
 
 export default function ProductForm() {
   const { id } = useParams();
+  const { has } = useAuth();
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [form, setForm] = useState(empty);
@@ -183,18 +185,24 @@ export default function ProductForm() {
               <input id="productform-warranty" className="input" placeholder="1 year" value={form.warranty} onChange={(e) => set('warranty', e.target.value)} />
             </div>
           </div>
-          <div className="mt-4">
-            <label htmlFor="productform-comments" className="label">Comments</label>
-            <textarea
-              id="productform-comments"
-              className="input"
-              rows="2"
-              placeholder="Screen scratch, battery health issue, missing charger…"
-              value={form.comments}
-              onChange={(e) => set('comments', e.target.value)}
-            />
-            <p className="text-xs text-ink-400 mt-1">Defects, cosmetic condition, or missing accessories for this specific unit.</p>
-          </div>
+          {/* The backend never sends this field's value to a sales user (see
+              product.controller.js withoutComments) and strips it from a sales
+              user's save, so hiding the control here can't be undone by editing
+              and submitting the form. */}
+          {!has('sales') && (
+            <div className="mt-4">
+              <label htmlFor="productform-comments" className="label">Comments</label>
+              <textarea
+                id="productform-comments"
+                className="input"
+                rows="2"
+                placeholder="Screen scratch, battery health issue, missing charger…"
+                value={form.comments}
+                onChange={(e) => set('comments', e.target.value)}
+              />
+              <p className="text-xs text-ink-400 mt-1">Defects, cosmetic condition, or missing accessories for this specific unit.</p>
+            </div>
+          )}
         </Section>
 
         <Section title="Options">

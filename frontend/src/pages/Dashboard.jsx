@@ -94,6 +94,10 @@ export default function Dashboard() {
   const { has } = useAuth();
   const currency = useCurrency();
   const isAdmin = has('admin');
+  // Sales gets a stripped-down dashboard: Expenses and Receivables only. Admin's
+  // and Stock's dashboards are unchanged — this flag only ever removes sections,
+  // it never adds anything to what Admin/Stock already see.
+  const isSales = has('sales');
   const [periodKey, setPeriodKey] = useState('30d');
   const period = PERIODS.find((p) => p.key === periodKey);
   const range = useMemo(() => rangeFor(period), [periodKey]);
@@ -147,6 +151,15 @@ export default function Dashboard() {
   const reversals = useQuery({
     enabled: isAdmin, queryKey: ['dash-reversals'],
     queryFn: async () => (await api.get('/payments', { params: { type: 'payment_reversal', limit: 5 } })).data,
+  });
+  // Admin's Expenses KPI comes from /reports/series, which is admin-only (see the
+  // `series` query above). Sales is authorized for /expenses/monthly (the same
+  // endpoint ExpenseReports.jsx already uses), so its Expenses tile is sourced
+  // from there instead rather than showing a permanently-empty admin-only figure.
+  const expensesMonthly = useQuery({
+    enabled: isSales,
+    queryKey: ['dash-expenses-monthly'],
+    queryFn: async () => (await api.get('/expenses/monthly')).data,
   });
 
   const d = dash.data;
@@ -222,27 +235,40 @@ export default function Dashboard() {
       <div className="page page-wide stack">
         {/* ---------- Primary KPIs: two promoted, the rest supporting ---------- */}
         <section aria-label="Key figures">
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-            <Kpi lead loading={dash.isLoading} label="Revenue · period" value={totals?.revenue ?? d?.salesMonth}
-                 currency={currency} to="/invoices" change={delta(totals?.revenue, prevTotals?.revenue)}
-                 hint={`${d?.salesToday?.count ?? 0} invoice${d?.salesToday?.count === 1 ? '' : 's'} today`} />
-            <Kpi lead loading={dash.isLoading} label="Net profit · period" value={pl.data?.netProfit}
-                 currency={currency} tone="auto" to="/reports"
-                 hint={pl.data ? `${(pl.data.netMargin ?? 0).toFixed(1)}% margin` : ''} />
-            <Kpi loading={dash.isLoading} label="Expenses · period" value={totals?.expenses} currency={currency}
-                 tone="negative" to="/expenses" change={delta(totals?.expenses, prevTotals?.expenses)} />
-            <Kpi loading={dash.isLoading} label="Cash & bank" value={d?.accountsTotal} currency={currency}
-                 tone="auto" to="/accounts" hint={`${d?.accounts?.length ?? 0} accounts`} />
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 mt-3">
-            <Kpi loading={dash.isLoading} label="Receivables" value={d?.receivables} currency={currency}
-                 tone="due" to="/receivables" hint="Owed to ALMTech" />
-            <Kpi loading={dash.isLoading} label="Payables" value={d?.payables} currency={currency}
-                 tone="due" to="/payables" hint="ALMTech owes" />
-            <Kpi loading={dash.isLoading} label="Net position" value={d?.netPosition} currency={currency}
-                 tone="auto" to="/receivables" hint="Receivables − payables"
-                 className="sm:col-span-2 xl:col-span-1" />
-          </div>
+          {isSales ? (
+            // Sales sees only Expenses and Receivables — every other KPI, and every
+            // section below this one except Low stock, is Admin/Stock only.
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Kpi lead loading={expensesMonthly.isLoading} label="Expenses · this month" value={expensesMonthly.data?.total}
+                   currency={currency} to="/expenses" tone="negative" hint="Posted expenses" />
+              <Kpi lead loading={dash.isLoading} label="Receivables" value={d?.receivables}
+                   currency={currency} tone="due" hint="Owed to ALMTech" />
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+                <Kpi lead loading={dash.isLoading} label="Revenue · period" value={totals?.revenue ?? d?.salesMonth}
+                     currency={currency} to="/invoices" change={delta(totals?.revenue, prevTotals?.revenue)}
+                     hint={`${d?.salesToday?.count ?? 0} invoice${d?.salesToday?.count === 1 ? '' : 's'} today`} />
+                <Kpi lead loading={dash.isLoading} label="Net profit · period" value={pl.data?.netProfit}
+                     currency={currency} tone="auto" to="/reports"
+                     hint={pl.data ? `${(pl.data.netMargin ?? 0).toFixed(1)}% margin` : ''} />
+                <Kpi loading={dash.isLoading} label="Expenses · period" value={totals?.expenses} currency={currency}
+                     tone="negative" to="/expenses" change={delta(totals?.expenses, prevTotals?.expenses)} />
+                <Kpi loading={dash.isLoading} label="Cash & bank" value={d?.accountsTotal} currency={currency}
+                     tone="auto" to="/accounts" hint={`${d?.accounts?.length ?? 0} accounts`} />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 mt-3">
+                <Kpi loading={dash.isLoading} label="Receivables" value={d?.receivables} currency={currency}
+                     tone="due" to="/receivables" hint="Owed to ALMTech" />
+                <Kpi loading={dash.isLoading} label="Payables" value={d?.payables} currency={currency}
+                     tone="due" to="/payables" hint="ALMTech owes" />
+                <Kpi loading={dash.isLoading} label="Net position" value={d?.netPosition} currency={currency}
+                     tone="auto" to="/receivables" hint="Receivables − payables"
+                     className="sm:col-span-2 xl:col-span-1" />
+              </div>
+            </>
+          )}
         </section>
 
         {isAdmin && (
@@ -427,34 +453,36 @@ export default function Dashboard() {
           </>
         )}
 
-        {/* ---------- Low stock: visible to every role ---------- */}
-        <section className="card">
-          <div className="card-head">
-            <h2 className="t-section">Low stock</h2>
-            <Link to="/products" className="t-meta hover:text-brand-700">All products →</Link>
-          </div>
-          {dash.isLoading ? (
-            <div className="p-4 space-y-2">{Array.from({ length: 4 }).map((_, i) => <div key={i} className="skeleton h-4" />)}</div>
-          ) : !d?.lowStock?.length ? (
-            <EmptyState title="Stock levels are healthy" description="No product has reached its reorder level." />
-          ) : (
-            <ul className="divide-y divide-ink-100">
-              {d.lowStock.slice(0, 6).map((p) => (
-                <li key={p._id}>
-                  <Link to="/products" className="flex items-center gap-3 px-4 py-2.5 hover:bg-ink-50 transition-colors">
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-[13px] text-ink-800 truncate">{p.name}</span>
-                      <span className="block t-meta font-mono">{p.sku}</span>
-                    </span>
-                    <span className={p.stock === 0 ? 'badge-danger' : 'badge-warning'}>
-                      {p.stock === 0 ? 'Out of stock' : `${p.stock} left`}
-                    </span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+        {/* ---------- Low stock: visible to every role except Sales ---------- */}
+        {!isSales && (
+          <section className="card">
+            <div className="card-head">
+              <h2 className="t-section">Low stock</h2>
+              <Link to="/products" className="t-meta hover:text-brand-700">All products →</Link>
+            </div>
+            {dash.isLoading ? (
+              <div className="p-4 space-y-2">{Array.from({ length: 4 }).map((_, i) => <div key={i} className="skeleton h-4" />)}</div>
+            ) : !d?.lowStock?.length ? (
+              <EmptyState title="Stock levels are healthy" description="No product has reached its reorder level." />
+            ) : (
+              <ul className="divide-y divide-ink-100">
+                {d.lowStock.slice(0, 6).map((p) => (
+                  <li key={p._id}>
+                    <Link to="/products" className="flex items-center gap-3 px-4 py-2.5 hover:bg-ink-50 transition-colors">
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[13px] text-ink-800 truncate">{p.name}</span>
+                        <span className="block t-meta font-mono">{p.sku}</span>
+                      </span>
+                      <span className={p.stock === 0 ? 'badge-danger' : 'badge-warning'}>
+                        {p.stock === 0 ? 'Out of stock' : `${p.stock} left`}
+                      </span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
       </div>
     </div>
   );

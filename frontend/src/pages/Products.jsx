@@ -115,9 +115,12 @@ export default function Products() {
             ) },
             { key: 'sku', label: 'Serial Number', render: (p) => <span className="font-mono text-[12px] text-ink-400">{p.sku}</span> },
             { key: 'brand', label: 'Brand', render: (p) => p.brand || <span className="text-ink-300">—</span> },
-            { key: 'comments', label: 'Comments', render: (p) => (
+            // The API never sends comments to a sales user (product.controller.js
+            // withoutComments), so this column would just render blanks for them —
+            // dropped entirely instead.
+            ...(has('sales') ? [] : [{ key: 'comments', label: 'Comments', render: (p) => (
                 p.comments ? <span className="t-meta truncate block max-w-[16rem]" title={p.comments}>{p.comments}</span> : <span className="text-ink-300">—</span>
-              ) },
+              ) }]),
             { key: 'stock', label: 'Stock', className: 'text-right', render: (p) => (
                 <span className="num">
                   {p.stock <= p.lowStockThreshold ? (
