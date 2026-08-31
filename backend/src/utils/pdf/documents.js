@@ -23,7 +23,14 @@ function itemColumns(doc, { priceLabel = 'Unit price', showDiscount = true, show
     {
       key: 'name', label: 'Description', width: 0, color: COLOR.ink900, font: FONT.bold,
       render: (r) => r.name || '—',
-      sub: (r) => [r.sku, r.comments].filter(Boolean).join(' · ') || null,
+      // model/ram/processor/storage/serials only ever exist on invoice lines — on a
+      // quotation or purchase order line they're simply absent, and filter(Boolean)
+      // already drops them, so this is safe to share across all three documents.
+      sub: (r) => {
+        const specs = [r.model, r.ram, r.processor, r.storage].filter(Boolean).join(' · ');
+        const serials = r.serials?.length ? `S/N: ${r.serials.join(', ')}` : null;
+        return [r.sku, specs || null, serials, r.comments].filter(Boolean).join(' · ') || null;
+      },
     },
     { key: 'qty', label: 'Qty', width: 40, align: 'right', render: (r) => String(r.quantity ?? 0) },
   ];

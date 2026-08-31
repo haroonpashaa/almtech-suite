@@ -142,6 +142,13 @@ export function resolveLineComments(comments, product) {
   return comments ?? product.comments ?? '';
 }
 
+// Same "explicit line value wins, falls back to the product's own value" rule as
+// resolveLineComments, applied to the sale-time name/spec snapshot fields a
+// salesperson may correct without editing the product record itself.
+function resolveLineText(value, fallback) {
+  return value ?? fallback ?? '';
+}
+
 // The Invoice schema itself rejects quantity < 1, but only once Invoice.create()
 // runs — well after stock has already been decremented below for the *other* lines
 // in this sale. A non-integer quantity (e.g. 1.7) passes that schema check outright,
@@ -149,11 +156,58 @@ export function resolveLineComments(comments, product) {
 // the product with fractional stock.
 export const normalizeSaleQuantity = requirePositiveWholeQuantity;
 
-async function buildLineFromProduct({ product, quantity, unitPrice, discount = 0, serials = [], comments }) {
+// Validates a cart line's chosen serial numbers against the product's own inventory
+// record. Serial numbers stay optional (unchanged from before) — a sale with none
+// behaves exactly as it always has — but a line that does specify them must specify
+// exactly one per unit being sold, each a real, currently in-stock serial on this
+// product, with no serial claimed twice anywhere in this same sale. This is what
+// makes an edited/selected serial number actually correspond to a real inventory
+// unit rather than an arbitrary string the backend would otherwise trust blindly.
+export function validateLineSerials({ product, quantity, serials, claimedSerials }) {
+  if (!serials?.length) return [];
+  if (!product.tracksSerials) {
+    const err = new Error(`${product.name} does not track serial numbers`);
+    err.statusCode = 400;
+    throw err;
+  }
+  if (serials.length !== quantity) {
+    const err = new Error(`${product.name}: selected ${serials.length} serial number(s) but quantity is ${quantity}`);
+    err.statusCode = 400;
+    throw err;
+  }
+  const seenInLine = new Set();
+  for (const s of serials) {
+    if (seenInLine.has(s) || claimedSerials.has(s)) {
+      const err = new Error(`${product.name}: serial number "${s}" was selected more than once`);
+      err.statusCode = 400;
+      throw err;
+    }
+    const sn = product.serials.find((x) => x.serial === s);
+    if (!sn) {
+      const err = new Error(`${product.name}: serial number "${s}" was not found on this product`);
+      err.statusCode = 400;
+      throw err;
+    }
+    if (sn.status !== 'in_stock') {
+      const err = new Error(`${product.name}: serial number "${s}" is not available (status: ${sn.status})`);
+      err.statusCode = 400;
+      throw err;
+    }
+    seenInLine.add(s);
+    claimedSerials.add(s);
+  }
+  return serials;
+}
+
+export async function buildLineFromProduct({ product, quantity, unitPrice, discount = 0, serials = [], comments, name, model, ram, processor, storage }) {
   return {
     product: product._id,
-    name: product.name,
+    name: resolveLineText(name, product.name),
     sku: product.sku,
+    model: resolveLineText(model, product.model),
+    ram: resolveLineText(ram, product.ram),
+    processor: resolveLineText(processor, product.processor),
+    storage: resolveLineText(storage, product.storage),
     quantity,
     unitPrice,
     unitCost: product.purchasePrice,
@@ -177,6 +231,9 @@ export const createInvoice = asyncHandler(async (req, res) => {
   }
 
   const lines = [];
+  // Tracked across every line in this sale, not just within one, so the same
+  // serial number cannot be claimed twice by two different lines in one request.
+  const claimedSerials = new Set();
   for (const it of items) {
     const product = await Product.findById(it.product);
     if (!product) {
@@ -188,10 +245,11 @@ export const createInvoice = asyncHandler(async (req, res) => {
       res.status(400);
       throw new Error(`Insufficient stock for ${product.name} (have ${product.stock}, need ${quantity})`);
     }
+    const serials = validateLineSerials({ product, quantity, serials: it.serials, claimedSerials });
     // Order matters: `it.product` is the raw id string from the request, so it must be
     // spread BEFORE `product` or it overwrites the fetched document and the line loses
     // its product ref.
-    lines.push(await buildLineFromProduct({ ...it, quantity, product }));
+    lines.push(await buildLineFromProduct({ ...it, quantity, serials, product }));
   }
 
   const { items: enriched, subtotal } = computeItemTotals(lines);

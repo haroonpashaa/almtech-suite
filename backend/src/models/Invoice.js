@@ -5,6 +5,13 @@ const lineSchema = new mongoose.Schema(
     product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
     name: String,
     sku: String,
+    // Specification snapshot, same reasoning as `comments` below: copied from the
+    // product when the line is added, but this sale's record of what was actually
+    // sold — correcting a typo here must never rewrite the product's own spec.
+    model: { type: String, trim: true },
+    ram: { type: String, trim: true },
+    processor: { type: String, trim: true },
+    storage: { type: String, trim: true },
     quantity: { type: Number, required: true, min: 1 },
     unitPrice: { type: Number, required: true, min: 0 },
     unitCost: { type: Number, default: 0, min: 0 },

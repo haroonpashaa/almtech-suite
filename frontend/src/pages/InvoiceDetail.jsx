@@ -117,13 +117,18 @@ export default function InvoiceDetail() {
               columns={[
                 {
                   key: 'item', label: 'Item', priority: 'primary',
-                  render: (it) => (
-                    <>
-                      <div className="font-medium text-ink-900">{it.name}</div>
-                      <div className="t-meta font-mono">{it.sku}</div>
-                      {it.comments && <div className="text-xs text-amber-600 mt-0.5">{it.comments}</div>}
-                    </>
-                  ),
+                  render: (it) => {
+                    const specs = [it.model, it.ram, it.processor, it.storage].filter(Boolean).join(' · ');
+                    return (
+                      <>
+                        <div className="font-medium text-ink-900">{it.name}</div>
+                        <div className="t-meta font-mono">{it.sku}</div>
+                        {specs && <div className="t-meta">{specs}</div>}
+                        {it.serials?.length > 0 && <div className="t-meta font-mono">S/N: {it.serials.join(', ')}</div>}
+                        {it.comments && <div className="text-xs text-amber-600 mt-0.5">{it.comments}</div>}
+                      </>
+                    );
+                  },
                 },
                 { key: 'quantity', label: 'Qty', align: 'right', render: (it) => <span className="num">{it.quantity}</span> },
                 { key: 'unitPrice', label: `Price (${currency})`, align: 'right', render: (it) => <Money value={it.unitPrice} /> },

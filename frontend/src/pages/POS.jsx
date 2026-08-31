@@ -6,6 +6,7 @@ import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
 import { money, errorMessage } from '../lib/format.js';
 import { clampQuantity, isValidQuantity } from '../lib/quantity.js';
+import { resizeSerials, compactSerials, serialsAreSubmittable } from '../lib/cartSerials.js';
 import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Combobox from '../components/Combobox.jsx';
@@ -42,10 +43,13 @@ export default function POS() {
     setCart((c) => {
       const existing = c.find((x) => x.product === p._id);
       if (existing) {
-        return c.map((x) =>
-          x.product === p._id ? { ...x, quantity: clampQuantity(Number(x.quantity || 0) + 1, p.stock) } : x
-        );
+        return c.map((x) => {
+          if (x.product !== p._id) return x;
+          const quantity = clampQuantity(Number(x.quantity || 0) + 1, p.stock);
+          return { ...x, quantity, serials: x.tracksSerials ? resizeSerials(x.serials, quantity) : x.serials };
+        });
       }
+      const tracksSerials = !!p.tracksSerials;
       return [
         ...c,
         {
@@ -54,7 +58,18 @@ export default function POS() {
           // the salesperson starts blank and types whatever this specific sale needs,
           // rather than having to delete boilerplate first.
           product: p._id, name: p.name, sku: p.sku, unitPrice: p.sellingPrice,
+          // Specification snapshot: starts as a copy of the product's own values, but
+          // from here on belongs to this sale line — editing it corrects what this
+          // sale says was sold, and never writes back to the product record.
+          model: p.model || '', ram: p.ram || '', processor: p.processor || '', storage: p.storage || '',
           quantity: 1, discount: 0, stock: p.stock, comments: '',
+          tracksSerials,
+          // Snapshot of what's sellable right now. Taken once, at add-to-cart time —
+          // the backend re-validates against the live product record at submit time
+          // regardless, so a stale snapshot here can only under-offer a choice, never
+          // let an invalid one through.
+          availableSerials: tracksSerials ? (p.serials || []).filter((s) => s.status === 'in_stock').map((s) => s.serial) : [],
+          serials: tracksSerials ? resizeSerials([], 1) : [],
         },
       ];
     });
@@ -93,6 +108,22 @@ export default function POS() {
   function updateLine(idx, patch) {
     setCart((c) => c.map((line, i) => (i === idx ? { ...line, ...patch } : line)));
   }
+  // Quantity changes go through here rather than updateLine directly, because a
+  // tracksSerials line's serial slots must grow or shrink in step with it.
+  function updateQuantity(idx, quantity) {
+    setCart((c) => c.map((line, i) => {
+      if (i !== idx) return line;
+      return { ...line, quantity, serials: line.tracksSerials ? resizeSerials(line.serials, quantity) : line.serials };
+    }));
+  }
+  function updateSerialSlot(idx, slotIndex, value) {
+    setCart((c) => c.map((line, i) => {
+      if (i !== idx) return line;
+      const serials = [...(line.serials || [])];
+      serials[slotIndex] = value;
+      return { ...line, serials };
+    }));
+  }
   function removeLine(idx) {
     setCart((c) => c.filter((_, i) => i !== idx));
   }
@@ -121,18 +152,33 @@ export default function POS() {
     // it silently become a $0 line.
     const invalidPriceLine = cart.find((l) => l.unitPrice === '' || !Number.isFinite(Number(l.unitPrice)) || Number(l.unitPrice) < 0);
     if (invalidPriceLine) return toast.error(`Enter a valid price for ${invalidPriceLine.name}`);
+    const blankNameLine = cart.find((l) => !String(l.name || '').trim());
+    if (blankNameLine) return toast.error('Enter an item name for every line in the cart');
+    // Serial capture stays optional (unchanged from before this was editable at
+    // all) — only a PARTIAL selection is rejected, since it could never correspond
+    // to a complete, valid set of inventory units.
+    const badSerialLine = cart.find((l) => l.tracksSerials && !serialsAreSubmittable(l.serials, l.quantity));
+    if (badSerialLine) {
+      return toast.error(`Select ${badSerialLine.quantity} distinct serial number(s) for ${badSerialLine.name}, or leave them all unselected`);
+    }
     // An initial payment has to land somewhere — a sale with no payment is unaffected.
     if (paymentAmount > 0 && !paymentAccount) return toast.error('Select the account the payment goes into');
     setSaving(true);
     try {
       const payload = {
         customer,
-        items: cart.map(({ product, quantity, unitPrice, discount, comments }) => ({
+        items: cart.map(({ product, quantity, unitPrice, discount, comments, name, model, ram, processor, storage, serials }) => ({
           product,
+          name: name.trim(),
+          model: model || '',
+          ram: ram || '',
+          processor: processor || '',
+          storage: storage || '',
           quantity: Number(quantity),
           unitPrice: Number(unitPrice),
           discount: Number(discount || 0),
           comments: comments || '',
+          serials: compactSerials(serials),
         })),
         discount: Number(discount || 0),
         taxRate: Number(taxRate || 0),
@@ -283,10 +329,44 @@ export default function POS() {
                   </thead>
                   <tbody>
                     {cart.map((line, i) => (
-                      <tr key={i} className="tr">
-                        <td className="td">
-                          <div className="font-medium text-ink-900">{line.name}</div>
-                          <div className="t-meta font-mono">{line.sku} · {line.stock} avail.</div>
+                      <tr key={i} className="tr align-top">
+                        <td className="td min-w-[16rem]">
+                          <input
+                            className="input input-sm w-full font-medium"
+                            aria-label="Item name"
+                            value={line.name}
+                            onChange={(e) => updateLine(i, { name: e.target.value })}
+                          />
+                          <div className="t-meta font-mono mt-1">{line.sku} · {line.stock} avail.</div>
+                          {/* Specification snapshot for this sale line — starts from the
+                              product's own values, freely correctable, never written back. */}
+                          <div className="mt-1.5 grid grid-cols-2 gap-1">
+                            <input className="input input-sm" placeholder="Model" aria-label="Model" value={line.model || ''} onChange={(e) => updateLine(i, { model: e.target.value })} />
+                            <input className="input input-sm" placeholder="RAM" aria-label="RAM" value={line.ram || ''} onChange={(e) => updateLine(i, { ram: e.target.value })} />
+                            <input className="input input-sm" placeholder="Processor" aria-label="Processor" value={line.processor || ''} onChange={(e) => updateLine(i, { processor: e.target.value })} />
+                            <input className="input input-sm" placeholder="Storage" aria-label="Storage" value={line.storage || ''} onChange={(e) => updateLine(i, { storage: e.target.value })} />
+                          </div>
+                          {line.tracksSerials && (
+                            <div className="mt-1.5">
+                              <div className="t-meta mb-1">Serial number{line.serials.length === 1 ? '' : 's'}</div>
+                              <div className="flex flex-wrap gap-1">
+                                {line.serials.map((chosen, slot) => (
+                                  <select
+                                    key={slot}
+                                    className="select input-sm"
+                                    aria-label={`Serial number ${slot + 1}`}
+                                    value={chosen}
+                                    onChange={(e) => updateSerialSlot(i, slot, e.target.value)}
+                                  >
+                                    <option value="">— select —</option>
+                                    {line.availableSerials
+                                      .filter((sn) => sn === chosen || !line.serials.includes(sn))
+                                      .map((sn) => <option key={sn} value={sn}>{sn}</option>)}
+                                  </select>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                         </td>
                         <td className="td">
                           <input
@@ -298,15 +378,15 @@ export default function POS() {
                         </td>
                         <td className="td">
                           <div className="inline-flex items-center rounded-lg border border-ink-200 overflow-hidden">
-                            <button type="button" onClick={() => updateLine(i, { quantity: clampQuantity((Number(line.quantity) || 0) - 1, line.stock) })} className="px-2 py-1 text-ink-500 hover:bg-ink-50">−</button>
+                            <button type="button" onClick={() => updateQuantity(i, clampQuantity((Number(line.quantity) || 0) - 1, line.stock))} className="px-2 py-1 text-ink-500 hover:bg-ink-50">−</button>
                             <input
                               type="number" min="1" max={line.stock}
                               className="w-10 text-center text-sm py-1 outline-none num [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
                               value={line.quantity}
-                              onChange={(e) => updateLine(i, { quantity: clampQuantity(e.target.value, line.stock) })}
-                              onBlur={() => { if (!isValidQuantity(line.quantity, line.stock)) updateLine(i, { quantity: 1 }); }}
+                              onChange={(e) => updateQuantity(i, clampQuantity(e.target.value, line.stock))}
+                              onBlur={() => { if (!isValidQuantity(line.quantity, line.stock)) updateQuantity(i, 1); }}
                             />
-                            <button type="button" onClick={() => updateLine(i, { quantity: clampQuantity((Number(line.quantity) || 0) + 1, line.stock) })} className="px-2 py-1 text-ink-500 hover:bg-ink-50">+</button>
+                            <button type="button" onClick={() => updateQuantity(i, clampQuantity((Number(line.quantity) || 0) + 1, line.stock))} className="px-2 py-1 text-ink-500 hover:bg-ink-50">+</button>
                           </div>
                         </td>
                         <td className="td text-right">
@@ -338,9 +418,14 @@ export default function POS() {
                 {cart.map((line, i) => (
                   <li key={i} className="p-3.5">
                     <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="font-medium text-ink-900 text-[13.5px] leading-snug">{line.name}</div>
-                        <div className="t-meta font-mono truncate">{line.sku} · {line.stock} avail.</div>
+                      <div className="min-w-0 flex-1">
+                        <input
+                          className="input input-sm w-full font-medium"
+                          aria-label="Item name"
+                          value={line.name}
+                          onChange={(e) => updateLine(i, { name: e.target.value })}
+                        />
+                        <div className="t-meta font-mono truncate mt-1">{line.sku} · {line.stock} avail.</div>
                       </div>
                       <button
                         className="btn-icon text-ink-300 hover:text-red-600 hover:bg-red-50 shrink-0 -mt-1 -mr-1"
@@ -351,21 +436,51 @@ export default function POS() {
                       </button>
                     </div>
 
+                    {/* Specification snapshot for this sale line — same rule as desktop:
+                        starts from the product, freely correctable, never written back. */}
+                    <div className="mt-2 grid grid-cols-2 gap-1.5">
+                      <input className="input input-sm" placeholder="Model" aria-label="Model" value={line.model || ''} onChange={(e) => updateLine(i, { model: e.target.value })} />
+                      <input className="input input-sm" placeholder="RAM" aria-label="RAM" value={line.ram || ''} onChange={(e) => updateLine(i, { ram: e.target.value })} />
+                      <input className="input input-sm" placeholder="Processor" aria-label="Processor" value={line.processor || ''} onChange={(e) => updateLine(i, { processor: e.target.value })} />
+                      <input className="input input-sm" placeholder="Storage" aria-label="Storage" value={line.storage || ''} onChange={(e) => updateLine(i, { storage: e.target.value })} />
+                    </div>
+                    {line.tracksSerials && (
+                      <div className="mt-2">
+                        <div className="t-meta mb-1">Serial number{line.serials.length === 1 ? '' : 's'}</div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {line.serials.map((chosen, slot) => (
+                            <select
+                              key={slot}
+                              className="select input-sm"
+                              aria-label={`Serial number ${slot + 1}`}
+                              value={chosen}
+                              onChange={(e) => updateSerialSlot(i, slot, e.target.value)}
+                            >
+                              <option value="">— select —</option>
+                              {line.availableSerials
+                                .filter((sn) => sn === chosen || !line.serials.includes(sn))
+                                .map((sn) => <option key={sn} value={sn}>{sn}</option>)}
+                            </select>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     <div className="mt-2.5 flex items-center gap-2">
                       <div className="inline-flex items-center rounded-md border border-ink-200 overflow-hidden shrink-0">
                         <button type="button" aria-label="Decrease quantity"
-                                onClick={() => updateLine(i, { quantity: clampQuantity((Number(line.quantity) || 0) - 1, line.stock) })}
+                                onClick={() => updateQuantity(i, clampQuantity((Number(line.quantity) || 0) - 1, line.stock))}
                                 className="w-11 h-11 text-lg text-ink-600 active:bg-ink-100">−</button>
                         <input
                           type="number" inputMode="numeric" min="1" max={line.stock}
                           aria-label={`Quantity of ${line.name}`}
                           className="w-12 h-11 text-center text-sm outline-none num [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
                           value={line.quantity}
-                          onChange={(e) => updateLine(i, { quantity: clampQuantity(e.target.value, line.stock) })}
-                          onBlur={() => { if (!isValidQuantity(line.quantity, line.stock)) updateLine(i, { quantity: 1 }); }}
+                          onChange={(e) => updateQuantity(i, clampQuantity(e.target.value, line.stock))}
+                          onBlur={() => { if (!isValidQuantity(line.quantity, line.stock)) updateQuantity(i, 1); }}
                         />
                         <button type="button" aria-label="Increase quantity"
-                                onClick={() => updateLine(i, { quantity: clampQuantity((Number(line.quantity) || 0) + 1, line.stock) })}
+                                onClick={() => updateQuantity(i, clampQuantity((Number(line.quantity) || 0) + 1, line.stock))}
                                 className="w-11 h-11 text-lg text-ink-600 active:bg-ink-100">+</button>
                       </div>
                       <span className="ml-auto text-right">
