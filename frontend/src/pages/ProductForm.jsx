@@ -12,7 +12,7 @@ import { Spinner } from '../components/ui.jsx';
 const empty = {
   name: '', sku: '', brand: '', model: '', description: '',
   processor: '', ram: '', storage: '', graphics: '', screen: '', condition: 'new', warranty: '', comments: '',
-  stock: 0, lowStockThreshold: 5, sellingPrice: 0,
+  stock: 0, lowStockThreshold: 5, sellingPrice: '',
   tracksSerials: false, barcode: '',
 };
 
@@ -123,9 +123,10 @@ export default function ProductForm() {
                 <label htmlFor="productform-selling-price" className="label">Selling Price</label>
                 <input
                   id="productform-selling-price"
-                  className="input num"
+                  className="input num input-money"
                   type="number"
                   min="0"
+                  placeholder="Enter price"
                   value={form.sellingPrice}
                   onChange={(e) => set('sellingPrice', e.target.value)}
                 />

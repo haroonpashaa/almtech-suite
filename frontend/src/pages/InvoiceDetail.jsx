@@ -192,7 +192,7 @@ export default function InvoiceDetail() {
             <div className="card p-5">
               <h3 className="text-sm font-semibold text-ink-900 mb-3">Record Payment</h3>
               <label htmlFor="invoicedetail-amount-24" className="label">Amount</label>
-              <input id="invoicedetail-amount-24" className="input num" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={money(invoice.balance, currency)} />
+              <input id="invoicedetail-amount-24" className="input num input-money" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={money(invoice.balance, currency)} />
               <label className="label mt-3">Deposit To <span className="text-red-500">*</span></label>
               <select className="select" value={account} onChange={(e) => setAccount(e.target.value)}>
                 <option value="">— select account —</option>

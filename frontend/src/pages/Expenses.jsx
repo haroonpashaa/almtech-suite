@@ -257,7 +257,7 @@ export default function Expenses() {
             </div>
             <div>
               <label htmlFor="expenses-amount-17" className="label">Amount <span className="text-red-500">*</span></label>
-              <input id="expenses-amount-17" className="input num" type="number" step="0.01" min="0" value={form.amount} onChange={(e) => set('amount', e.target.value)} placeholder="0.00" />
+              <input id="expenses-amount-17" className="input num input-money" type="number" step="0.01" min="0" value={form.amount} onChange={(e) => set('amount', e.target.value)} placeholder="Enter amount" />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">

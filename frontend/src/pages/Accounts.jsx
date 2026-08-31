@@ -11,7 +11,7 @@ import Money from '../components/Money.jsx';
 import Modal from '../components/Modal.jsx';
 import { Badge, Spinner } from '../components/ui.jsx';
 
-const empty = { name: '', type: 'bank', openingBalance: 0, bankName: '', accountNumber: '', accountTitle: '' };
+const empty = { name: '', type: 'bank', openingBalance: '', bankName: '', accountNumber: '', accountTitle: '' };
 
 const typeTone = { cash: 'success', bank: 'neutral', wallet: 'warning', other: 'neutral' };
 
@@ -117,7 +117,7 @@ export default function Accounts() {
             </div>
             <div>
               <label htmlFor="accounts-opening-balance-6" className="label">Opening Balance</label>
-              <input id="accounts-opening-balance-6" className="input num" type="number" step="0.01" value={form.openingBalance} onChange={(e) => set('openingBalance', e.target.value)} />
+              <input id="accounts-opening-balance-6" className="input num input-money" type="number" step="0.01" value={form.openingBalance} onChange={(e) => set('openingBalance', e.target.value)} placeholder="Enter amount" />
             </div>
           </div>
           {form.type !== 'cash' && (

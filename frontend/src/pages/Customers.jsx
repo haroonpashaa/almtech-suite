@@ -12,7 +12,7 @@ import Table from '../components/Table.jsx';
 import Money from '../components/Money.jsx';
 import Modal from '../components/Modal.jsx';
 
-const empty = { name: '', company: '', phone: '', email: '', cnicNtn: '', address: '', creditLimit: 0, notes: '' };
+const empty = { name: '', company: '', phone: '', email: '', cnicNtn: '', address: '', creditLimit: '', notes: '' };
 
 export default function Customers() {
   const { has } = useAuth();

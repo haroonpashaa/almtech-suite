@@ -197,7 +197,7 @@ export default function PurchaseOrderForm() {
                         <td className="td text-right">
                           {costLocked
                             ? <span className="num text-ink-500" title={line.received > 0 ? 'Cost is locked once any unit has been received' : undefined}>{money(line.unitCost, currency)}</span>
-                            : <input className="input input-sm w-24 text-right num" type="number" step="0.01" value={line.unitCost} onChange={(e) => setLine(i, { unitCost: e.target.value })} />}
+                            : <input className="input input-sm w-24 text-right num input-money" type="number" step="0.01" value={line.unitCost} onChange={(e) => setLine(i, { unitCost: e.target.value })} />}
                         </td>
                         <td className="td text-right num font-semibold text-ink-900 whitespace-nowrap">{money((Number(line.quantity) || 0) * (Number(line.unitCost) || 0), currency)}</td>
                         {canEditFinancials && (
@@ -252,7 +252,7 @@ export default function PurchaseOrderForm() {
                           {costLocked ? (
                             <div className="input input-sm text-right num w-full bg-ink-25">{money(line.unitCost, currency)}</div>
                           ) : (
-                            <input id={`po-line-cost-${i}`} className="input input-sm text-right num w-full" type="number" inputMode="decimal" step="0.01"
+                            <input id={`po-line-cost-${i}`} className="input input-sm text-right num input-money w-full" type="number" inputMode="decimal" step="0.01"
                                    value={line.unitCost} onChange={(e) => setLine(i, { unitCost: e.target.value })} />
                           )}
                         </div>

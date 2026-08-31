@@ -15,7 +15,7 @@ export default function QuotationForm() {
   const [search, setSearch] = useState('');
   const [customer, setCustomer] = useState('');
   const [cart, setCart] = useState([]);
-  const [discount, setDiscount] = useState(0);
+  const [discount, setDiscount] = useState('');
   const [taxRate, setTaxRate] = useState(0);
   const [validUntil, setValidUntil] = useState('');
   const [notes, setNotes] = useState('');
@@ -30,7 +30,7 @@ export default function QuotationForm() {
   function addToCart(p) {
     setCart((c) => {
       if (c.find((x) => x.product === p._id)) return c;
-      return [...c, { product: p._id, name: p.name, sku: p.sku, unitPrice: p.sellingPrice, quantity: 1, discount: 0 }];
+      return [...c, { product: p._id, name: p.name, sku: p.sku, unitPrice: p.sellingPrice, quantity: 1, discount: '' }];
     });
   }
   function setLine(i, patch) {
@@ -120,8 +120,8 @@ export default function QuotationForm() {
                                onChange={(e) => setLine(i, { quantity: clampQuantity(e.target.value) })}
                                onBlur={() => { if (!isValidQuantity(line.quantity)) setLine(i, { quantity: 1 }); }} />
                       </td>
-                      <td className="td text-right"><input className="input input-sm w-24 text-right num" type="number" value={line.unitPrice} onChange={(e) => setLine(i, { unitPrice: e.target.value })} /></td>
-                      <td className="td text-right"><input className="input input-sm w-20 text-right num" type="number" value={line.discount} onChange={(e) => setLine(i, { discount: e.target.value })} /></td>
+                      <td className="td text-right"><input className="input input-sm w-24 text-right num input-money" type="number" value={line.unitPrice} onChange={(e) => setLine(i, { unitPrice: e.target.value })} /></td>
+                      <td className="td text-right"><input className="input input-sm w-20 text-right num input-money" type="number" value={line.discount} onChange={(e) => setLine(i, { discount: e.target.value })} /></td>
                       <td className="td text-right num font-semibold text-ink-900 whitespace-nowrap">{money(Math.max(0, (Number(line.quantity) || 0) * (Number(line.unitPrice) || 0) - (Number(line.discount) || 0)), currency)}</td>
                       <td className="td text-right"><button className="btn-icon text-ink-300 hover:text-red-600 hover:bg-red-50" onClick={() => removeLine(i)} aria-label="Remove"><svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m2 0v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6" /></svg></button></td>
                     </tr>
@@ -155,12 +155,12 @@ export default function QuotationForm() {
                       </div>
                       <div>
                         <label htmlFor={`qt-price-${i}`} className="t-meta block mb-1">Price</label>
-                        <input id={`qt-price-${i}`} className="input input-sm text-right num w-full" type="number" inputMode="decimal" step="0.01"
+                        <input id={`qt-price-${i}`} className="input input-sm text-right num input-money w-full" type="number" inputMode="decimal" step="0.01"
                                value={line.unitPrice} onChange={(e) => setLine(i, { unitPrice: e.target.value })} />
                       </div>
                       <div>
                         <label htmlFor={`qt-disc-${i}`} className="t-meta block mb-1">Disc.</label>
-                        <input id={`qt-disc-${i}`} className="input input-sm text-right num w-full" type="number" inputMode="decimal" step="0.01"
+                        <input id={`qt-disc-${i}`} className="input input-sm text-right num input-money w-full" type="number" inputMode="decimal" step="0.01"
                                value={line.discount} onChange={(e) => setLine(i, { discount: e.target.value })} />
                       </div>
                     </div>
@@ -197,7 +197,7 @@ export default function QuotationForm() {
                 <input id="quotationform-valid-until-54" className="input" type="date" value={validUntil} onChange={(e) => setValidUntil(e.target.value)} />
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <div><label htmlFor="quotationform-discount-210" className="label">Discount</label><input id="quotationform-discount-210" className="input num" type="number" value={discount} onChange={(e) => setDiscount(e.target.value)} /></div>
+                <div><label htmlFor="quotationform-discount-210" className="label">Discount</label><input id="quotationform-discount-210" className="input num input-money" type="number" value={discount} onChange={(e) => setDiscount(e.target.value)} placeholder="Enter amount" /></div>
                 <div><label htmlFor="quotationform-tax-211" className="label">Tax %</label><input id="quotationform-tax-211" className="input num" type="number" value={taxRate} onChange={(e) => setTaxRate(e.target.value)} /></div>
               </div>
               <div><label htmlFor="quotationform-notes-212" className="label">Notes</label><textarea id="quotationform-notes-212" className="input" rows="2" value={notes} onChange={(e) => setNotes(e.target.value)} /></div>

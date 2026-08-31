@@ -18,9 +18,9 @@ export default function POS() {
   const [search, setSearch] = useState('');
   const [customer, setCustomer] = useState('');
   const [cart, setCart] = useState([]);
-  const [discount, setDiscount] = useState(0);
+  const [discount, setDiscount] = useState('');
   const [taxRate, setTaxRate] = useState(0);
-  const [paymentAmount, setPaymentAmount] = useState(0);
+  const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [paymentAccount, setPaymentAccount] = useState('');
   const [notes, setNotes] = useState('');
@@ -62,7 +62,7 @@ export default function POS() {
           // from here on belongs to this sale line — editing it corrects what this
           // sale says was sold, and never writes back to the product record.
           model: p.model || '', ram: p.ram || '', processor: p.processor || '', storage: p.storage || '',
-          quantity: 1, discount: 0, stock: p.stock, comments: '',
+          quantity: 1, discount: '', stock: p.stock, comments: '',
           tracksSerials,
           // Snapshot of what's sellable right now. Taken once, at add-to-cart time —
           // the backend re-validates against the live product record at submit time
@@ -390,10 +390,10 @@ export default function POS() {
                           </div>
                         </td>
                         <td className="td text-right">
-                          <input type="number" step="0.01" className="input input-sm w-24 text-right num" value={line.unitPrice} onChange={(e) => updateLine(i, { unitPrice: e.target.value })} />
+                          <input type="number" step="0.01" className="input input-sm w-24 text-right num input-money" value={line.unitPrice} onChange={(e) => updateLine(i, { unitPrice: e.target.value })} />
                         </td>
                         <td className="td text-right">
-                          <input type="number" step="0.01" className="input input-sm w-20 text-right num" value={line.discount} onChange={(e) => updateLine(i, { discount: e.target.value })} />
+                          <input type="number" step="0.01" className="input input-sm w-20 text-right num input-money" value={line.discount} onChange={(e) => updateLine(i, { discount: e.target.value })} />
                         </td>
                         <td className="td text-right font-semibold text-ink-900 num whitespace-nowrap">
                           {money(Math.max(0, (Number(line.quantity) || 0) * (Number(line.unitPrice) || 0) - (Number(line.discount) || 0)), currency)}
@@ -495,13 +495,13 @@ export default function POS() {
                       <div>
                         <label htmlFor={`pos-price-${i}`} className="t-meta block mb-1">Unit price</label>
                         <input id={`pos-price-${i}`} type="number" inputMode="decimal" step="0.01"
-                               className="input input-sm text-right num w-full" value={line.unitPrice}
+                               className="input input-sm text-right num input-money w-full" value={line.unitPrice}
                                onChange={(e) => updateLine(i, { unitPrice: e.target.value })} />
                       </div>
                       <div>
                         <label htmlFor={`pos-disc-${i}`} className="t-meta block mb-1">Discount</label>
                         <input id={`pos-disc-${i}`} type="number" inputMode="decimal" step="0.01"
-                               className="input input-sm text-right num w-full" value={line.discount}
+                               className="input input-sm text-right num input-money w-full" value={line.discount}
                                onChange={(e) => updateLine(i, { discount: e.target.value })} />
                       </div>
                     </div>
@@ -538,7 +538,7 @@ export default function POS() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label htmlFor="pos-discount-27" className="label">Discount</label>
-                  <input id="pos-discount-27" className="input num" type="number" step="0.01" value={discount} onChange={(e) => setDiscount(e.target.value)} />
+                  <input id="pos-discount-27" className="input num input-money" type="number" step="0.01" value={discount} onChange={(e) => setDiscount(e.target.value)} placeholder="Enter amount" />
                 </div>
                 <div>
                   <label htmlFor="pos-tax-28" className="label">Tax %</label>
@@ -576,7 +576,7 @@ export default function POS() {
               <div className="grid grid-cols-2 gap-3 mt-4">
                 <div>
                   <label htmlFor="pos-initial-payment-30" className="label">Initial Payment</label>
-                  <input id="pos-initial-payment-30" className="input num" type="number" step="0.01" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} />
+                  <input id="pos-initial-payment-30" className="input num input-money" type="number" step="0.01" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} placeholder="Enter amount" />
                 </div>
                 <div>
                   <label htmlFor="pos-method-31" className="label">Method</label>

@@ -150,7 +150,7 @@ export default function ReceivableDetail() {
           <div className="space-y-3">
             <div>
               <label htmlFor="receivabledetail-amount-55" className="label">Amount <span className="text-red-500">*</span></label>
-              <input id="receivabledetail-amount-55" className="input num" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
+              <input id="receivabledetail-amount-55" className="input num input-money" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="Enter amount" />
               <p className="text-xs text-ink-400 mt-1">Amounts above the outstanding balance are capped automatically.</p>
             </div>
             <div>

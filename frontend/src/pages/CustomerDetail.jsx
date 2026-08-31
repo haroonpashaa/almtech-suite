@@ -176,7 +176,7 @@ export default function CustomerDetail() {
             </div>
             <div>
               <label htmlFor="cd-credit-limit" className="label">Credit Limit ({currency})</label>
-              <input id="cd-credit-limit" className="input num" type="number" min="0" step="0.01" value={form.creditLimit} onChange={(e) => set('creditLimit', e.target.value)} />
+              <input id="cd-credit-limit" className="input num input-money" type="number" min="0" step="0.01" value={form.creditLimit} onChange={(e) => set('creditLimit', e.target.value)} />
               <p className="text-xs text-ink-400 mt-1">0 means no limit. This does not change the customer's current balance.</p>
             </div>
             <div>
