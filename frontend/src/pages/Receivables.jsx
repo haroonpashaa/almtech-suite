@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client.js';
 import { money, date as fmtDate } from '../lib/format.js';
 import { useCurrency } from '../hooks/useSettings.js';
+import { useAuth } from '../context/AuthContext.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
 import Money from '../components/Money.jsx';
@@ -11,6 +12,13 @@ import { Badge } from '../components/ui.jsx';
 import { AgingBuckets, AgingNote, OverdueBadge } from '../components/Aging.jsx';
 
 export default function Receivables() {
+  const { has } = useAuth();
+  // Sales can see this page (it's a customer-facing view of who owes ALM and
+  // collecting against it), but Payables and overall financial position stay
+  // admin-only — /finance/position is an admin-only endpoint, so it's never
+  // requested for Sales, and the cards it feeds are dropped rather than hidden
+  // with a blank value.
+  const isAdmin = has('admin');
   const [q, setQ] = useState('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
@@ -26,6 +34,7 @@ export default function Receivables() {
       })).data,
   });
   const { data: position } = useQuery({
+    enabled: isAdmin,
     queryKey: ['finance-position'],
     queryFn: async () => (await api.get('/finance/position')).data,
   });
@@ -40,25 +49,34 @@ export default function Receivables() {
         icon={<svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" /></svg>}
       />
       <div className="page page-w space-y-4">
-        {/* Position summary */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {/* Position summary — Payables and net position are admin-only financial
+            position, not a receivables-specific figure, so Sales gets only the
+            Total Receivables card (sourced from this page's own, Sales-authorized
+            data rather than the admin-only /finance/position). */}
+        <div className={`grid grid-cols-1 ${isAdmin ? 'sm:grid-cols-3' : 'sm:max-w-xs'} gap-4`}>
           <div className="card p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Total Receivables</div>
-            <div className="mt-2 fig-lg font-semibold num text-ink-900 tracking-tight">{money(position?.receivables || 0, currency)}</div>
+            <div className="mt-2 fig-lg font-semibold num text-ink-900 tracking-tight">
+              {money((isAdmin ? position?.receivables : data?.totalOutstanding) || 0, currency)}
+            </div>
             <div className="text-xs text-ink-400 mt-1">Owed to us</div>
           </div>
-          <div className="card p-5">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Total Payables</div>
-            <div className="mt-2 fig-lg font-semibold num text-ink-900 tracking-tight">{money(position?.payables || 0, currency)}</div>
-            <div className="text-xs text-ink-400 mt-1">Owed by us</div>
-          </div>
-          <div className="card p-5">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Net Outstanding Position</div>
-            <div className={`mt-2 fig-lg font-semibold num tracking-tight ${(position?.netPosition || 0) < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
-              {money(position?.netPosition || 0, currency)}
-            </div>
-            <div className="text-xs text-ink-400 mt-1">Receivables − Payables · not profit</div>
-          </div>
+          {isAdmin && (
+            <>
+              <div className="card p-5">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Total Payables</div>
+                <div className="mt-2 fig-lg font-semibold num text-ink-900 tracking-tight">{money(position?.payables || 0, currency)}</div>
+                <div className="text-xs text-ink-400 mt-1">Owed by us</div>
+              </div>
+              <div className="card p-5">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Net Outstanding Position</div>
+                <div className={`mt-2 fig-lg font-semibold num tracking-tight ${(position?.netPosition || 0) < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                  {money(position?.netPosition || 0, currency)}
+                </div>
+                <div className="text-xs text-ink-400 mt-1">Receivables − Payables · not profit</div>
+              </div>
+            </>
+          )}
         </div>
 
         {data?.reconciled === false && (

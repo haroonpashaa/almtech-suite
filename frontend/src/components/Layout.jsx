@@ -44,7 +44,7 @@ const sections = [
       { to: '/accounts', label: 'Accounts', roles: ['admin'], icon: 'wallet' },
       { to: '/deals', label: 'Transactions', roles: ['admin'], icon: 'ledgerList' },
       { to: '/expenses', label: 'Expenses', roles: ['admin', 'sales'], icon: 'receipt' },
-      { to: '/receivables', label: 'Receivables', roles: ['admin'], icon: 'receivable' },
+      { to: '/receivables', label: 'Receivables', roles: ['admin', 'sales'], icon: 'receivable' },
       { to: '/payables', label: 'Payables', roles: ['admin'], icon: 'payable' },
     ],
   },
