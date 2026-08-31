@@ -107,7 +107,7 @@ export default function Reports() {
   return (
     <div>
       <PageHeader
-        title="Reports"
+        title="Ledger Reports"
         subtitle="Financial analytics and outstanding balances"
         icon={<svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21h18M6 17v-7m5 7v-11m5 11v-5m5 5v-9" /></svg>}
       />
@@ -200,7 +200,12 @@ export default function Reports() {
           <Table
             loading={byCustomer.isLoading}
             columns={[
-              { key: 'name', label: 'Customer', render: (r) => <span className="font-medium text-ink-900">{r.name}</span> },
+              {
+                key: 'name', label: 'Customer',
+                // Links into the existing customer ledger (Sales is already authorized
+                // for it) rather than building a second, parallel ledger view here.
+                render: (r) => <Link to={`/customers/${r._id}`} className="font-medium text-ink-900 hover:text-brand-700">{r.name}</Link>,
+              },
               { key: 'company', label: 'Company', render: (r) => r.company || <span className="text-ink-300">—</span> },
               { key: 'invoices', label: 'Invoices', className: 'text-right num' },
               { key: 'revenue', label: 'Revenue', className: 'text-right num font-medium text-ink-900', render: (r) => <Money value={r.revenue} /> },

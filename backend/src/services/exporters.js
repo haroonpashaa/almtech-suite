@@ -44,8 +44,19 @@ function dealStatus(d) {
 export const EXPORTERS = {
   products: {
     label: 'Products',
-    async build() {
+    async build(_query, ctx) {
       const rows = await Product.find().sort('sku').lean();
+      // Comments and Purchase Price are both Product master data withheld from
+      // Sales everywhere else (product.controller.js's withoutComments/
+      // withoutCost) — each column is dropped entirely here rather than
+      // exported blank, so nothing sensitive is even considered for a cell.
+      // Columns are the only thing ever written to a sheet (see the file-level
+      // note above), so omitting them from this list is sufficient on its
+      // own — the raw values sitting on `rows` from the query above are never
+      // otherwise touched.
+      const isSales = ctx?.user?.role === 'sales';
+      const seesComments = !isSales;
+      const seesCost = !isSales;
       return {
         sheetName: 'Products',
         title: 'Products',
@@ -56,7 +67,7 @@ export const EXPORTERS = {
           { header: 'Category', key: 'category' },
           { header: 'Brand', key: 'brand' },
           { header: 'Model', key: 'model' },
-          { header: 'Purchase Price', type: 'money', key: 'purchasePrice' },
+          ...(seesCost ? [{ header: 'Purchase Price', type: 'money', key: 'purchasePrice' }] : []),
           { header: 'Selling Price', type: 'money', key: 'sellingPrice' },
           { header: 'Stock', type: 'number', key: 'stock' },
           { header: 'Low Stock Threshold', type: 'number', key: 'lowStockThreshold' },
@@ -67,7 +78,7 @@ export const EXPORTERS = {
           { header: 'Screen', key: 'screen' },
           { header: 'Condition', key: 'condition' },
           { header: 'Warranty', key: 'warranty' },
-          { header: 'Comments', key: 'comments', width: 30 },
+          ...(seesComments ? [{ header: 'Comments', key: 'comments', width: 30 }] : []),
           { header: 'Active', value: (r) => (r.active ? 'Yes' : 'No') },
           { header: 'Description', key: 'description', width: 40 },
         ],

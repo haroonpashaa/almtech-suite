@@ -52,7 +52,7 @@ const ROUTES = [
   ['/expense-reports', 'Expense Reports'],
   ['/expenses', 'Expenses'],
 
-  ['/reports', 'Reports'],
+  ['/reports', 'Ledger Reports'],
   ['/data', 'Import / Export'],
   ['/users', 'Users'],
   ['/activity', 'Activity'],

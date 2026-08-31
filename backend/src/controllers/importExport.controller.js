@@ -25,6 +25,10 @@ function callHandler(handler, { query = {}, user }) {
 }
 
 const exportContext = (user) => ({
+  // Exposed directly (not just captured in the closures below) so an exporter that
+  // needs to adapt its own output to the caller's role — e.g. products dropping the
+  // Comments column for Sales — can do so without a second, role-aware code path.
+  user,
   financeReceivables: (q) => callHandler(financeReceivables, { query: q || {}, user }),
   financePayables: (q) => callHandler(financePayables, { query: q || {}, user }),
   profitAndLoss: (q) => callHandler(profitAndLoss, { query: q || {}, user }),
