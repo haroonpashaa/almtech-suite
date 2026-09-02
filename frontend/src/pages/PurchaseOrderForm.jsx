@@ -75,7 +75,10 @@ export default function PurchaseOrderForm() {
   function addToCart(p) {
     setCart((c) => {
       if (c.find((x) => x.product === p._id)) return c;
-      return [...c, { product: p._id, name: p.name, sku: p.sku, unitCost: p.purchasePrice, quantity: 1, received: 0 }];
+      // A brand-new product's purchasePrice is 0 until a PO for it is actually
+      // received — pre-filling that would show a zero the user has to delete
+      // before typing the real cost, on exactly the item most likely to need one.
+      return [...c, { product: p._id, name: p.name, sku: p.sku, unitCost: p.purchasePrice || '', quantity: 1, received: 0 }];
     });
   }
   function setLine(i, patch) {

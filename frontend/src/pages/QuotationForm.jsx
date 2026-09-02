@@ -30,7 +30,10 @@ export default function QuotationForm() {
   function addToCart(p) {
     setCart((c) => {
       if (c.find((x) => x.product === p._id)) return c;
-      return [...c, { product: p._id, name: p.name, sku: p.sku, unitPrice: p.sellingPrice, quantity: 1, discount: '' }];
+      // Same reasoning as POS: a product with no price set yet has
+      // sellingPrice 0 in the database, and pre-filling that literally would
+      // show a zero the user has to delete before typing the real price.
+      return [...c, { product: p._id, name: p.name, sku: p.sku, unitPrice: p.sellingPrice || '', quantity: 1, discount: '' }];
     });
   }
   function setLine(i, patch) {

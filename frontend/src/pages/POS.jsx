@@ -57,7 +57,12 @@ export default function POS() {
           // import) is internal/product-level information, not a sale-time note —
           // the salesperson starts blank and types whatever this specific sale needs,
           // rather than having to delete boilerplate first.
-          product: p._id, name: p.name, sku: p.sku, unitPrice: p.sellingPrice,
+          // A product with no selling price set yet (or never priced) has
+          // sellingPrice 0 in the database — pre-filling that literally would
+          // put the exact "starts with a zero you have to delete" problem
+          // right back into the one field this whole fix was about. A real,
+          // already-set price is still a helpful default and stays pre-filled.
+          product: p._id, name: p.name, sku: p.sku, unitPrice: p.sellingPrice || '',
           // Specification snapshot: starts as a copy of the product's own values, but
           // from here on belongs to this sale line — editing it corrects what this
           // sale says was sold, and never writes back to the product record.
