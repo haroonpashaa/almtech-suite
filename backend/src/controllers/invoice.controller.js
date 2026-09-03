@@ -396,6 +396,35 @@ export const recordPayment = asyncHandler(async (req, res) => {
   res.json(await Invoice.findById(invoice._id).populate('customer'));
 });
 
+// ---------------------------------------------------------------------------
+// Correct an invoice's notes — admin only, safe at any status.
+//
+// This deliberately touches nothing that money, stock or a customer's balance
+// depends on: no items, prices, quantities, serials, totals or payments. That
+// mirrors updatePO's own metadata-only path exactly (see its function-level
+// comment) — an amendment that cannot corrupt accounting or inventory is always
+// safe, regardless of what has already been paid or returned. A change to the
+// sale itself (a wrong item, price or quantity) is not "safe" in that sense —
+// it has already moved stock and money — so it goes through Return + a new
+// sale, not through this endpoint.
+// ---------------------------------------------------------------------------
+export const updateInvoice = asyncHandler(async (req, res) => {
+  const invoice = await Invoice.findById(req.params.id);
+  if (!invoice) {
+    res.status(404);
+    throw new Error('Invoice not found');
+  }
+  if (req.body?.notes === undefined) {
+    res.status(400);
+    throw new Error('Nothing to update');
+  }
+  const notes = String(req.body.notes ?? '');
+  invoice.notes = notes;
+  await invoice.save();
+  await logActivity(req, 'invoice_updated', { entity: 'Invoice', entityId: invoice._id });
+  res.json(await Invoice.findById(invoice._id).populate('customer'));
+});
+
 export const returnInvoice = asyncHandler(async (req, res) => {
   const invoice = await Invoice.findById(req.params.id);
   if (!invoice) {
@@ -436,9 +465,11 @@ export const returnInvoice = asyncHandler(async (req, res) => {
     );
   }
 
-  const reason = typeof req.body?.reason === 'string' && req.body.reason.trim()
-    ? req.body.reason.trim()
-    : 'Invoice returned';
+  // A return is a correction with real accounting/stock consequences, so — like a
+  // payment reversal — it requires a stated reason. Captured on the activity log
+  // below regardless of whether there was anything to refund, not just folded into
+  // a refund's own description (which would silently lose it on an unpaid invoice).
+  const reason = requireReason(res, req.body?.reason);
   for (const { p, i } of refundable) {
     const original = await assertReversible(res, p);
     await postReversal(res, {
@@ -499,7 +530,7 @@ export const returnInvoice = asyncHandler(async (req, res) => {
     await customer.save();
   }
 
-  await logActivity(req, 'invoice_returned', { entity: 'Invoice', entityId: invoice._id });
+  await logActivity(req, 'invoice_returned', { entity: 'Invoice', entityId: invoice._id, meta: { reason } });
   res.json(invoice);
 });
 

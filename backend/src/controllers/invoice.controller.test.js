@@ -4,8 +4,10 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
 import Invoice from '../models/Invoice.js';
+import Activity from '../models/Activity.js';
 import {
   resolveLineComments, normalizeSaleQuantity, buildLineFromProduct, validateLineSerials, createInvoice,
+  updateInvoice, returnInvoice,
 } from './invoice.controller.js';
 
 describe('resolveLineComments', () => {
@@ -365,5 +367,104 @@ describe('createInvoice cart editing (DB-backed)', () => {
     expect(line.ram).toBe('16GB');
     expect(line.serials).toEqual([]);
     expect(line.comments).toBe('');
+  });
+});
+
+// ===========================================================================
+// Admin correction paths: notes-only amendment, and Return now requiring a
+// stated reason (previously defaulted silently when there was nothing to
+// refund, so the "why" was never captured anywhere for an unpaid invoice).
+// ===========================================================================
+describe('invoice correction actions (DB-backed)', () => {
+  let mem;
+  const userId = new mongoose.Types.ObjectId();
+
+  beforeAll(async () => {
+    mem = await MongoMemoryServer.create();
+    await mongoose.connect(mem.getUri());
+  });
+
+  afterEach(async () => {
+    await Invoice.deleteMany({});
+    await Product.deleteMany({});
+    await Customer.deleteMany({});
+    await Activity.deleteMany({});
+  });
+
+  afterAll(async () => {
+    await mongoose.disconnect();
+    await mem.stop();
+  });
+
+  function mockRes() {
+    return { statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
+  }
+  function req(body) {
+    return { user: { _id: userId, role: 'admin' }, body, params: {} };
+  }
+  async function makeCustomer() {
+    return Customer.create({ name: 'Test Customer' });
+  }
+  async function makeInvoice(overrides = {}) {
+    const customer = await makeCustomer();
+    return Invoice.create({
+      number: 'INV-TEST-1', customer: customer._id,
+      items: [{ product: new mongoose.Types.ObjectId(), name: 'Laptop', sku: 'SKU-1', quantity: 1, unitPrice: 900, lineTotal: 900 }],
+      subtotal: 900, total: 900, paid: 0, balance: 900, status: 'open',
+      ...overrides,
+    });
+  }
+
+  it('updateInvoice sets notes without touching items, totals or payments', async () => {
+    const invoice = await makeInvoice();
+    const r = req({ notes: 'Customer asked for a printed receipt by post' });
+    r.params.id = invoice._id.toString();
+    const res = mockRes();
+    await updateInvoice(r, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.notes).toBe('Customer asked for a printed receipt by post');
+    expect(res.body.total).toBe(900);
+    expect(res.body.items).toHaveLength(1);
+    expect(res.body.status).toBe('open');
+  });
+
+  it('updateInvoice rejects a request with nothing to update', async () => {
+    const invoice = await makeInvoice();
+    const r = req({});
+    r.params.id = invoice._id.toString();
+    await expect(updateInvoice(r, mockRes())).rejects.toThrow(/nothing to update/i);
+  });
+
+  it('updateInvoice 404s for a missing invoice', async () => {
+    const r = req({ notes: 'x' });
+    r.params.id = new mongoose.Types.ObjectId().toString();
+    await expect(updateInvoice(r, mockRes())).rejects.toThrow(/not found/i);
+  });
+
+  it('returnInvoice requires a reason even when there are no payments to refund', async () => {
+    const invoice = await makeInvoice(); // unpaid — the refund loop never runs
+    const r = req({}); // no reason supplied
+    r.params.id = invoice._id.toString();
+    await expect(returnInvoice(r, mockRes())).rejects.toThrow(/reason is required/i);
+
+    const stored = await Invoice.findById(invoice._id);
+    expect(stored.status).toBe('open'); // untouched — the return never proceeded
+  });
+
+  it('returnInvoice records the stated reason on the activity log even for an unpaid invoice', async () => {
+    const invoice = await makeInvoice();
+    const r = req({ reason: 'Customer changed their mind before pickup' });
+    r.params.id = invoice._id.toString();
+    const res = mockRes();
+    await returnInvoice(r, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.status).toBe('returned');
+
+    const activity = await Activity.findOne({ action: 'invoice_returned', entityId: invoice._id.toString() });
+    expect(activity).toBeTruthy();
+    expect(activity.meta.reason).toBe('Customer changed their mind before pickup');
+    expect(activity.user.toString()).toBe(userId.toString());
   });
 });

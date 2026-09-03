@@ -36,6 +36,20 @@ function check(path, role) {
   return { blocked: !!nextArg, statusCode: res.statusCode };
 }
 
+function postAuthMiddlewareFor(path) {
+  const layer = financeRoutes.stack.find((l) => l.route && l.route.path === path && l.route.methods.post);
+  if (!layer) throw new Error(`No POST route registered for ${path}`);
+  return layer.route.stack[0].handle;
+}
+
+function checkPost(path, role) {
+  const mid = postAuthMiddlewareFor(path);
+  const res = mockRes();
+  let nextArg;
+  mid({ user: role ? { role } : undefined }, res, (err) => { nextArg = err; });
+  return { blocked: !!nextArg, statusCode: res.statusCode };
+}
+
 describe('finance router RBAC (real middleware, DB-free)', () => {
   it('GET /receivables allows admin and sales, blocks stock and unauthenticated', () => {
     expect(check('/receivables', 'admin').blocked).toBe(false);
@@ -73,5 +87,16 @@ describe('finance router RBAC (real middleware, DB-free)', () => {
     expect(sales.blocked).toBe(true);
     expect(sales.statusCode).toBe(403);
     expect(check('/position', 'stock').blocked).toBe(true);
+  });
+
+  it('POST /payables/:id/adjust stays admin-only — sales, stock and unauthenticated are blocked', () => {
+    expect(checkPost('/payables/:id/adjust', 'admin').blocked).toBe(false);
+    const sales = checkPost('/payables/:id/adjust', 'sales');
+    expect(sales.blocked).toBe(true);
+    expect(sales.statusCode).toBe(403);
+    expect(checkPost('/payables/:id/adjust', 'stock').blocked).toBe(true);
+    const none = checkPost('/payables/:id/adjust', undefined);
+    expect(none.blocked).toBe(true);
+    expect(none.statusCode).toBe(403);
   });
 });

@@ -10,6 +10,7 @@ import PageHeader from '../components/PageHeader.jsx';
 import DocumentActions from '../components/DocumentActions.jsx';
 import Table from '../components/Table.jsx';
 import Money from '../components/Money.jsx';
+import Modal from '../components/Modal.jsx';
 import { Badge, LoadingBlock, Spinner } from '../components/ui.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
 
@@ -26,6 +27,9 @@ export default function InvoiceDetail() {
   const [paying, setPaying] = useState(false);
   const [reverseTarget, setReverseTarget] = useState(null);
   const [confirmReturn, setConfirmReturn] = useState(false);
+  const [editingNotes, setEditingNotes] = useState(false);
+  const [notesDraft, setNotesDraft] = useState('');
+  const [savingNotes, setSavingNotes] = useState(false);
   const { data: invoice } = useQuery({
     queryKey: ['invoice', id],
     queryFn: async () => (await api.get(`/invoices/${id}`)).data,
@@ -70,9 +74,9 @@ export default function InvoiceDetail() {
     }
   }
 
-  async function doReturn() {
+  async function doReturn(reason) {
     try {
-      await api.post(`/invoices/${id}/return`);
+      await api.post(`/invoices/${id}/return`, { reason });
       toast.success('Invoice returned and payments refunded');
       qc.invalidateQueries({ queryKey: ['invoice', id] });
       ['accounts-summary', 'dashboard', 'receivables', 'finance-position', 'payment-history', 'deal'].forEach((k) =>
@@ -81,6 +85,28 @@ export default function InvoiceDetail() {
     } catch (e) {
       toast.error(errorMessage(e));
       throw e;
+    }
+  }
+
+  function openEditNotes() {
+    setNotesDraft(invoice.notes || '');
+    setEditingNotes(true);
+  }
+
+  // Notes are the only thing an invoice can be corrected on directly — anything
+  // that touches money, stock or totals goes through Return, not this. See
+  // updateInvoice on the backend for the full reasoning.
+  async function saveNotes() {
+    setSavingNotes(true);
+    try {
+      await api.patch(`/invoices/${id}`, { notes: notesDraft });
+      toast.success('Notes updated');
+      setEditingNotes(false);
+      qc.invalidateQueries({ queryKey: ['invoice', id] });
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setSavingNotes(false);
     }
   }
 
@@ -212,6 +238,16 @@ export default function InvoiceDetail() {
               </button>
             </div>
           )}
+
+          <div className="card p-5">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-semibold text-ink-900">Notes</h3>
+              {has('admin') && <button className="text-xs font-medium text-brand-700 hover:underline" onClick={openEditNotes}>Edit</button>}
+            </div>
+            {invoice.notes
+              ? <p className="text-sm text-ink-700 whitespace-pre-wrap">{invoice.notes}</p>
+              : <p className="text-sm text-ink-300">No notes on this invoice.</p>}
+          </div>
         </div>
       </div>
       <ConfirmDialog
@@ -247,8 +283,26 @@ export default function InvoiceDetail() {
           'This cannot be undone',
         ]}
         confirmLabel="Return invoice"
+        reasonRequired
+        reasonLabel="Why is this invoice being returned?"
+        reasonPlaceholder="e.g. Customer returned a defective unit"
       />
 
+      <Modal open={editingNotes} onClose={() => setEditingNotes(false)} title={`Edit notes · ${invoice.number}`}>
+        <div className="space-y-3">
+          <p className="text-xs text-ink-500">
+            Notes only — this never changes items, prices, quantities, totals or payments. A mistake in the sale
+            itself is corrected through Return, not here.
+          </p>
+          <textarea className="input" rows={4} value={notesDraft} onChange={(e) => setNotesDraft(e.target.value)} placeholder="Add a note about this invoice" />
+          <div className="flex gap-2 pt-2">
+            <button className="btn-primary" onClick={saveNotes} disabled={savingNotes}>
+              {savingNotes ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Save notes'}
+            </button>
+            <button className="btn-secondary" onClick={() => setEditingNotes(false)}>Cancel</button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

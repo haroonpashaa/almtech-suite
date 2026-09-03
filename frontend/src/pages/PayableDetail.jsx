@@ -24,6 +24,11 @@ export default function PayableDetail() {
   const [reference, setReference] = useState('');
   const [paying, setPaying] = useState(false);
 
+  const [adjusting, setAdjusting] = useState(false);
+  const [adjustAmount, setAdjustAmount] = useState('');
+  const [adjustNote, setAdjustNote] = useState('');
+  const [savingAdjust, setSavingAdjust] = useState(false);
+
   const { data, isLoading } = useQuery({
     queryKey: ['payable', id],
     queryFn: async () => (await api.get(`/finance/payables/${id}`)).data,
@@ -40,6 +45,33 @@ export default function PayableDetail() {
     setAccount('');
     setMethod('bank');
     setReference('');
+  }
+
+  function openAdjust() {
+    setAdjustAmount(String(data.storedPayable));
+    setAdjustNote('');
+    setAdjusting(true);
+  }
+
+  // Posts an audited correction to Supplier.payable rather than letting the total be
+  // typed over directly — see adjustSupplierPayable on the backend for why.
+  async function saveAdjust() {
+    setSavingAdjust(true);
+    try {
+      await api.post(`/finance/payables/${id}/adjust`, {
+        amount: Number(adjustAmount),
+        note: adjustNote,
+      });
+      toast.success('Payable balance adjusted');
+      setAdjusting(false);
+      qc.invalidateQueries({ queryKey: ['payable', id] });
+      qc.invalidateQueries({ queryKey: ['payables'] });
+      qc.invalidateQueries({ queryKey: ['finance-position'] });
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setSavingAdjust(false);
+    }
   }
 
   // Posts to the existing purchase-order payment endpoint. That one call updates PO
@@ -82,6 +114,7 @@ export default function PayableDetail() {
             {data.oldestAgeDays > 0 && <Badge tone={data.oldestAgeDays > 60 ? 'danger' : 'warning'} dot>{data.oldestAgeDays} days old</Badge>}
             {/* This screen is admin-only, so supplier access is guaranteed. */}
             <Link to={`/suppliers/${data.supplier._id}`} className="btn-secondary">Supplier profile</Link>
+            <button className="btn-secondary" onClick={openAdjust}>Adjust balance</button>
           </>
         }
       />
@@ -136,9 +169,16 @@ export default function PayableDetail() {
               label: '',
               className: 'text-right',
               render: (r) => (
-                <button className="btn-sm bg-white border border-ink-200 text-ink-700 hover:bg-ink-50" onClick={() => openPay(r)}>
-                  Record payment
-                </button>
+                <div className="flex justify-end gap-2">
+                  {r.status !== 'cancelled' && (
+                    <Link to={`/purchase-orders/${r._id}/edit`} className="btn-sm bg-white border border-ink-200 text-ink-700 hover:bg-ink-50">
+                      Edit
+                    </Link>
+                  )}
+                  <button className="btn-sm bg-white border border-ink-200 text-ink-700 hover:bg-ink-50" onClick={() => openPay(r)}>
+                    Record payment
+                  </button>
+                </div>
               ),
             },
           ]}
@@ -188,6 +228,40 @@ export default function PayableDetail() {
             </div>
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={adjusting}
+        onClose={() => setAdjusting(false)}
+        title="Adjust payable balance"
+        subtitle={`Current stored payable ${money(data.storedPayable, currency)}`}
+        size="md"
+      >
+        <div className="space-y-3">
+          <p className="text-xs text-ink-500">
+            This does not overwrite anything directly — it posts an audited correction (visible on the supplier's
+            opening-balance history) and applies the same delta to the stored payable, exactly like the Opening
+            Balances import does. Use it to reconcile drift against the derived total, not to record a payment.
+          </p>
+          <div>
+            <label htmlFor="payabledetail-adjust-amount" className="label">Corrected total payable <span className="text-red-500">*</span></label>
+            <input id="payabledetail-adjust-amount" className="input num input-money" type="number" step="0.01" value={adjustAmount} onChange={(e) => setAdjustAmount(e.target.value)} placeholder="Enter amount" />
+          </div>
+          <div>
+            <label htmlFor="payabledetail-adjust-note" className="label">Note / reason <span className="text-red-500">*</span></label>
+            <textarea id="payabledetail-adjust-note" className="input" rows={3} value={adjustNote} onChange={(e) => setAdjustNote(e.target.value)} placeholder="Why is this balance being corrected?" />
+          </div>
+          <div className="flex gap-2 pt-2">
+            <button
+              className="btn-primary"
+              onClick={saveAdjust}
+              disabled={savingAdjust || adjustAmount === '' || Number(adjustAmount) < 0 || !adjustNote.trim() || Number(adjustAmount) === data.storedPayable}
+            >
+              {savingAdjust ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Save adjustment'}
+            </button>
+            <button className="btn-secondary" onClick={() => setAdjusting(false)}>Cancel</button>
+          </div>
+        </div>
       </Modal>
     </div>
   );

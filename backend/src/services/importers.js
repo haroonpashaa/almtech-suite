@@ -45,6 +45,50 @@ const money = (row, field, label, v, { required = false, min = 0 } = {}) => {
   return n;
 };
 
+// ---------------------------------------------------------------------------
+// Shared by the Customers and Suppliers importers: a Balance/Payable column
+// supplied alongside the master record is posted through the exact same
+// OpeningBalance mechanism the dedicated Opening Balances import uses — never a
+// direct write to Customer.balance / Supplier.payable — so it stays auditable
+// and reconciles the same way a migrated balance does.
+//
+// Idempotency: every such entry uses the fixed reference IMPORT_BALANCE_REF, so
+// the unique {entityType, entity, reference} index on OpeningBalance guarantees
+// at most one import-sourced opening balance per customer/supplier ever exists.
+// Re-uploading the same (or a corrected) file re-creates the master record fields
+// normally but the second attempt at the balance hits that same key and is
+// reported back as "already applied" rather than posted again.
+// ---------------------------------------------------------------------------
+const IMPORT_BALANCE_REF = 'import:opening-balance';
+
+async function postOpeningBalance({ entityType, entity, entityName, amount, ctx, applyDelta }) {
+  let record;
+  try {
+    record = await OpeningBalance.create({
+      entityType,
+      entity,
+      entityName,
+      amount,
+      reference: IMPORT_BALANCE_REF,
+      note: 'Recorded automatically from the ' + entityType + ' import.',
+      importBatch: ctx.batchId,
+      createdBy: ctx.user._id,
+    });
+  } catch (e) {
+    if (e?.code === 11000) return { posted: false, alreadyApplied: true };
+    throw e;
+  }
+  try {
+    await applyDelta(amount);
+  } catch (e) {
+    // Mirror the Opening Balances importer's own compensation: never leave an
+    // audit entry on record for a delta that was not actually applied.
+    await OpeningBalance.deleteOne({ _id: record._id }).catch(() => {});
+    throw e;
+  }
+  return { posted: true };
+}
+
 // ===========================================================================
 // PRODUCTS
 // ===========================================================================
@@ -345,19 +389,19 @@ const customers = {
     creditLimit: ['Credit Limit'],
     notes: ['Notes'],
     active: ['Active'],
-    // Read only so it can be refused with a clear message — never written.
     balance: ['Balance', 'Opening Balance', 'Outstanding'],
   },
   required: ['name'],
   instructions: [
     'Name is required. A customer is matched on Email, then Phone, then Name + Company.',
-    'Opening receivable balances are NOT imported here — use the Opening Balances import.',
+    'Balance/Opening Balance, if supplied, is imported as the customer\'s starting receivable — posted through the same audited Opening Balance mechanism the dedicated Opening Balances import uses, not written to the customer directly. It is applied once per customer: re-importing the same file (or importing this customer again later with a balance) will not add it a second time.',
+    'A Balance that is not a valid number, or is negative, rejects the whole row rather than being silently dropped.',
     'Delete the example row before importing.',
   ],
   example: {
     name: 'Example Traders', company: 'Example Co', phone: '+92 300 0000000',
     email: 'example@delete-this-row.com', cnicNtn: '', address: 'Lahore', creditLimit: 0,
-    notes: 'Delete this row before importing', active: 'Yes',
+    balance: 0, notes: 'Delete this row before importing', active: 'Yes',
   },
 
   async prepare(rows) {
@@ -368,6 +412,14 @@ const customers = {
     const byEmail = new Map(existing.filter((c) => c.email).map((c) => [c.email.toLowerCase(), c]));
     const byPhone = new Map(existing.filter((c) => c.phone).map((c) => [c.phone, c]));
 
+    // Customers already carrying an import-sourced opening balance (checked below by
+    // matched id) so the preview can say "already applied" rather than imply a second
+    // posting will happen.
+    const alreadyPosted = new Set(
+      (await OpeningBalance.find({ entityType: 'customer', reference: IMPORT_BALANCE_REF }).select('entity'))
+        .map((o) => String(o.entity))
+    );
+
     const seen = new Set();
     const out = [];
     for (const raw of rows) {
@@ -377,9 +429,9 @@ const customers = {
       const phone = str(raw.phone);
       if (!name) err(row, 'Name', raw.name, 'Name is required');
 
-      // Reject any attempt to set a receivable through this sheet.
+      let openingBalance = null;
       if (raw.balance != null && str(raw.balance) !== '') {
-        err(row, 'Balance', raw.balance, 'customer balances cannot be set here — use the Opening Balances import');
+        openingBalance = money(row, 'Balance', 'Balance', raw.balance, { required: false, min: 0 });
       }
       const creditLimit = money(row, 'Credit Limit', 'Credit limit', raw.creditLimit);
 
@@ -403,29 +455,65 @@ const customers = {
           active: bool(raw.active, true),
         };
         row.action = match ? R.UPDATE : R.CREATE;
-        if (match) row.note = `updates existing customer ${match.name} (matched on ${email && byEmail.get(email) ? 'email' : 'phone'})`;
+
+        const notes = [];
+        if (match) notes.push(`updates existing customer ${match.name} (matched on ${email && byEmail.get(email) ? 'email' : 'phone'})`);
+        if (openingBalance > 0) {
+          if (match && alreadyPosted.has(String(match._id))) {
+            row.openingBalance = null;
+            notes.push('an opening receivable balance was already recorded for this customer previously — will not be applied again');
+          } else {
+            row.openingBalance = openingBalance;
+            notes.push(`records an opening receivable balance of ${openingBalance}`);
+          }
+        }
+        if (notes.length) row.note = notes.join(' · ');
       }
       out.push(row);
     }
     return out;
   },
 
-  async commit(prepared) {
+  async commit(prepared, ctx) {
     const res = { created: 0, updated: 0, skipped: 0, failed: 0, errors: [] };
     for (const row of prepared) {
       if (row.action === R.ERROR) { res.failed++; continue; }
+      let customerId = row.matchId;
       try {
         if (row.matchId) {
-          // balance is never in row.data, so an import can never move a receivable.
+          // balance is never in row.data, so this $set can never move a receivable.
           await Customer.updateOne({ _id: row.matchId }, { $set: row.data }, { runValidators: true });
           res.updated++;
         } else {
-          await Customer.create(row.data);
+          const created = await Customer.create(row.data);
+          customerId = created._id;
           res.created++;
         }
       } catch (e) {
         res.failed++;
         res.errors.push({ row: row.excelRow, field: 'Name', value: row.data.name, message: friendly(e) });
+        continue;
+      }
+      if (row.openingBalance > 0) {
+        try {
+          await postOpeningBalance({
+            entityType: 'customer',
+            entity: customerId,
+            entityName: row.data.name,
+            amount: row.openingBalance,
+            ctx,
+            applyDelta: (amount) => Customer.updateOne({ _id: customerId }, { $inc: { balance: amount } }),
+          });
+        } catch (e) {
+          // The customer record itself is already written; only a newly-created one is
+          // rolled back, matching how Invoice/PO import compensates a failed follow-up
+          // step — an update-in-place has no clean single-field rollback here.
+          if (!row.matchId) await Customer.deleteOne({ _id: customerId }).catch(() => {});
+          res.created -= row.matchId ? 0 : 1;
+          res.updated -= row.matchId ? 1 : 0;
+          res.failed++;
+          res.errors.push({ row: row.excelRow, field: 'Balance', value: row.openingBalance, message: `customer saved, but its opening balance could not be recorded: ${friendly(e)}` });
+        }
       }
     }
     return res;
@@ -449,20 +537,20 @@ const suppliers = {
     taxNumber: ['Tax Number'],
     notes: ['Notes'],
     active: ['Active'],
-    // Read only so it can be refused with a clear message — never written.
     payable: ['Payable', 'Opening Balance', 'Outstanding'],
   },
   required: ['name'],
   instructions: [
     'Name is required. Suppliers are matched on Email, then Name.',
     'This is migration only — supplier records exist so historical purchase orders and payables work.',
-    'Opening payable balances are NOT imported here — use the Opening Balances import.',
+    'Payable/Opening Balance, if supplied, is imported as the supplier\'s starting payable — posted through the same audited Opening Balance mechanism the dedicated Opening Balances import uses, not written to the supplier directly. It is applied once per supplier: re-importing the same file (or importing this supplier again later with a payable) will not add it a second time.',
+    'A Payable that is not a valid number, or is negative, rejects the whole row rather than being silently dropped.',
     'Delete the example row before importing.',
   ],
   example: {
     name: 'Example Distribution', contactPerson: 'Mr. Example', phone: '+92 42 0000000',
     email: 'example@delete-this-row.com', address: 'Lahore', taxNumber: '',
-    notes: 'Delete this row before importing', active: 'Yes',
+    payable: 0, notes: 'Delete this row before importing', active: 'Yes',
   },
 
   async prepare(rows) {
@@ -473,6 +561,11 @@ const suppliers = {
     const byEmail = new Map(existing.filter((s) => s.email).map((s) => [s.email.toLowerCase(), s]));
     const byName = new Map(existing.map((s) => [s.name.toLowerCase(), s]));
 
+    const alreadyPosted = new Set(
+      (await OpeningBalance.find({ entityType: 'supplier', reference: IMPORT_BALANCE_REF }).select('entity'))
+        .map((o) => String(o.entity))
+    );
+
     const seen = new Set();
     const out = [];
     for (const raw of rows) {
@@ -480,9 +573,12 @@ const suppliers = {
       const name = str(raw.name);
       const email = str(raw.email).toLowerCase();
       if (!name) err(row, 'Name', raw.name, 'Name is required');
+
+      let openingPayable = null;
       if (raw.payable != null && str(raw.payable) !== '') {
-        err(row, 'Payable', raw.payable, 'supplier payables cannot be set here — use the Opening Balances import');
+        openingPayable = money(row, 'Payable', 'Payable', raw.payable, { required: false, min: 0 });
       }
+
       const identity = email || name.toLowerCase();
       if (seen.has(identity)) err(row, 'Name', name, 'duplicate supplier within this file');
       else seen.add(identity);
@@ -502,28 +598,61 @@ const suppliers = {
           active: bool(raw.active, true),
         };
         row.action = match ? R.UPDATE : R.CREATE;
-        if (match) row.note = `updates existing supplier ${match.name}`;
+
+        const notes = [];
+        if (match) notes.push(`updates existing supplier ${match.name}`);
+        if (openingPayable > 0) {
+          if (match && alreadyPosted.has(String(match._id))) {
+            row.openingBalance = null;
+            notes.push('an opening payable balance was already recorded for this supplier previously — will not be applied again');
+          } else {
+            row.openingBalance = openingPayable;
+            notes.push(`records an opening payable balance of ${openingPayable}`);
+          }
+        }
+        if (notes.length) row.note = notes.join(' · ');
       }
       out.push(row);
     }
     return out;
   },
 
-  async commit(prepared) {
+  async commit(prepared, ctx) {
     const res = { created: 0, updated: 0, skipped: 0, failed: 0, errors: [] };
     for (const row of prepared) {
       if (row.action === R.ERROR) { res.failed++; continue; }
+      let supplierId = row.matchId;
       try {
         if (row.matchId) {
           await Supplier.updateOne({ _id: row.matchId }, { $set: row.data }, { runValidators: true });
           res.updated++;
         } else {
-          await Supplier.create(row.data);
+          const created = await Supplier.create(row.data);
+          supplierId = created._id;
           res.created++;
         }
       } catch (e) {
         res.failed++;
         res.errors.push({ row: row.excelRow, field: 'Name', value: row.data.name, message: friendly(e) });
+        continue;
+      }
+      if (row.openingBalance > 0) {
+        try {
+          await postOpeningBalance({
+            entityType: 'supplier',
+            entity: supplierId,
+            entityName: row.data.name,
+            amount: row.openingBalance,
+            ctx,
+            applyDelta: (amount) => Supplier.updateOne({ _id: supplierId }, { $inc: { payable: amount } }),
+          });
+        } catch (e) {
+          if (!row.matchId) await Supplier.deleteOne({ _id: supplierId }).catch(() => {});
+          res.created -= row.matchId ? 0 : 1;
+          res.updated -= row.matchId ? 1 : 0;
+          res.failed++;
+          res.errors.push({ row: row.excelRow, field: 'Payable', value: row.openingBalance, message: `supplier saved, but its opening payable could not be recorded: ${friendly(e)}` });
+        }
       }
     }
     return res;

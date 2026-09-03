@@ -5,6 +5,8 @@ import Customer from '../models/Customer.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 import Supplier from '../models/Supplier.js';
 import OpeningBalance from '../models/OpeningBalance.js';
+import { logActivity } from '../utils/activity.js';
+import { requireReason } from '../services/paymentReversal.js';
 
 // ---------------------------------------------------------------------------
 // Receivables & Payables
@@ -293,9 +295,10 @@ export const customerReceivable = asyncHandler(async (req, res) => {
 // ---------------------------------------------------------------------------
 // Payables — money ALM owes suppliers.
 //
-// This reads the Supplier records and purchase orders preserved in Change 1. It does
-// not restore any supplier management UI: there is no create, edit or delete here,
-// only the read-only payable view purchase orders already depend on.
+// This reads the Supplier records and purchase orders preserved in Change 1. The
+// aggregate/list views below remain read-only computed data — nothing here stores a
+// balance of its own. The one write this file exposes is adjustSupplierPayable
+// further down: an audited correction to Supplier.payable, never a direct overwrite.
 // ---------------------------------------------------------------------------
 export const payables = asyncHandler(async (req, res) => {
   const { q, from, to, bucket, status } = req.query;
@@ -460,6 +463,73 @@ export const supplierPayable = asyncHandler(async (req, res) => {
     aging,
     oldestAgeDays: Math.max(openingAgeDays, ...rows.map((r) => r.ageDays), 0),
   });
+});
+
+// ---------------------------------------------------------------------------
+// Manual payable balance correction (admin only).
+//
+// Supplier.payable is never simply overwritten. Instead this posts an audited
+// OpeningBalance entry — the same mechanism the Opening Balances import already
+// uses to apply a migrated balance — and applies the identical delta to
+// Supplier.payable, so a correction always leaves a traceable record instead of
+// a silent edit. `amount` is the CORRECTED total the admin wants the payable to
+// read; the delta actually applied is computed here from the supplier's stored
+// value at write time, not from whatever the client last saw.
+// ---------------------------------------------------------------------------
+export const adjustSupplierPayable = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.isValidObjectId(id)) {
+    res.status(400);
+    throw new Error('Invalid supplier id');
+  }
+  const note = requireReason(res, req.body?.note);
+  const newTotal = Number(req.body?.amount);
+  if (!Number.isFinite(newTotal) || newTotal < 0) {
+    res.status(400);
+    throw new Error('Enter a valid corrected payable amount (0 or more)');
+  }
+
+  const supplier = await Supplier.findById(id);
+  if (!supplier) {
+    res.status(404);
+    throw new Error('Supplier not found');
+  }
+  const delta = Math.round((newTotal - supplier.payable) * 100) / 100;
+  if (delta === 0) {
+    res.status(400);
+    throw new Error('The corrected amount matches the current payable — nothing to adjust');
+  }
+
+  const adjustment = await OpeningBalance.create({
+    entityType: 'supplier',
+    entity: supplier._id,
+    entityName: supplier.name,
+    amount: delta,
+    reference: `manual-adjust:${Date.now()}`,
+    note,
+    createdBy: req.user._id,
+  });
+
+  const updated = await Supplier.findOneAndUpdate(
+    { _id: supplier._id },
+    { $inc: { payable: delta } },
+    { new: true }
+  );
+  if (!updated) {
+    // Supplier vanished between the read above and this write — undo the audit
+    // row rather than leave a recorded adjustment with nothing applied.
+    await OpeningBalance.deleteOne({ _id: adjustment._id });
+    res.status(404);
+    throw new Error('Supplier not found');
+  }
+
+  await logActivity(req, 'payable_adjusted', {
+    entity: 'Supplier',
+    entityId: supplier._id,
+    meta: { delta, newTotal, note },
+  });
+
+  res.status(201).json({ supplier: updated, adjustment });
 });
 
 // ---------------------------------------------------------------------------

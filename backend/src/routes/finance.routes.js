@@ -5,6 +5,7 @@ import {
   customerReceivable,
   payables,
   supplierPayable,
+  adjustSupplierPayable,
   position,
 } from '../controllers/finance.controller.js';
 
@@ -26,4 +27,6 @@ r.get('/receivables', requireRole('admin', 'sales'), receivables);
 r.get('/receivables/:id', requireRole('admin', 'sales'), customerReceivable);
 r.get('/payables', requireRole('admin'), payables);
 r.get('/payables/:id', requireRole('admin'), supplierPayable);
+// Manual balance correction — same admin-only policy as the rest of this router.
+r.post('/payables/:id/adjust', requireRole('admin'), adjustSupplierPayable);
 export default r;

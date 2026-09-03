@@ -1,14 +1,16 @@
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
+import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
-import { money, datetime } from '../lib/format.js';
+import { money, datetime, errorMessage } from '../lib/format.js';
 import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
 import DocumentActions from '../components/DocumentActions.jsx';
 import Table from '../components/Table.jsx';
 import Money from '../components/Money.jsx';
-import { Badge, LoadingBlock } from '../components/ui.jsx';
+import Modal from '../components/Modal.jsx';
+import { Badge, LoadingBlock, Spinner } from '../components/ui.jsx';
 
 const TYPE_LABELS = {
   customer_payment: 'Customer payment',
@@ -26,9 +28,14 @@ const TYPE_LABELS = {
 
 export default function AccountLedger() {
   const { id } = useParams();
+  const qc = useQueryClient();
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [type, setType] = useState('');
+
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState(null);
+  const [saving, setSaving] = useState(false);
 
   // `page: 0` means "the newest page" — resolved below once the total is known.
   // A ledger that silently showed the OLDEST 500 rows while presenting them
@@ -50,6 +57,46 @@ export default function AccountLedger() {
   });
   const currency = useCurrency();
 
+  function openEdit() {
+    setForm({
+      name: data.account.name,
+      type: data.account.type,
+      bankName: data.account.bankName || '',
+      accountNumber: data.account.accountNumber || '',
+      accountTitle: data.account.accountTitle || '',
+      openingBalance: String(data.account.openingBalance ?? 0),
+      active: data.account.active,
+      notes: data.account.notes || '',
+    });
+    setEditing(true);
+  }
+
+  function set(k, v) {
+    setForm((f) => ({ ...f, [k]: v }));
+  }
+
+  // currentBalance is never sent — the backend shifts it by the opening-balance
+  // delta itself, exactly like the payable/opening-balance adjustment mechanism.
+  async function saveEdit() {
+    setSaving(true);
+    try {
+      await api.patch(`/accounts/${id}`, {
+        ...form,
+        openingBalance: Number(form.openingBalance) || 0,
+      });
+      toast.success('Account updated');
+      setEditing(false);
+      qc.invalidateQueries({ queryKey: ['account-ledger', id] });
+      qc.invalidateQueries({ queryKey: ['accounts-summary'] });
+      qc.invalidateQueries({ queryKey: ['accounts'] });
+      qc.invalidateQueries({ queryKey: ['dashboard'] });
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
   if (isLoading && !data) return <LoadingBlock />;
   if (!data) return <LoadingBlock />;
 
@@ -62,6 +109,7 @@ export default function AccountLedger() {
         actions={
           <>
             <Badge tone={data.reconciled ? 'success' : 'danger'} dot>{data.reconciled ? 'reconciled' : 'balance drift'}</Badge>
+            <button className="btn-secondary" onClick={openEdit}>Edit</button>
             <DocumentActions path={`/accounts/${id}/statement/pdf`} filename={`statement-${data.account?.name || 'account'}`} label="Statement" />
           </>
         }
@@ -157,6 +205,63 @@ export default function AccountLedger() {
           onPageChange={setPage}
         />
       </div>
+
+      <Modal open={editing} onClose={() => setEditing(false)} title={`Edit ${data.account.name}`}>
+        {form && (
+          <div className="space-y-3">
+            <div>
+              <label htmlFor="accountledger-edit-name" className="label">Name <span className="text-red-500">*</span></label>
+              <input id="accountledger-edit-name" className="input" value={form.name} onChange={(e) => set('name', e.target.value)} />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="accountledger-edit-type" className="label">Type</label>
+                <select id="accountledger-edit-type" className="select" value={form.type} onChange={(e) => set('type', e.target.value)}>
+                  <option value="cash">Cash</option>
+                  <option value="bank">Bank</option>
+                  <option value="wallet">Wallet</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="accountledger-edit-opening" className="label">Opening Balance</label>
+                <input id="accountledger-edit-opening" className="input num input-money" type="number" step="0.01" value={form.openingBalance} onChange={(e) => set('openingBalance', e.target.value)} />
+                <p className="text-xs text-ink-400 mt-1">Current balance shifts by the same amount — ledger history is untouched.</p>
+              </div>
+            </div>
+            {form.type !== 'cash' && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="accountledger-edit-bank" className="label">Bank Name</label>
+                  <input id="accountledger-edit-bank" className="input" value={form.bankName} onChange={(e) => set('bankName', e.target.value)} />
+                </div>
+                <div>
+                  <label htmlFor="accountledger-edit-number" className="label">Account Number</label>
+                  <input id="accountledger-edit-number" className="input font-mono" value={form.accountNumber} onChange={(e) => set('accountNumber', e.target.value)} />
+                </div>
+              </div>
+            )}
+            <div>
+              <label htmlFor="accountledger-edit-title" className="label">Account Title</label>
+              <input id="accountledger-edit-title" className="input" value={form.accountTitle} onChange={(e) => set('accountTitle', e.target.value)} />
+            </div>
+            <div>
+              <label htmlFor="accountledger-edit-notes" className="label">Notes</label>
+              <textarea id="accountledger-edit-notes" className="input" rows={2} value={form.notes} onChange={(e) => set('notes', e.target.value)} />
+            </div>
+            <label className="flex items-center gap-2 text-sm text-ink-700">
+              <input type="checkbox" checked={form.active} onChange={(e) => set('active', e.target.checked)} />
+              Active
+            </label>
+            <div className="flex gap-2 pt-2">
+              <button className="btn-primary" onClick={saveEdit} disabled={saving || !form.name.trim()}>
+                {saving ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Save changes'}
+              </button>
+              <button className="btn-secondary" onClick={() => setEditing(false)}>Cancel</button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

@@ -3,7 +3,11 @@ import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import ExcelJS from 'exceljs';
 import Product from '../models/Product.js';
+import Customer from '../models/Customer.js';
+import Supplier from '../models/Supplier.js';
+import OpeningBalance from '../models/OpeningBalance.js';
 import { IMPORTERS, ACTIONS } from './importers.js';
+import { EXPORTERS } from './exporters.js';
 import { readSheet } from '../utils/excel.js';
 
 let mem;
@@ -15,7 +19,14 @@ beforeAll(async () => {
 
 afterEach(async () => {
   await Product.deleteMany({});
+  await Customer.deleteMany({});
+  await Supplier.deleteMany({});
+  await OpeningBalance.deleteMany({});
 });
+
+function ctx() {
+  return { user: { _id: new mongoose.Types.ObjectId() }, batchId: new mongoose.Types.ObjectId() };
+}
 
 afterAll(async () => {
   await mongoose.disconnect();
@@ -539,5 +550,183 @@ describe('products importer — create/update by Serial Number', () => {
     const all = await Product.find({});
     expect(all).toHaveLength(1);
     expect(all[0].name).toBe('L Updated');
+  });
+});
+
+// ===========================================================================
+// Customers importer — opening receivable balance
+// ===========================================================================
+describe('customers importer — opening balance', () => {
+  it('imports a new customer\'s opening receivable through OpeningBalance, not by writing balance directly', async () => {
+    const prepared = await IMPORTERS.customers.prepare([{ name: 'Acme Traders', email: 'acme@example.com', balance: 5000 }]);
+    expect(prepared[0].action).toBe(ACTIONS.CREATE);
+    expect(prepared[0].note).toMatch(/opening receivable balance of 5000/);
+    await IMPORTERS.customers.commit(prepared, ctx());
+
+    const customer = await Customer.findOne({ email: 'acme@example.com' });
+    expect(customer.balance).toBe(5000);
+
+    const obs = await OpeningBalance.find({ entityType: 'customer', entity: customer._id });
+    expect(obs).toHaveLength(1);
+    expect(obs[0].amount).toBe(5000);
+    expect(obs[0].reference).toBe('import:opening-balance');
+  });
+
+  it('does not double-post the balance when the same customer is imported again', async () => {
+    const row1 = { name: 'Acme Traders', email: 'acme@example.com', balance: 5000 };
+    await IMPORTERS.customers.commit(await IMPORTERS.customers.prepare([row1]), ctx());
+
+    // Re-import — same file (or a corrected re-upload) supplying the same balance again.
+    const prepared2 = await IMPORTERS.customers.prepare([row1]);
+    expect(prepared2[0].action).toBe(ACTIONS.UPDATE);
+    expect(prepared2[0].note).toMatch(/already recorded.*will not be applied again/);
+    await IMPORTERS.customers.commit(prepared2, ctx());
+
+    const customer = await Customer.findOne({ email: 'acme@example.com' });
+    expect(customer.balance).toBe(5000); // unchanged — not 10000
+    expect(await OpeningBalance.countDocuments({ entityType: 'customer', entity: customer._id })).toBe(1);
+  });
+
+  it('rejects the whole row for a negative balance instead of silently dropping it', async () => {
+    const prepared = await IMPORTERS.customers.prepare([{ name: 'Bad Row', email: 'bad@example.com', balance: -100 }]);
+    expect(prepared[0].action).toBe(ACTIONS.ERROR);
+    expect(prepared[0].errors.some((e) => e.field === 'Balance')).toBe(true);
+    await IMPORTERS.customers.commit(prepared, ctx());
+    expect(await Customer.findOne({ email: 'bad@example.com' })).toBeNull();
+  });
+
+  it('rejects the whole row for a non-numeric balance instead of silently dropping it', async () => {
+    const prepared = await IMPORTERS.customers.prepare([{ name: 'Bad Row', email: 'bad2@example.com', balance: 'not-a-number' }]);
+    expect(prepared[0].action).toBe(ACTIONS.ERROR);
+    expect(prepared[0].errors.some((e) => e.field === 'Balance')).toBe(true);
+  });
+
+  it('treats an explicit 0 balance as nothing to record — no OpeningBalance is created', async () => {
+    const prepared = await IMPORTERS.customers.prepare([{ name: 'Zero Co', email: 'zero@example.com', balance: 0 }]);
+    expect(prepared[0].action).toBe(ACTIONS.CREATE);
+    await IMPORTERS.customers.commit(prepared, ctx());
+    const customer = await Customer.findOne({ email: 'zero@example.com' });
+    expect(customer.balance).toBe(0);
+    expect(await OpeningBalance.countDocuments({ entityType: 'customer', entity: customer._id })).toBe(0);
+  });
+
+  it('still imports a customer with no Balance column at all, exactly as before', async () => {
+    const prepared = await IMPORTERS.customers.prepare([{ name: 'No Balance Co', email: 'nobalance@example.com' }]);
+    expect(prepared[0].action).toBe(ACTIONS.CREATE);
+    await IMPORTERS.customers.commit(prepared, ctx());
+    const customer = await Customer.findOne({ email: 'nobalance@example.com' });
+    expect(customer.balance).toBe(0);
+  });
+});
+
+// ===========================================================================
+// Suppliers importer — opening payable balance
+// ===========================================================================
+describe('suppliers importer — opening balance', () => {
+  it('imports a new supplier\'s opening payable through OpeningBalance, not by writing payable directly', async () => {
+    const prepared = await IMPORTERS.suppliers.prepare([{ name: 'Global Parts', email: 'global@example.com', payable: 7500 }]);
+    expect(prepared[0].action).toBe(ACTIONS.CREATE);
+    expect(prepared[0].note).toMatch(/opening payable balance of 7500/);
+    await IMPORTERS.suppliers.commit(prepared, ctx());
+
+    const supplier = await Supplier.findOne({ email: 'global@example.com' });
+    expect(supplier.payable).toBe(7500);
+
+    const obs = await OpeningBalance.find({ entityType: 'supplier', entity: supplier._id });
+    expect(obs).toHaveLength(1);
+    expect(obs[0].amount).toBe(7500);
+    expect(obs[0].reference).toBe('import:opening-balance');
+  });
+
+  it('does not double-post the payable when the same supplier is imported again', async () => {
+    const row1 = { name: 'Global Parts', email: 'global@example.com', payable: 7500 };
+    await IMPORTERS.suppliers.commit(await IMPORTERS.suppliers.prepare([row1]), ctx());
+
+    const prepared2 = await IMPORTERS.suppliers.prepare([row1]);
+    expect(prepared2[0].action).toBe(ACTIONS.UPDATE);
+    expect(prepared2[0].note).toMatch(/already recorded.*will not be applied again/);
+    await IMPORTERS.suppliers.commit(prepared2, ctx());
+
+    const supplier = await Supplier.findOne({ email: 'global@example.com' });
+    expect(supplier.payable).toBe(7500); // unchanged — not 15000
+    expect(await OpeningBalance.countDocuments({ entityType: 'supplier', entity: supplier._id })).toBe(1);
+  });
+
+  it('rejects the whole row for a negative payable instead of silently dropping it', async () => {
+    const prepared = await IMPORTERS.suppliers.prepare([{ name: 'Bad Row', email: 'bad-sup@example.com', payable: -50 }]);
+    expect(prepared[0].action).toBe(ACTIONS.ERROR);
+    expect(prepared[0].errors.some((e) => e.field === 'Payable')).toBe(true);
+    await IMPORTERS.suppliers.commit(prepared, ctx());
+    expect(await Supplier.findOne({ email: 'bad-sup@example.com' })).toBeNull();
+  });
+
+  it('treats an explicit 0 payable as nothing to record — no OpeningBalance is created', async () => {
+    const prepared = await IMPORTERS.suppliers.prepare([{ name: 'Zero Supplier', email: 'zero-sup@example.com', payable: 0 }]);
+    await IMPORTERS.suppliers.commit(prepared, ctx());
+    const supplier = await Supplier.findOne({ email: 'zero-sup@example.com' });
+    expect(supplier.payable).toBe(0);
+    expect(await OpeningBalance.countDocuments({ entityType: 'supplier', entity: supplier._id })).toBe(0);
+  });
+});
+
+// ===========================================================================
+// Products importer — Grade/Battery/Condition/Comments round-trip integrity
+//
+// There is no dedicated schema field for Grade/Battery/Usage Signs/Casing
+// Condition/Screen Condition/Media Serial — Product only has `comments` (free
+// text) and a separate, genuinely dedicated `condition` enum field. Rather than
+// add schema fields the rest of the app has no use for, composeComments folds
+// the cosmetic-condition columns into `comments` losslessly (nothing dropped,
+// original text always kept verbatim) and `condition` is left untouched as its
+// own field. These tests prove that round-tripping through the actual export
+// column definitions and back through the importer does not lose or mutate
+// what was originally supplied.
+// ===========================================================================
+describe('products importer — Grade/Battery/Condition/Comments round-trip', () => {
+  it('re-importing the exact exported Comments cell leaves stored comments unchanged', async () => {
+    const prepared = await IMPORTERS.products.prepare([{
+      sku: 'RT-1', name: 'Laptop', grade: 'A', comments: 'Minor scratch on lid',
+      battery: '92%', condition: 'used',
+    }]);
+    await IMPORTERS.products.commit(prepared);
+    const first = await Product.findOne({ sku: 'RT-1' });
+    expect(first.comments).toBe('Grade: A\nMinor scratch on lid\nBattery: 92%');
+    expect(first.condition).toBe('used');
+
+    // Build the real export column definitions and read the exact cell value they
+    // would write for this product's Comments column.
+    const built = await EXPORTERS.products.build({}, { user: { role: 'admin' } });
+    const commentsCol = built.columns.find((c) => c.header === 'Comments');
+    const exportedRow = built.rows.find((r) => r.sku === 'RT-1');
+    const exportedComments = commentsCol.value ? commentsCol.value(exportedRow) : exportedRow[commentsCol.key];
+    expect(exportedComments).toBe(first.comments);
+
+    // Re-import that exact cell value as the sole Comments input (no separate
+    // Grade/Battery columns this time, exactly like a real re-upload of the
+    // exported file) — the stored value must not gain a second "Grade: A" line
+    // or otherwise change.
+    const reprepared = await IMPORTERS.products.prepare([{ sku: 'RT-1', name: 'Laptop', comments: exportedComments }]);
+    await IMPORTERS.products.commit(reprepared);
+    const second = await Product.findOne({ sku: 'RT-1' });
+    expect(second.comments).toBe(first.comments);
+  });
+
+  it('Condition round-trips through export and re-import as its own field, never folded into Comments', async () => {
+    await IMPORTERS.products.commit(await IMPORTERS.products.prepare([
+      { sku: 'RT-2', name: 'Laptop', condition: 'refurbished', comments: 'Keyboard replaced' },
+    ]));
+    const built = await EXPORTERS.products.build({}, { user: { role: 'admin' } });
+    const conditionCol = built.columns.find((c) => c.header === 'Condition');
+    const exportedRow = built.rows.find((r) => r.sku === 'RT-2');
+    const exportedCondition = conditionCol.value ? conditionCol.value(exportedRow) : exportedRow[conditionCol.key];
+    expect(exportedCondition).toBe('refurbished');
+
+    const reprepared = await IMPORTERS.products.prepare([
+      { sku: 'RT-2', name: 'Laptop', condition: exportedCondition, comments: 'Keyboard replaced' },
+    ]);
+    await IMPORTERS.products.commit(reprepared);
+    const product = await Product.findOne({ sku: 'RT-2' });
+    expect(product.condition).toBe('refurbished');
+    expect(product.comments).toBe('Keyboard replaced'); // never merged with Condition
   });
 });
