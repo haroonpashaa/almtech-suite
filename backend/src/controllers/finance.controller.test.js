@@ -2,8 +2,9 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import Supplier from '../models/Supplier.js';
+import PurchaseOrder from '../models/PurchaseOrder.js';
 import OpeningBalance from '../models/OpeningBalance.js';
-import { adjustSupplierPayable } from './finance.controller.js';
+import { adjustSupplierPayable, payables } from './finance.controller.js';
 
 describe('adjustSupplierPayable (DB-backed)', () => {
   let mem;
@@ -108,5 +109,80 @@ describe('adjustSupplierPayable (DB-backed)', () => {
     const res = mockRes();
 
     await expect(adjustSupplierPayable(req, res)).rejects.toThrow(/invalid supplier id/i);
+  });
+});
+
+// ===========================================================================
+// payables() list — every active supplier must be reachable/editable from this
+// section, not only ones with an open purchase order or opening balance.
+// ===========================================================================
+describe('payables list includes every active supplier (DB-backed)', () => {
+  let mem;
+
+  beforeAll(async () => {
+    mem = await MongoMemoryServer.create();
+    await mongoose.connect(mem.getUri());
+  });
+
+  afterEach(async () => {
+    await Supplier.deleteMany({});
+    await PurchaseOrder.deleteMany({});
+    await OpeningBalance.deleteMany({});
+  });
+
+  afterAll(async () => {
+    await mongoose.disconnect();
+    await mem.stop();
+  });
+
+  function mockRes() {
+    return { statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
+  }
+
+  it('lists a supplier with no open purchase orders and no opening balance as a zero row, not omitted', async () => {
+    const supplier = await Supplier.create({ name: 'Zero Balance Supplier', payable: 0 });
+    const res = mockRes();
+    await payables({ query: {} }, res);
+
+    const row = res.body.rows.find((r) => String(r.supplierId) === String(supplier._id));
+    expect(row).toBeTruthy();
+    expect(row.outstanding).toBe(0);
+    expect(row.total).toBe(0);
+    expect(row.poCount).toBe(0);
+    // Zero rows must not inflate the real totals.
+    expect(res.body.totalOutstanding).toBe(0);
+  });
+
+  it('still lists a supplier with a real open purchase order at its correct outstanding amount', async () => {
+    const supplier = await Supplier.create({ name: 'Owed Supplier', payable: 500 });
+    await PurchaseOrder.create({
+      number: 'PO-TEST-1', supplier: supplier._id,
+      items: [{ product: new mongoose.Types.ObjectId(), name: 'Part', sku: 'P1', quantity: 1, unitCost: 500, lineTotal: 500 }],
+      subtotal: 500, total: 500, paid: 0, balance: 500, status: 'ordered',
+    });
+    const res = mockRes();
+    await payables({ query: {} }, res);
+
+    const row = res.body.rows.find((r) => String(r.supplierId) === String(supplier._id));
+    expect(row.outstanding).toBe(500);
+    expect(res.body.totalOutstanding).toBe(500);
+  });
+
+  it('an inactive supplier is not added as a zero row', async () => {
+    const supplier = await Supplier.create({ name: 'Inactive Supplier', payable: 0, active: false });
+    const res = mockRes();
+    await payables({ query: {} }, res);
+
+    expect(res.body.rows.find((r) => String(r.supplierId) === String(supplier._id))).toBeUndefined();
+  });
+
+  it('a search query still narrows zero-balance suppliers by name', async () => {
+    await Supplier.create({ name: 'Findable Zero Co', payable: 0 });
+    await Supplier.create({ name: 'Other Zero Co', payable: 0 });
+    const res = mockRes();
+    await payables({ query: { q: 'Findable' } }, res);
+
+    expect(res.body.rows).toHaveLength(1);
+    expect(res.body.rows[0].name).toBe('Findable Zero Co');
   });
 });

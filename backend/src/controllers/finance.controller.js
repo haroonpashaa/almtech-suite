@@ -377,6 +377,28 @@ export const payables = asyncHandler(async (req, res) => {
       poCount: 0, oldestDate: ob.asOf, oldestAgeDays: ob.ageDays, openingBalance: ob.amount, aging,
     });
   }
+
+  // Every active supplier belongs in this list, not only ones currently owing
+  // money — an Admin must be able to reach and correct any supplier's payable
+  // from this section, and a supplier with nothing outstanding was otherwise
+  // never reachable here at all (only via Suppliers → Payables card). These are
+  // plain zero rows, still fully linked to the same adjustable detail page.
+  const covered = new Set(rows.map((r) => String(r.supplierId)));
+  const supplierMatch = { active: true };
+  if (q) {
+    const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    supplierMatch.$or = [{ name: rx }, { contactPerson: rx }, { phone: rx }];
+  }
+  const remaining = await Supplier.find(supplierMatch).select('name contactPerson phone payable').sort('name');
+  for (const s of remaining) {
+    if (covered.has(String(s._id))) continue;
+    rows.push({
+      supplierId: s._id, name: s.name, contactPerson: s.contactPerson, phone: s.phone,
+      storedPayable: s.payable, total: 0, paid: 0, outstanding: 0,
+      poCount: 0, oldestDate: null, oldestAgeDays: 0, aging: emptyAging(),
+    });
+  }
+
   if (bucket && BUCKETS.includes(bucket)) rows = rows.filter((r) => (r.aging?.[bucket] || 0) > 0);
   rows.sort((a, b) => b.outstanding - a.outstanding);
 
