@@ -62,7 +62,7 @@ export default function PayableDetail() {
         amount: Number(adjustAmount),
         note: adjustNote,
       });
-      toast.success('Payable balance adjusted');
+      toast.success('Payable updated');
       setAdjusting(false);
       qc.invalidateQueries({ queryKey: ['payable', id] });
       qc.invalidateQueries({ queryKey: ['payables'] });
@@ -114,7 +114,7 @@ export default function PayableDetail() {
             {data.oldestAgeDays > 0 && <Badge tone={data.oldestAgeDays > 60 ? 'danger' : 'warning'} dot>{data.oldestAgeDays} days old</Badge>}
             {/* This screen is admin-only, so supplier access is guaranteed. */}
             <Link to={`/suppliers/${data.supplier._id}`} className="btn-secondary">Supplier profile</Link>
-            <button className="btn-secondary" onClick={openAdjust}>Adjust balance</button>
+            <button className="btn-secondary" onClick={openAdjust}>Edit Payable</button>
           </>
         }
       />
@@ -233,22 +233,22 @@ export default function PayableDetail() {
       <Modal
         open={adjusting}
         onClose={() => setAdjusting(false)}
-        title="Adjust payable balance"
-        subtitle={`Current stored payable ${money(data.storedPayable, currency)}`}
+        title="Edit Payable"
+        subtitle={data.supplier.name}
         size="md"
       >
         <div className="space-y-3">
           <p className="text-xs text-ink-500">
-            This does not overwrite anything directly — it posts an audited correction (visible on the supplier's
-            opening-balance history) and applies the same delta to the stored payable, exactly like the Opening
-            Balances import does. Use it to reconcile drift against the derived total, not to record a payment.
+            Editing this posts an audited correction (visible on the supplier's opening-balance history) rather than
+            overwriting the balance directly, so the correction and who made it stay on record — the same protection
+            the Opening Balances import relies on. Use it to fix a wrong balance, not to record a payment.
           </p>
           <div>
-            <label htmlFor="payabledetail-adjust-amount" className="label">Corrected total payable <span className="text-red-500">*</span></label>
+            <label htmlFor="payabledetail-adjust-amount" className="label">Total payable <span className="text-red-500">*</span></label>
             <input id="payabledetail-adjust-amount" className="input num input-money" type="number" step="0.01" value={adjustAmount} onChange={(e) => setAdjustAmount(e.target.value)} placeholder="Enter amount" />
           </div>
           <div>
-            <label htmlFor="payabledetail-adjust-note" className="label">Note / reason <span className="text-red-500">*</span></label>
+            <label htmlFor="payabledetail-adjust-note" className="label">Reason for this edit <span className="text-red-500">*</span></label>
             <textarea id="payabledetail-adjust-note" className="input" rows={3} value={adjustNote} onChange={(e) => setAdjustNote(e.target.value)} placeholder="Why is this balance being corrected?" />
           </div>
           <div className="flex gap-2 pt-2">
@@ -257,7 +257,7 @@ export default function PayableDetail() {
               onClick={saveAdjust}
               disabled={savingAdjust || adjustAmount === '' || Number(adjustAmount) < 0 || !adjustNote.trim() || Number(adjustAmount) === data.storedPayable}
             >
-              {savingAdjust ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Save adjustment'}
+              {savingAdjust ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Save changes'}
             </button>
             <button className="btn-secondary" onClick={() => setAdjusting(false)}>Cancel</button>
           </div>

@@ -11,8 +11,9 @@ import { Badge } from '../components/ui.jsx';
 import { AgingBuckets, AgingNote, OverdueBadge } from '../components/Aging.jsx';
 
 // This list stays a read-only aggregate over the Supplier records preserved in Change
-// 1 — no create/edit/delete here. PayableDetail (opened per supplier) adds an audited
-// balance-adjustment action and links into the existing purchase-order edit flow.
+// 1 — no create/edit/delete here. PayableDetail (opened per supplier) has the Edit
+// Payable action — an audited correction under the hood — and links into the existing
+// purchase-order edit flow.
 export default function Payables() {
   const [q, setQ] = useState('');
   const [from, setFrom] = useState('');
