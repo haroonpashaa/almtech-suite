@@ -3,6 +3,7 @@ import multer from 'multer';
 import { protect, requireRole } from '../middleware/auth.js';
 import {
   listTypes,
+  parseImportFile,
   validateImport,
   commitImport,
   errorsWorkbook,
@@ -72,6 +73,13 @@ r.use(protect);
 r.get('/types', requireRole('admin', 'sales'), listTypes);
 r.get('/templates/:type', requireRole('admin', 'sales'), allowType, downloadTemplate);
 r.get('/export/:type', requireRole('admin', 'sales'), allowType, runExport);
+// Parse is the first step of the edit-before-import flow: it only reads the
+// uploaded file into rows for the editable preview grid, nothing else — same
+// role/dataset gate as validate/commit below.
+r.post('/import/:type/parse', requireRole('admin', 'sales'), allowType, uploadSingle, parseImportFile);
+// validate/commit accept either a re-uploaded file (uploadSingle passes JSON
+// requests through untouched — see resolveRows in the controller) or the
+// edited rows from that preview grid as JSON.
 r.post('/import/:type/validate', requireRole('admin', 'sales'), allowType, uploadSingle, validateImport);
 r.post('/import/:type/commit', requireRole('admin', 'sales'), allowType, uploadSingle, commitImport);
 r.post('/import/:type/errors-file', requireRole('admin', 'sales'), allowType, errorsWorkbook);

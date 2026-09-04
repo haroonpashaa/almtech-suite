@@ -33,6 +33,12 @@ export default function ImportExport() {
   // Import state
   const [type, setType] = useState('products');
   const [file, setFile] = useState(null);
+  // draft: the parsed-but-unvalidated sheet, shown as an editable table before
+  // anything touches the importer's business rules. draftRows is the editable
+  // working copy — draft.rows itself is never mutated, so "what was uploaded"
+  // stays inspectable even after edits.
+  const [draft, setDraft] = useState(null);
+  const [draftRows, setDraftRows] = useState([]);
   const [preview, setPreview] = useState(null);
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -59,6 +65,8 @@ export default function ImportExport() {
 
   function reset() {
     setFile(null);
+    setDraft(null);
+    setDraftRows([]);
     setPreview(null);
     setResult(null);
     if (fileRef.current) fileRef.current.value = '';
@@ -66,18 +74,57 @@ export default function ImportExport() {
 
   function pickFile(f) {
     setFile(f);
+    setDraft(null);
+    setDraftRows([]);
     setPreview(null);
     setResult(null);
   }
 
-  async function validate() {
+  // Step 1: parse the uploaded file into an editable draft. This runs no
+  // importer business rules and writes nothing — the same structural parsing
+  // (header aliasing, cell coercion) the importer has always started with,
+  // just surfaced a step earlier so it can be reviewed and corrected first.
+  async function loadDraft() {
     if (!file) return;
     setBusy(true);
+    setPreview(null);
     setResult(null);
     try {
       const fd = new FormData();
       fd.append('file', file);
-      const { data } = await api.post(`/data/import/${type}/validate`, fd);
+      const { data } = await api.post(`/data/import/${type}/parse`, fd);
+      setDraft(data);
+      setDraftRows(data.rows.map((r) => ({ ...r })));
+      if (!data.rows.length) toast.error('No data rows found in this sheet');
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function updateCell(rowIndex, field, value) {
+    setDraftRows((rows) => rows.map((r, i) => (i === rowIndex ? { ...r, [field]: value } : r)));
+  }
+
+  function removeDraftRow(rowIndex) {
+    setDraftRows((rows) => rows.filter((_, i) => i !== rowIndex));
+  }
+
+  // Step 2 ("Confirm Import"): run the existing importer's own validation
+  // against the edited rows. Still zero database writes — exactly what
+  // /validate has always guaranteed, just fed from the edited draft instead
+  // of a re-read of the original file.
+  async function validate() {
+    if (!draftRows.length) return;
+    setBusy(true);
+    setResult(null);
+    try {
+      const { data } = await api.post(`/data/import/${type}/validate`, {
+        rows: draftRows,
+        filename: draft?.filename,
+        unmappedColumns: draft?.unmappedColumns,
+      });
       setPreview(data);
       if (data.summary.invalid > 0) toast.error(`${data.summary.invalid} row(s) have problems — review below`);
       else toast.success(`${data.summary.valid} row(s) ready to import`);
@@ -88,15 +135,26 @@ export default function ImportExport() {
     }
   }
 
+  // Returning to the editable table keeps every edit already made — draftRows
+  // is untouched by validate(), only preview (the read-only result) is cleared.
+  function backToEdit() {
+    setPreview(null);
+  }
+
+  // Step 3: the same edited rows that were just validated, written for real.
   async function commit() {
-    if (!file || !preview) return;
+    if (!draftRows.length || !preview) return;
     setBusy(true);
     try {
-      const fd = new FormData();
-      fd.append('file', file);
-      const { data } = await api.post(`/data/import/${type}/commit`, fd);
+      const { data } = await api.post(`/data/import/${type}/commit`, {
+        rows: draftRows,
+        filename: draft?.filename,
+        unmappedColumns: draft?.unmappedColumns,
+      });
       setResult(data);
       setPreview(null);
+      setDraft(null);
+      setDraftRows([]);
       toast.success(`Imported — ${data.result.created} created, ${data.result.updated} updated`);
       qc.invalidateQueries({ queryKey: ['import-history'] });
       // Anything the import may have moved.
@@ -201,13 +259,25 @@ export default function ImportExport() {
                   onChange={(e) => pickFile(e.target.files?.[0] || null)}
                   className="text-sm text-ink-600 file:mr-3 file:btn-sm file:bg-white file:border file:border-ink-200 file:text-ink-700 file:rounded-lg file:cursor-pointer"
                 />
-                <button className="btn-secondary" onClick={validate} disabled={!file || busy}>
-                  {busy && !result ? <><Spinner className="w-4 h-4" /> Checking…</> : 'Preview & validate'}
+                <button className="btn-secondary" onClick={loadDraft} disabled={!file || busy}>
+                  {busy && !draft ? <><Spinner className="w-4 h-4" /> Reading…</> : 'Load spreadsheet'}
                 </button>
                 {file && <button className="btn-secondary" onClick={reset}>Clear</button>}
                 <span className="text-xs text-ink-400">Nothing is saved until you confirm. Max 10 MB, .xlsx only.</span>
               </div>
             </div>
+
+            {draft && !preview && !result && (
+              <EditableSheet
+                draft={draft}
+                rows={draftRows}
+                onChangeCell={updateCell}
+                onRemoveRow={removeDraftRow}
+                onConfirm={validate}
+                onCancel={reset}
+                busy={busy}
+              />
+            )}
 
             {preview && (
               <>
@@ -234,13 +304,14 @@ export default function ImportExport() {
 
                 <div className="flex flex-wrap items-center gap-3">
                   <button className="btn-primary" onClick={() => setConfirmImport(true)} disabled={busy || preview.summary.valid === 0}>
-                    {busy ? <><Spinner className="w-4 h-4" /> Importing…</> : `Confirm import of ${preview.summary.valid} row(s)`}
+                    {busy ? <><Spinner className="w-4 h-4" /> Importing…</> : `Import now (${preview.summary.valid} row(s))`}
                   </button>
+                  <button className="btn-secondary" onClick={backToEdit} disabled={busy}>Back to edit</button>
                   {preview.summary.invalid > 0 && (
                     <button className="btn-secondary" onClick={downloadErrors}>Download {preview.summary.invalid} failed row(s)</button>
                   )}
                   <span className="text-xs text-ink-400">
-                    {preview.summary.invalid > 0 ? 'Invalid rows are skipped — valid rows still import.' : 'All rows passed validation.'}
+                    {preview.summary.invalid > 0 ? 'Invalid rows are skipped — valid rows still import. Fix them under Back to edit if you\'d rather correct them first.' : 'All rows passed validation.'}
                   </span>
                 </div>
 
@@ -389,6 +460,78 @@ export default function ImportExport() {
         confirmLabel="Import now"
       />
 
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The editable draft table — plain cell inputs, not a spreadsheet clone. Every
+// edit and row removal here is pure client-side state; nothing reaches the
+// importer until "Confirm Import" is clicked, and columns are exactly the
+// ones this sheet actually had (see parseImportFile), not every field the
+// importer supports.
+// ---------------------------------------------------------------------------
+function EditableSheet({ draft, rows, onChangeCell, onRemoveRow, onConfirm, onCancel, busy }) {
+  return (
+    <div className="card p-5 space-y-3">
+      <div className="flex items-center gap-2">
+        <Badge tone="warning" dot>Draft — nothing imported yet</Badge>
+        <h3 className="text-sm font-semibold text-ink-900 truncate">{draft.filename}</h3>
+      </div>
+      <p className="text-xs text-ink-400">
+        Edit any cell or remove a row below, then click Confirm Import. Nothing is written to ALM Suite until then.
+      </p>
+
+      {draft.unmappedColumns?.length > 0 && (
+        <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm text-amber-800">
+          Columns not recognized and not imported: {draft.unmappedColumns.join(', ')}
+        </div>
+      )}
+
+      {!rows.length ? (
+        <p className="text-sm text-ink-400 py-6 text-center">Every row has been removed. Cancel and re-upload, or clear to start over.</p>
+      ) : (
+        <div className="overflow-x-auto border border-ink-100 rounded-lg">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="bg-ink-25">
+                <th className="th text-right">Row</th>
+                {draft.columns.map((c) => <th key={c.field} className="th whitespace-nowrap">{c.label}</th>)}
+                <th className="th" />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, i) => (
+                <tr key={row.__row ?? i} className="tr">
+                  <td className="td text-right num text-ink-400">{row.__row ?? '—'}</td>
+                  {draft.columns.map((c) => (
+                    <td key={c.field} className="td p-1">
+                      <input
+                        className="input input-sm w-full min-w-[120px]"
+                        value={row[c.field] ?? ''}
+                        onChange={(e) => onChangeCell(i, c.field, e.target.value)}
+                      />
+                    </td>
+                  ))}
+                  <td className="td text-right">
+                    <button className="btn-sm bg-white border border-ink-200 text-red-600 hover:bg-red-50" onClick={() => onRemoveRow(i)}>
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-3">
+        <button className="btn-primary" onClick={onConfirm} disabled={busy || !rows.length}>
+          {busy ? <><Spinner className="w-4 h-4" /> Checking…</> : 'Confirm Import'}
+        </button>
+        <button className="btn-secondary" onClick={onCancel} disabled={busy}>Cancel</button>
+        <span className="text-xs text-ink-400">{rows.length} row(s) in this draft.</span>
+      </div>
     </div>
   );
 }
