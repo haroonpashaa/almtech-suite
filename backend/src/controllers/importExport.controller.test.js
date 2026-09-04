@@ -166,4 +166,25 @@ describe('edit-before-import flow (DB-backed)', () => {
     const product = await Product.findOne({ sku: 'SKU-COST' });
     expect(product.purchasePrice).toBe(0); // stripped before prepare(), same as the file-upload path always did
   });
+
+  // H2 regression: an invalid Condition must be visibly reported as an error
+  // in BOTH the preview and the commit result, not silently imported.
+  it('H2: an invalid Condition is reported as invalid in preview and is not committed', async () => {
+    const rows = [{ __row: 2, sku: 'SKU-COND-H2', name: 'Condition Test', condition: 'mint' }];
+
+    const previewRes = mockRes();
+    await validateImport(rowsReq({ rows, user: admin, params: { type: 'products' } }), previewRes);
+    expect(previewRes.body.summary.invalid).toBe(1);
+    expect(previewRes.body.summary.create).toBe(0);
+    expect(previewRes.body.rows[0].action).toBe('ERROR');
+    expect(previewRes.body.rows[0].errors[0].field).toBe('Condition');
+
+    const commitRes = mockRes();
+    await commitImport(rowsReq({ rows, user: admin, params: { type: 'products' } }), commitRes);
+    expect(commitRes.body.result.created).toBe(0);
+    expect(commitRes.body.result.failed).toBe(1);
+    expect(commitRes.body.errors).toHaveLength(1);
+    expect(commitRes.body.errors[0].field).toBe('Condition');
+    expect(await Product.findOne({ sku: 'SKU-COND-H2' })).toBeNull();
+  });
 });

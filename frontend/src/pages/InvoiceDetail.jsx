@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
+import { useSubmit } from '../hooks/useSubmit.js';
 import { api } from '../api/client.js';
 import { money, date, datetime, errorMessage } from '../lib/format.js';
 import { useCurrency } from '../hooks/useSettings.js';
@@ -11,7 +12,7 @@ import DocumentActions from '../components/DocumentActions.jsx';
 import Table from '../components/Table.jsx';
 import Money from '../components/Money.jsx';
 import Modal from '../components/Modal.jsx';
-import { Badge, LoadingBlock, Spinner } from '../components/ui.jsx';
+import { Badge, LoadingBlock, Spinner, EmptyState } from '../components/ui.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
 
 const statusTone = { paid: 'success', partial: 'warning', open: 'info', returned: 'danger', cancelled: 'neutral' };
@@ -24,13 +25,12 @@ export default function InvoiceDetail() {
   const [method, setMethod] = useState('cash');
   const [account, setAccount] = useState('');
   const [reference, setReference] = useState('');
-  const [paying, setPaying] = useState(false);
   const [reverseTarget, setReverseTarget] = useState(null);
   const [confirmReturn, setConfirmReturn] = useState(false);
   const [editingNotes, setEditingNotes] = useState(false);
   const [notesDraft, setNotesDraft] = useState('');
   const [savingNotes, setSavingNotes] = useState(false);
-  const { data: invoice } = useQuery({
+  const { data: invoice, isLoading, isError, refetch } = useQuery({
     queryKey: ['invoice', id],
     queryFn: async () => (await api.get(`/invoices/${id}`)).data,
   });
@@ -40,8 +40,7 @@ export default function InvoiceDetail() {
   });
   const currency = useCurrency();
 
-  async function pay() {
-    setPaying(true);
+  async function doPay() {
     try {
       await api.post(`/invoices/${id}/payments`, { amount: Number(amount), method, reference, account });
       toast.success('Payment recorded');
@@ -52,10 +51,10 @@ export default function InvoiceDetail() {
       qc.invalidateQueries({ queryKey: ['dashboard'] });
     } catch (e) {
       toast.error(errorMessage(e));
-    } finally {
-      setPaying(false);
     }
   }
+  // H6: guards against a double tap firing two payment POSTs.
+  const { run: pay, pending: paying } = useSubmit(doPay);
 
   // Posts a reversing entry through the admin-only endpoint. The dialog collects the
   // mandatory reason and spells out the consequences before anything is sent.
@@ -110,7 +109,24 @@ export default function InvoiceDetail() {
     }
   }
 
-  if (!invoice) return <LoadingBlock />;
+  if (isLoading) return <LoadingBlock />;
+  if (isError || !invoice) {
+    return (
+      <div className="p-8">
+        <EmptyState
+          tone="danger"
+          title="Invoice not found"
+          description="This invoice may have been removed, or the link is incorrect."
+          action={
+            <span className="inline-flex gap-2">
+              <button className="btn-secondary" onClick={() => refetch()}>Try again</button>
+              <Link to="/invoices" className="btn-primary">Back to invoices</Link>
+            </span>
+          }
+        />
+      </div>
+    );
+  }
 
   return (
     <div>

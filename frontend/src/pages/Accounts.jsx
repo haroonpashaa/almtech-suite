@@ -21,7 +21,7 @@ export default function Accounts() {
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState(empty);
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['accounts-summary'],
     queryFn: async () => (await api.get('/accounts/summary')).data,
   });
@@ -72,6 +72,8 @@ export default function Accounts() {
 
         <Table
           loading={isLoading}
+          error={isError ? 'Accounts could not be loaded.' : null}
+          onRetry={refetch}
           empty="No accounts yet"
           columns={[
             {

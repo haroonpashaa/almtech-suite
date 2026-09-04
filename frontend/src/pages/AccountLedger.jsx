@@ -10,7 +10,7 @@ import DocumentActions from '../components/DocumentActions.jsx';
 import Table from '../components/Table.jsx';
 import Money from '../components/Money.jsx';
 import Modal from '../components/Modal.jsx';
-import { Badge, LoadingBlock, Spinner } from '../components/ui.jsx';
+import { Badge, LoadingBlock, Spinner, EmptyState } from '../components/ui.jsx';
 
 const TYPE_LABELS = {
   customer_payment: 'Customer payment',
@@ -41,7 +41,7 @@ export default function AccountLedger() {
   // A ledger that silently showed the OLDEST 500 rows while presenting them
   // newest-first was the defect this page is paged to fix.
   const [page, setPage] = useState(0);
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     placeholderData: keepPreviousData,
     queryKey: ['account-ledger', id, from, to, type, page],
     queryFn: async () => {
@@ -98,7 +98,23 @@ export default function AccountLedger() {
   }
 
   if (isLoading && !data) return <LoadingBlock />;
-  if (!data) return <LoadingBlock />;
+  if (isError || !data) {
+    return (
+      <div className="p-8">
+        <EmptyState
+          tone="danger"
+          title="Account not found"
+          description="This account's ledger could not be loaded, or the link is incorrect."
+          action={
+            <span className="inline-flex gap-2">
+              <button className="btn-secondary" onClick={() => refetch()}>Try again</button>
+              <Link to="/accounts" className="btn-primary">Back to accounts</Link>
+            </span>
+          }
+        />
+      </div>
+    );
+  }
 
   return (
     <div>

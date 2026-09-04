@@ -356,6 +356,40 @@ export const receiveItems = asyncHandler(async (req, res) => {
     if (!line) continue;
     requirePositiveWholeQuantity(r.quantity, line.name);
   }
+
+  // Serial numbers identify one physical unit and must be globally unique across
+  // every product, not just within one — checked up front, alongside quantity,
+  // so a conflict rejects the whole batch before any stock has moved rather than
+  // leaving some lines received and others not. Re-receiving a serial the SAME
+  // product already has is left alone here (that's an existing, harmless no-op
+  // handled later) — only a serial already on a DIFFERENT product, or claimed by
+  // two different products within this same request, is a conflict.
+  const incomingSerials = receipts.flatMap((r) => (Array.isArray(r.serials) ? r.serials.map((sn) => ({ serial: sn, product: r.product })) : []));
+  if (incomingSerials.length) {
+    const uniqueSerials = [...new Set(incomingSerials.map((s) => s.serial))];
+    const owners = await Product.find({ 'serials.serial': { $in: uniqueSerials } }).select('sku name serials.serial');
+    const ownerBySerial = new Map();
+    for (const p of owners) {
+      for (const s of p.serials) {
+        if (uniqueSerials.includes(s.serial)) ownerBySerial.set(s.serial, p);
+      }
+    }
+    const claimedInBatchBy = new Map();
+    for (const { serial, product } of incomingSerials) {
+      const owner = ownerBySerial.get(serial);
+      if (owner && String(owner._id) !== product) {
+        res.status(409);
+        throw new Error(`Serial number "${serial}" is already assigned to ${owner.name} (SKU ${owner.sku}) — a serial number must be unique across all products.`);
+      }
+      const claimedBy = claimedInBatchBy.get(serial);
+      if (claimedBy && claimedBy !== product) {
+        res.status(409);
+        throw new Error(`Serial number "${serial}" is being received onto more than one product in this request.`);
+      }
+      claimedInBatchBy.set(serial, product);
+    }
+  }
+
   for (const r of receipts) {
     const line = po.items.find((l) => l.product.toString() === r.product);
     if (!line) continue;

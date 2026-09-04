@@ -8,7 +8,7 @@ import { clampQuantity, isValidQuantity } from '../lib/quantity.js';
 import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Combobox from '../components/Combobox.jsx';
-import { Spinner } from '../components/ui.jsx';
+import { Spinner, LoadingBlock } from '../components/ui.jsx';
 
 // A line with anything already received keeps that as its floor instead of the
 // usual minimum of 1 — Rule 2: ordered quantity may never drop below what's
@@ -131,7 +131,7 @@ export default function PurchaseOrderForm() {
     }
   }
 
-  if (isEdit && !po) return null;
+  if (isEdit && !po) return <LoadingBlock />;
 
   return (
     <div>

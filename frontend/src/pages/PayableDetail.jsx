@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
+import { useSubmit } from '../hooks/useSubmit.js';
 import { api } from '../api/client.js';
 import { money, date as fmtDate, errorMessage } from '../lib/format.js';
 import { useCurrency } from '../hooks/useSettings.js';
@@ -9,7 +10,7 @@ import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
 import Money from '../components/Money.jsx';
 import Modal from '../components/Modal.jsx';
-import { Badge, LoadingBlock, Spinner } from '../components/ui.jsx';
+import { Badge, LoadingBlock, Spinner, EmptyState } from '../components/ui.jsx';
 import { AgingBuckets, AgingNote, OverdueBadge } from '../components/Aging.jsx';
 
 const statusTone = { received: 'success', partial: 'warning', ordered: 'info', cancelled: 'neutral' };
@@ -22,14 +23,13 @@ export default function PayableDetail() {
   const [account, setAccount] = useState('');
   const [method, setMethod] = useState('bank');
   const [reference, setReference] = useState('');
-  const [paying, setPaying] = useState(false);
 
   const [adjusting, setAdjusting] = useState(false);
   const [adjustAmount, setAdjustAmount] = useState('');
   const [adjustNote, setAdjustNote] = useState('');
   const [savingAdjust, setSavingAdjust] = useState(false);
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['payable', id],
     queryFn: async () => (await api.get(`/finance/payables/${id}`)).data,
   });
@@ -77,8 +77,7 @@ export default function PayableDetail() {
   // Posts to the existing purchase-order payment endpoint. That one call updates PO
   // paid/balance, reduces Supplier.payable and takes the money out of the chosen
   // account through the Change 3 ledger.
-  async function pay() {
-    setPaying(true);
+  async function doPay() {
     try {
       await api.post(`/purchase-orders/${payTarget._id}/payments`, {
         amount: Number(amount),
@@ -96,12 +95,29 @@ export default function PayableDetail() {
       qc.invalidateQueries({ queryKey: ['payment-history'] });
     } catch (e) {
       toast.error(errorMessage(e));
-    } finally {
-      setPaying(false);
     }
   }
+  // H6: guards against a double tap firing two payment POSTs.
+  const { run: pay, pending: paying } = useSubmit(doPay);
 
-  if (isLoading || !data) return <LoadingBlock />;
+  if (isLoading) return <LoadingBlock />;
+  if (isError || !data) {
+    return (
+      <div className="p-8">
+        <EmptyState
+          tone="danger"
+          title="Payable not found"
+          description="This supplier's payable could not be loaded, or the link is incorrect."
+          action={
+            <span className="inline-flex gap-2">
+              <button className="btn-secondary" onClick={() => refetch()}>Try again</button>
+              <Link to="/payables" className="btn-primary">Back to payables</Link>
+            </span>
+          }
+        />
+      </div>
+    );
+  }
 
   return (
     <div>

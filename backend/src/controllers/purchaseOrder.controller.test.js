@@ -377,6 +377,80 @@ describe('Purchase Order editing (DB-backed)', () => {
     expect(fresh.status).toBe('received');
   });
 
+  // =========================================================================
+  // H1 — serial numbers must be globally unique across products, and a
+  // conflict must reject the whole receive request before any stock moves.
+  // =========================================================================
+  it('H1: rejects receiving a serial already assigned to a different product, before any stock moves', async () => {
+    const supplier = await makeSupplier();
+    const pA = await Product.create({ sku: 'SKU-A', name: 'Product A', stock: 0, tracksSerials: true, serials: [{ serial: 'SN-DUP', status: 'in_stock' }] });
+    const pB = await makeProduct('SKU-B');
+    await Product.updateOne({ _id: pB._id }, { $set: { tracksSerials: true } });
+
+    const po = await callCreatePO(supplier, [{ product: pB._id.toString(), quantity: 1, unitCost: 50 }]);
+    await expect(callReceive(po, [{ product: pB._id.toString(), quantity: 1, serials: ['SN-DUP'] }]))
+      .rejects.toThrow(/already assigned to Product A \(SKU SKU-A\)/);
+
+    // No partial update: neither the PO line nor product B's stock moved.
+    const freshPO = await PurchaseOrder.findById(po._id);
+    expect(freshPO.items[0].received).toBe(0);
+    expect(freshPO.status).toBe('ordered');
+    const freshB = await Product.findById(pB._id);
+    expect(freshB.stock).toBe(0);
+    expect(freshB.serials).toHaveLength(0);
+    // Product A (the true owner) is untouched too.
+    const freshA = await Product.findById(pA._id);
+    expect(freshA.serials).toHaveLength(1);
+  });
+
+  it('H1: rejects two different products in the SAME request claiming the same new serial', async () => {
+    const supplier = await makeSupplier();
+    const pA = await makeProduct('SKU-A');
+    const pB = await makeProduct('SKU-B');
+    await Product.updateMany({ _id: { $in: [pA._id, pB._id] } }, { $set: { tracksSerials: true } });
+    const po = await callCreatePO(supplier, [
+      { product: pA._id.toString(), quantity: 1, unitCost: 50 },
+      { product: pB._id.toString(), quantity: 1, unitCost: 50 },
+    ]);
+    await expect(callReceive(po, [
+      { product: pA._id.toString(), quantity: 1, serials: ['SN-NEW'] },
+      { product: pB._id.toString(), quantity: 1, serials: ['SN-NEW'] },
+    ])).rejects.toThrow(/being received onto more than one product/);
+
+    const freshA = await Product.findById(pA._id);
+    const freshB = await Product.findById(pB._id);
+    expect(freshA.stock).toBe(0);
+    expect(freshB.stock).toBe(0);
+  });
+
+  it('H1: re-receiving a serial the SAME product already has is not treated as a conflict', async () => {
+    const supplier = await makeSupplier();
+    const pA = await Product.create({ sku: 'SKU-A', name: 'Product A', stock: 1, tracksSerials: true, serials: [{ serial: 'SN-EXIST', status: 'in_stock' }] });
+    const po = await callCreatePO(supplier, [{ product: pA._id.toString(), quantity: 1, unitCost: 50 }]);
+    const body = await callReceive(po, [{ product: pA._id.toString(), quantity: 1, serials: ['SN-EXIST'] }]);
+    expect(body.status).toBe('received');
+    const fresh = await Product.findById(pA._id);
+    expect(fresh.serials).toHaveLength(1); // not duplicated onto itself
+  });
+
+  it('H1: distinct serials across two different products in one request succeed normally', async () => {
+    const supplier = await makeSupplier();
+    const pA = await makeProduct('SKU-A');
+    const pB = await makeProduct('SKU-B');
+    await Product.updateMany({ _id: { $in: [pA._id, pB._id] } }, { $set: { tracksSerials: true } });
+    const po = await callCreatePO(supplier, [
+      { product: pA._id.toString(), quantity: 1, unitCost: 50 },
+      { product: pB._id.toString(), quantity: 1, unitCost: 50 },
+    ]);
+    const body = await callReceive(po, [
+      { product: pA._id.toString(), quantity: 1, serials: ['SN-A1'] },
+      { product: pB._id.toString(), quantity: 1, serials: ['SN-B1'] },
+    ]);
+    expect(body.status).toBe('received');
+    expect((await Product.findById(pA._id)).serials.map((s) => s.serial)).toEqual(['SN-A1']);
+    expect((await Product.findById(pB._id)).serials.map((s) => s.serial)).toEqual(['SN-B1']);
+  });
+
   it('15. existing supplier payment still works', async () => {
     const supplier = await makeSupplier();
     const p1 = await makeProduct('SKU-1');

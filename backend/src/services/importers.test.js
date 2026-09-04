@@ -672,6 +672,39 @@ describe('suppliers importer — opening balance', () => {
 // ===========================================================================
 // Products importer — Grade/Battery/Condition/Comments round-trip integrity
 //
+// ===========================================================================
+// H2 regression: an invalid Condition must stay a rejected row — the row's
+// action is not allowed to be silently overwritten from ERROR back to
+// CREATE/UPDATE after err() has already flagged it.
+// ===========================================================================
+describe('products importer — invalid Condition rejects the row (H2 regression)', () => {
+  it('an invalid Condition on a new product stays ERROR and is not created', async () => {
+    const prepared = await IMPORTERS.products.prepare([{ sku: 'COND-1', name: 'Laptop', condition: 'mint' }]);
+    expect(prepared[0].action).toBe(ACTIONS.ERROR);
+    expect(prepared[0].errors).toContainEqual(expect.objectContaining({ field: 'Condition', message: 'Condition must be new, used or refurbished' }));
+
+    await IMPORTERS.products.commit(prepared);
+    expect(await Product.findOne({ sku: 'COND-1' })).toBeNull();
+  });
+
+  it('an invalid Condition on an UPDATE row also stays ERROR and does not touch the existing product', async () => {
+    await Product.create({ sku: 'COND-2', name: 'Laptop', condition: 'refurbished' });
+    const prepared = await IMPORTERS.products.prepare([{ sku: 'COND-2', name: 'Laptop', condition: 'mint' }]);
+    expect(prepared[0].action).toBe(ACTIONS.ERROR);
+
+    await IMPORTERS.products.commit(prepared);
+    const product = await Product.findOne({ sku: 'COND-2' });
+    expect(product.condition).toBe('refurbished'); // untouched, not silently reset
+  });
+
+  it('a valid Condition still creates the row normally (no regression on the happy path)', async () => {
+    const prepared = await IMPORTERS.products.prepare([{ sku: 'COND-3', name: 'Laptop', condition: 'refurbished' }]);
+    expect(prepared[0].action).toBe(ACTIONS.CREATE);
+    await IMPORTERS.products.commit(prepared);
+    expect((await Product.findOne({ sku: 'COND-3' })).condition).toBe('refurbished');
+  });
+});
+
 // There is no dedicated schema field for Grade/Battery/Usage Signs/Casing
 // Condition/Screen Condition/Media Serial — Product only has `comments` (free
 // text) and a separate, genuinely dedicated `condition` enum field. Rather than

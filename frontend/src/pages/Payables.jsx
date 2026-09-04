@@ -21,7 +21,7 @@ export default function Payables() {
   const [bucket, setBucket] = useState('');
   const [status, setStatus] = useState('');
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['payables', q, from, to, bucket, status],
     queryFn: async () =>
       (await api.get('/finance/payables', {
@@ -112,6 +112,8 @@ export default function Payables() {
 
         <Table
           loading={isLoading}
+          error={isError ? 'Payables could not be loaded.' : null}
+          onRetry={refetch}
           empty="Nothing owed to suppliers"
           columns={[
             {

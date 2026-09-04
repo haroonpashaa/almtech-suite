@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
@@ -11,7 +11,7 @@ import DocumentActions from '../components/DocumentActions.jsx';
 import Table from '../components/Table.jsx';
 import Modal from '../components/Modal.jsx';
 import Money from '../components/Money.jsx';
-import { Badge, LoadingBlock, Spinner } from '../components/ui.jsx';
+import { Badge, LoadingBlock, Spinner, EmptyState } from '../components/ui.jsx';
 
 function Field({ label, value, className = '' }) {
   return (
@@ -33,13 +33,30 @@ export default function CustomerDetail() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
-  const { data } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['customer-ledger', id],
     queryFn: async () => (await api.get(`/customers/${id}/ledger`)).data,
   });
   const currency = useCurrency();
 
-  if (!data) return <LoadingBlock />;
+  if (isLoading) return <LoadingBlock />;
+  if (isError || !data) {
+    return (
+      <div className="p-8">
+        <EmptyState
+          tone="danger"
+          title="Customer not found"
+          description="This customer may have been removed, or the link is incorrect."
+          action={
+            <span className="inline-flex gap-2">
+              <button className="btn-secondary" onClick={() => refetch()}>Try again</button>
+              <Link to="/customers" className="btn-primary">Back to customers</Link>
+            </span>
+          }
+        />
+      </div>
+    );
+  }
   const { customer, entries, balance } = data;
 
   function openEdit() {

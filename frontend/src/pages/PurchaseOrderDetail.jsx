@@ -11,7 +11,7 @@ import PageHeader from '../components/PageHeader.jsx';
 import DocumentActions from '../components/DocumentActions.jsx';
 import Table from '../components/Table.jsx';
 import Money from '../components/Money.jsx';
-import { Badge, LoadingBlock, Spinner } from '../components/ui.jsx';
+import { Badge, LoadingBlock, Spinner, EmptyState } from '../components/ui.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
 
 const statusTone = { received: 'success', partial: 'warning', ordered: 'info', cancelled: 'neutral' };
@@ -25,10 +25,9 @@ export default function PurchaseOrderDetail() {
   const [method, setMethod] = useState('bank');
   const [account, setAccount] = useState('');
   const [reference, setReference] = useState('');
-  const [paying, setPaying] = useState(false);
   const [reverseTarget, setReverseTarget] = useState(null);
 
-  const { data: po } = useQuery({
+  const { data: po, isLoading, isError, refetch } = useQuery({
     queryKey: ['po', id],
     queryFn: async () => (await api.get(`/purchase-orders/${id}`)).data,
   });
@@ -55,8 +54,7 @@ export default function PurchaseOrderDetail() {
     }
   }
 
-  async function pay() {
-    setPaying(true);
+  async function doPay() {
     try {
       await api.post(`/purchase-orders/${id}/payments`, { amount: Number(amount), method, reference, account });
       toast.success('Payment recorded');
@@ -67,10 +65,10 @@ export default function PurchaseOrderDetail() {
       qc.invalidateQueries({ queryKey: ['dashboard'] });
     } catch (e) {
       toast.error(errorMessage(e));
-    } finally {
-      setPaying(false);
     }
   }
+  // H6: guards against a double tap firing two payment POSTs.
+  const { run: pay, pending: paying } = useSubmit(doPay);
 
   async function reversePayment(reason) {
     const index = reverseTarget.index;
@@ -90,7 +88,24 @@ export default function PurchaseOrderDetail() {
   // Stock movement: the control is latched for the duration of the request.
   const { run: receive, pending: receiving } = useSubmit(doReceive);
 
-  if (!po) return <LoadingBlock />;
+  if (isLoading) return <LoadingBlock />;
+  if (isError || !po) {
+    return (
+      <div className="p-8">
+        <EmptyState
+          tone="danger"
+          title="Purchase order not found"
+          description="This purchase order may have been removed, or the link is incorrect."
+          action={
+            <span className="inline-flex gap-2">
+              <button className="btn-secondary" onClick={() => refetch()}>Try again</button>
+              <Link to="/purchase-orders" className="btn-primary">Back to purchase orders</Link>
+            </span>
+          }
+        />
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -120,7 +135,8 @@ export default function PurchaseOrderDetail() {
         <div className="lg:col-span-2 space-y-4">
           <div className="card overflow-hidden">
             <div className="px-4 py-3 border-b border-ink-100 bg-ink-25"><h3 className="text-sm font-semibold text-ink-900">Items</h3></div>
-            <table className="hidden sm:table min-w-full text-sm">
+            <div className="hidden sm:block overflow-x-auto">
+            <table className="min-w-full text-sm">
               <thead>
                 <tr>
                   <th scope="col" className="th">Item</th>
@@ -160,6 +176,7 @@ export default function PurchaseOrderDetail() {
                 })}
               </tbody>
             </table>
+            </div>
 
             {/* Phone: receiving stock from the warehouse floor. Ordered, received
                 and remaining are stated explicitly so the operator never has to

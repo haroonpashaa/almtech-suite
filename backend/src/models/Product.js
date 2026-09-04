@@ -60,6 +60,17 @@ productSchema.index(
   { unique: true, partialFilterExpression: { barcode: { $gt: '' } }, name: 'barcode_unique_when_present' }
 );
 
+// A serial number identifies one physical unit, so it can never belong to two
+// products at once — same reasoning as barcode above. This is a multikey index
+// (serials is an array), so MongoDB enforces the uniqueness across every
+// product's serials array, not just within one document. `serial` is required
+// on the subdocument, so a bare `sparse: true` (skip documents with no serials
+// at all) is enough — there's no empty-string case to carve out like barcode has.
+productSchema.index(
+  { 'serials.serial': 1 },
+  { unique: true, sparse: true, name: 'serials_serial_unique' }
+);
+
 productSchema.virtual('isLowStock').get(function () {
   return this.stock <= this.lowStockThreshold;
 });

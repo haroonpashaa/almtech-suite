@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
+import { useSubmit } from '../hooks/useSubmit.js';
 import { api } from '../api/client.js';
 import { money, date as fmtDate, errorMessage } from '../lib/format.js';
 import { useCurrency } from '../hooks/useSettings.js';
@@ -9,7 +10,7 @@ import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
 import Money from '../components/Money.jsx';
 import Modal from '../components/Modal.jsx';
-import { Badge, LoadingBlock, Spinner } from '../components/ui.jsx';
+import { Badge, LoadingBlock, Spinner, EmptyState } from '../components/ui.jsx';
 import { AgingBuckets, AgingNote, OverdueBadge } from '../components/Aging.jsx';
 
 const statusTone = { paid: 'success', partial: 'warning', open: 'info', returned: 'danger', cancelled: 'neutral' };
@@ -22,9 +23,8 @@ export default function ReceivableDetail() {
   const [account, setAccount] = useState('');
   const [method, setMethod] = useState('cash');
   const [reference, setReference] = useState('');
-  const [paying, setPaying] = useState(false);
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['receivable', id],
     queryFn: async () => (await api.get(`/finance/receivables/${id}`)).data,
   });
@@ -45,8 +45,7 @@ export default function ReceivableDetail() {
   // Posts to the existing invoice payment endpoint — no second payment implementation.
   // That single call updates invoice paid/balance/status, reduces Customer.balance and
   // posts the money into the chosen account via the Change 3 ledger.
-  async function pay() {
-    setPaying(true);
+  async function doPay() {
     try {
       await api.post(`/invoices/${payTarget._id}/payments`, {
         amount: Number(amount),
@@ -64,12 +63,29 @@ export default function ReceivableDetail() {
       qc.invalidateQueries({ queryKey: ['payment-history'] });
     } catch (e) {
       toast.error(errorMessage(e));
-    } finally {
-      setPaying(false);
     }
   }
+  // H6: guards against a double tap firing two payment POSTs.
+  const { run: pay, pending: paying } = useSubmit(doPay);
 
-  if (isLoading || !data) return <LoadingBlock />;
+  if (isLoading) return <LoadingBlock />;
+  if (isError || !data) {
+    return (
+      <div className="p-8">
+        <EmptyState
+          tone="danger"
+          title="Receivable not found"
+          description="This customer's receivable could not be loaded, or the link is incorrect."
+          action={
+            <span className="inline-flex gap-2">
+              <button className="btn-secondary" onClick={() => refetch()}>Try again</button>
+              <Link to="/receivables" className="btn-primary">Back to receivables</Link>
+            </span>
+          }
+        />
+      </div>
+    );
+  }
 
   return (
     <div>

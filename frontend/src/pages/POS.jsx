@@ -319,7 +319,7 @@ export default function POS() {
                 <div className="text-xs text-ink-300 mt-0.5">Search and click a product to add it</div>
               </div>
             ) : (
-              <div className="hidden sm:block">
+              <div className="hidden sm:block overflow-x-auto">
                 <table className="min-w-full text-sm">
                   <thead>
                     <tr>

@@ -45,7 +45,7 @@ export default function Expenses() {
   const [account, setAccount] = useState('');
   const [status, setStatus] = useState('posted');
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['expenses', from, to, category, account, status],
     queryFn: async () =>
       (await api.get('/expenses', {
@@ -223,6 +223,8 @@ export default function Expenses() {
 
         <Table
           loading={isLoading}
+          error={isError ? 'Expenses could not be loaded.' : null}
+          onRetry={refetch}
           empty="No expenses match these filters"
           onRowClick={(e) => setDetail(e)}
           columns={[

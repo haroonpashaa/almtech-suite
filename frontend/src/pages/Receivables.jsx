@@ -26,7 +26,7 @@ export default function Receivables() {
   const [status, setStatus] = useState('');
 
   // Every filter is applied server-side so a large ledger is never shipped to the browser.
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['receivables', q, from, to, bucket, status],
     queryFn: async () =>
       (await api.get('/finance/receivables', {
@@ -129,6 +129,8 @@ export default function Receivables() {
 
         <Table
           loading={isLoading}
+          error={isError ? 'Receivables could not be loaded.' : null}
+          onRetry={refetch}
           empty="No customers owe anything — nothing outstanding"
           columns={[
             {

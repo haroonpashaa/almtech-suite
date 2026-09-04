@@ -337,8 +337,13 @@ const products = {
           row.data.condition = 'used';
         }
 
-        row.action = isUpdate ? R.UPDATE : R.CREATE;
-        row.note = isUpdate ? `updates existing product ${sku}` : null;
+        // Condition's own err() call above may have just set row.action to ERROR —
+        // this must never overwrite that back to CREATE/UPDATE, or an invalid
+        // Condition would silently import anyway with its error left unreported.
+        if (row.action !== R.ERROR) {
+          row.action = isUpdate ? R.UPDATE : R.CREATE;
+          row.note = isUpdate ? `updates existing product ${sku}` : null;
+        }
       }
 
       if (warnings.length) {
