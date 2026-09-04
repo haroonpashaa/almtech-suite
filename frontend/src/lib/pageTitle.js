@@ -56,6 +56,7 @@ const ROUTES = [
   ['/data', 'Import / Export'],
   ['/users', 'Users'],
   ['/activity', 'Activity'],
+  ['/system-health', 'System Health'],
   ['/settings', 'Settings'],
 ];
 

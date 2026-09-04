@@ -39,6 +39,7 @@ const Reports = lazy(() => import('./pages/Reports.jsx'));
 const Settings = lazy(() => import('./pages/Settings.jsx'));
 const Users = lazy(() => import('./pages/Users.jsx'));
 const Activity = lazy(() => import('./pages/Activity.jsx'));
+const SystemHealth = lazy(() => import('./pages/SystemHealth.jsx'));
 
 // Permissions themselves are unchanged. What changed is that a denial is now
 // stated rather than performed silently: the previous <Navigate to="/"> made a
@@ -97,6 +98,7 @@ export default function App() {
         <Route path="settings" element={<Protected roles={['admin']}><Settings /></Protected>} />
         <Route path="users" element={<Protected roles={['admin']}><Users /></Protected>} />
         <Route path="activity" element={<Protected roles={['admin']}><Activity /></Protected>} />
+        <Route path="system-health" element={<Protected roles={['admin']}><SystemHealth /></Protected>} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

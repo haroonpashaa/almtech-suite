@@ -30,6 +30,7 @@ import importExportRoutes from './routes/importExport.routes.js';
 import reportRoutes from './routes/report.routes.js';
 import settingsRoutes from './routes/settings.routes.js';
 import activityRoutes from './routes/activity.routes.js';
+import adminRoutes from './routes/admin.routes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -87,6 +88,7 @@ export function createApp({ serveFrontend = true } = {}) {
   app.use('/api/reports', reportRoutes);
   app.use('/api/settings', settingsRoutes);
   app.use('/api/activity', activityRoutes);
+  app.use('/api/admin', adminRoutes);
 
   // Serve the built React app (local production-mode test only).
   // On Vercel, the frontend is served by Vercel's CDN, not Express.
