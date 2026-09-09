@@ -14,7 +14,16 @@ const globalKey = '__almtech_mongo_cache__';
 const cache = global[globalKey] || (global[globalKey] = { conn: null, promise: null });
 
 export async function connectDB() {
-  if (cache.conn) return cache.conn;
+  // A cached connection is only reusable while it's actually still open —
+  // trusting it blindly would mean one dropped/closed connection (e.g. the
+  // production-cleanup route disconnecting when it's done) silently breaks
+  // every future request forever, since a stale-but-truthy cache.conn would
+  // keep being returned without ever reconnecting.
+  if (cache.conn && mongoose.connection.readyState === 1) return cache.conn;
+  if (cache.conn) {
+    cache.conn = null;
+    cache.promise = null;
+  }
 
   // Accept any of the common env var names Vercel / Atlas / users might set.
   let uri =

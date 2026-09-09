@@ -40,6 +40,11 @@ const Settings = lazy(() => import('./pages/Settings.jsx'));
 const Users = lazy(() => import('./pages/Users.jsx'));
 const Activity = lazy(() => import('./pages/Activity.jsx'));
 const SystemHealth = lazy(() => import('./pages/SystemHealth.jsx'));
+// TEMPORARY — one-time production handover tool. Deliberately not added to
+// Layout.jsx's nav; reachable only by an Admin navigating to this URL
+// directly. Remove this line, its <Route> below, and the page file itself
+// once the cleanup is complete and confirmed.
+const ProductionCleanup = lazy(() => import('./pages/ProductionCleanup.jsx'));
 
 // Permissions themselves are unchanged. What changed is that a denial is now
 // stated rather than performed silently: the previous <Navigate to="/"> made a
@@ -99,6 +104,8 @@ export default function App() {
         <Route path="users" element={<Protected roles={['admin']}><Users /></Protected>} />
         <Route path="activity" element={<Protected roles={['admin']}><Activity /></Protected>} />
         <Route path="system-health" element={<Protected roles={['admin']}><SystemHealth /></Protected>} />
+        {/* TEMPORARY — see the lazy import above for the removal note. */}
+        <Route path="production-cleanup" element={<Protected roles={['admin']}><ProductionCleanup /></Protected>} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
