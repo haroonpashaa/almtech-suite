@@ -1,11 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 
 // ===========================================================================
-// Requirement: importing this module (as productionCleanup.controller.js
-// does) must never execute the cleanup, never touch the database, and never
-// call process.exit — process.exit inside a request handler would kill the
-// entire running server, not just that one request. Only running the file
-// directly as `node cleanForDelivery.mjs` should invoke anything.
+// Requirement: importing this module must never execute the cleanup, never
+// touch the database, and never call process.exit — a future caller that
+// imports runCleanup() from something other than this CLI (e.g. a request
+// handler) must never risk process.exit() killing an entire running server
+// over one call. Only running the file directly as `node cleanForDelivery.mjs`
+// should invoke anything.
 // ===========================================================================
 describe('cleanForDelivery.mjs is import-safe', () => {
   it('importing the module produces no console output and calls nothing on its own', async () => {

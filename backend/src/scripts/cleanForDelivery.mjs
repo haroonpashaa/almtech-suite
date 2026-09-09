@@ -36,21 +36,25 @@
 //     or the password is under 10 characters — so a run can never end with
 //     zero usable admins.
 //
+// INTERNAL MAINTENANCE SCRIPT ONLY — this is a CLI tool, run directly on a
+// machine with a trusted database connection. It is NOT wired to any HTTP
+// route or frontend page; any future integration that calls it from inside a
+// running server MUST pass `disconnectWhenDone: false` (see below) and must
+// not relax any of the safety gates this file enforces on its own.
+//
 // This file is import-safe: `runCleanup()` is a plain exported function that
 // never calls process.exit() and never runs itself on import — only the
 // `import.meta.url === ...` guard at the bottom invokes it, and only when
-// this file is executed directly as a script. A route or any other module
-// can safely `import { runCleanup } from './cleanForDelivery.mjs'` without
-// anything running as a side effect of that import — see
-// productionCleanup.controller.js, which does exactly this.
+// this file is executed directly as a script. Importing this module never
+// runs anything as a side effect of that import.
 //
-// CONNECTION LIFECYCLE: pass `disconnectWhenDone: false` when calling this
-// from a long-lived server process (the HTTP route does). connectDB() caches
-// one shared connection for the whole app's lifetime (see config/db.js); the
-// default (`disconnectWhenDone: true`, used by the CLI below) closes that
-// connection when finished, which is correct for a one-shot script but would
-// sever every OTHER request's database access if done from inside a running
-// server.
+// CONNECTION LIFECYCLE: `disconnectWhenDone` (default true) closes the
+// mongoose connection when finished — correct for this CLI's one-shot
+// process. A caller embedding this in a long-lived server process (none
+// exists currently) would need `disconnectWhenDone: false`, since
+// connectDB() caches one shared connection for the whole app's lifetime (see
+// config/db.js) and disconnecting it would sever every other request's
+// database access.
 //
 // Usage:
 //   node src/scripts/cleanForDelivery.mjs            # dry run (no writes)
@@ -189,13 +193,12 @@ async function establishBootstrapAdmin(email, password, session) {
 // ---------------------------------------------------------------------------
 // The reusable core. NEVER calls process.exit() — every stopping condition is
 // a normal return value ({ ok: false, reason }) or, for a truly unexpected
-// internal failure, a thrown Error. This is what makes it safe to call from
-// an Express request handler (productionCleanup.controller.js) as well as
-// from the CLI wrapper below.
+// internal failure, a thrown Error — so it stays safe to call from something
+// other than a CLI process (e.g. an Express request handler) in the future,
+// without that caller risking a crashed server on a validation failure.
 //
-// `log` defaults to console.log so CLI behavior is unchanged; the HTTP route
-// passes its own collector so nothing has to go to stdout to be visible in
-// the response.
+// `log` defaults to console.log so CLI behavior is unchanged; a caller that
+// needs the output somewhere other than stdout can pass its own collector.
 // ---------------------------------------------------------------------------
 export async function runCleanup({ execute = false, log = console.log, disconnectWhenDone = true } = {}) {
   log(execute ? '=== RUNNING FOR REAL (--execute) ===' : '=== DRY RUN (no writes — pass --execute to apply) ===');
