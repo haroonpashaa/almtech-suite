@@ -15,6 +15,27 @@ const STATUS_TONE = { completed: 'success', completed_with_errors: 'warning', fa
 // single date / month. Everything else exports in full.
 const RANGE_EXPORTS = new Set(['sales', 'purchases', 'payments', 'expenses', 'account-ledgers', 'deals', 'profit-loss']);
 
+// Mirrors backend/src/utils/excel.js's own header normalization exactly, so a
+// column label typed by hand here resolves to the same field the server
+// would have matched from a real header with that spelling.
+const norm = (h) => String(h ?? '').trim().toLowerCase().replace(/[\s_]+/g, ' ');
+
+// Resolves a user-typed column label to a field key: the ERP's own canonical
+// key if the label matches one of that field's known aliases (exactly like a
+// recognized header would at upload time), otherwise a slug derived from the
+// label itself, deduplicated against the columns already in the draft.
+function resolveFieldKey(label, aliasMap, existingFields, currentField) {
+  const n = norm(label);
+  for (const [field, names] of Object.entries(aliasMap || {})) {
+    if (names.some((a) => norm(a) === n)) return field;
+  }
+  let key = n.replace(/\s+/g, '_') || 'column';
+  let unique = key;
+  let i = 2;
+  while (existingFields.has(unique) && unique !== currentField) unique = `${key}_${i++}`;
+  return unique;
+}
+
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -39,6 +60,9 @@ export default function ImportExport() {
   // stays inspectable even after edits.
   const [draft, setDraft] = useState(null);
   const [draftRows, setDraftRows] = useState([]);
+  // draftColumns starts as draft.columns but, unlike draft itself, is edited
+  // directly — renaming/adding/removing a column changes this, not draft.
+  const [draftColumns, setDraftColumns] = useState([]);
   const [preview, setPreview] = useState(null);
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -67,6 +91,7 @@ export default function ImportExport() {
     setFile(null);
     setDraft(null);
     setDraftRows([]);
+    setDraftColumns([]);
     setPreview(null);
     setResult(null);
     if (fileRef.current) fileRef.current.value = '';
@@ -76,6 +101,7 @@ export default function ImportExport() {
     setFile(f);
     setDraft(null);
     setDraftRows([]);
+    setDraftColumns([]);
     setPreview(null);
     setResult(null);
   }
@@ -95,7 +121,8 @@ export default function ImportExport() {
       const { data } = await api.post(`/data/import/${type}/parse`, fd);
       setDraft(data);
       setDraftRows(data.rows.map((r) => ({ ...r })));
-      if (!data.rows.length) toast.error('No data rows found in this sheet');
+      setDraftColumns(data.columns.map((c) => ({ ...c })));
+      if (!data.rows.length) toast('This sheet has no data rows yet — add one below, or re-upload a filled-in sheet.', { icon: 'ℹ️' });
     } catch (e) {
       toast.error(errorMessage(e));
     } finally {
@@ -111,6 +138,62 @@ export default function ImportExport() {
     setDraftRows((rows) => rows.filter((_, i) => i !== rowIndex));
   }
 
+  // Staging-only editing operations below: everything here is pure client
+  // state, exactly like updateCell/removeDraftRow above — nothing reaches the
+  // server until validate()/commit() is called.
+
+  function addDraftRow() {
+    setDraftRows((rows) => [...rows, Object.fromEntries(draftColumns.map((c) => [c.field, '']))]);
+  }
+
+  function addDraftColumn(label) {
+    const trimmed = (label || '').trim();
+    if (!trimmed) return;
+    const existing = new Set(draftColumns.map((c) => c.field));
+    const field = resolveFieldKey(trimmed, current?.fieldAliases, existing);
+    if (existing.has(field)) {
+      toast.error('A column for that field is already in this sheet.');
+      return;
+    }
+    setDraftColumns((cols) => [...cols, { field, label: trimmed }]);
+    setDraftRows((rows) => rows.map((r) => ({ ...r, [field]: '' })));
+  }
+
+  function removeDraftColumn(field) {
+    setDraftColumns((cols) => cols.filter((c) => c.field !== field));
+    setDraftRows((rows) => rows.map((r) => {
+      const { [field]: _omit, ...rest } = r;
+      return rest;
+    }));
+  }
+
+  function renameDraftColumn(field, label) {
+    const trimmed = (label || '').trim();
+    if (!trimmed) return;
+    const existing = new Set(draftColumns.map((c) => c.field));
+    const newField = resolveFieldKey(trimmed, current?.fieldAliases, existing, field);
+    if (newField !== field && existing.has(newField)) {
+      toast.error('A column for that field is already in this sheet.');
+      return;
+    }
+    setDraftColumns((cols) => cols.map((c) => (c.field === field ? { field: newField, label: trimmed } : c)));
+    if (newField !== field) {
+      setDraftRows((rows) => rows.map((r) => {
+        const { [field]: value, ...rest } = r;
+        return { ...rest, [newField]: value };
+      }));
+    }
+  }
+
+  // Recomputed from the current draft columns (not the original parse
+  // result) so a column the user renamed to match an ERP field — e.g.
+  // "Product" -> "Product Name" — stops being reported as unmapped, and one
+  // added by hand that matches nothing correctly starts being reported.
+  function currentUnmappedColumns() {
+    const aliasMap = current?.fieldAliases || {};
+    return draftColumns.filter((c) => !(c.field in aliasMap)).map((c) => c.label);
+  }
+
   // Step 2 ("Confirm Import"): run the existing importer's own validation
   // against the edited rows. Still zero database writes — exactly what
   // /validate has always guaranteed, just fed from the edited draft instead
@@ -123,7 +206,7 @@ export default function ImportExport() {
       const { data } = await api.post(`/data/import/${type}/validate`, {
         rows: draftRows,
         filename: draft?.filename,
-        unmappedColumns: draft?.unmappedColumns,
+        unmappedColumns: currentUnmappedColumns(),
       });
       setPreview(data);
       if (data.summary.invalid > 0) toast.error(`${data.summary.invalid} row(s) have problems — review below`);
@@ -149,12 +232,13 @@ export default function ImportExport() {
       const { data } = await api.post(`/data/import/${type}/commit`, {
         rows: draftRows,
         filename: draft?.filename,
-        unmappedColumns: draft?.unmappedColumns,
+        unmappedColumns: currentUnmappedColumns(),
       });
       setResult(data);
       setPreview(null);
       setDraft(null);
       setDraftRows([]);
+      setDraftColumns([]);
       toast.success(`Imported — ${data.result.created} created, ${data.result.updated} updated`);
       qc.invalidateQueries({ queryKey: ['import-history'] });
       // Anything the import may have moved.
@@ -246,7 +330,8 @@ export default function ImportExport() {
                     {current.instructions.map((i, k) => <li key={k}>{i}</li>)}
                   </ul>
                   <div className="text-xs text-ink-400 mt-2">
-                    Required columns: <span className="font-medium text-ink-600">{current.requiredColumns.join(', ')}</span>
+                    Required columns: <span className="font-medium text-ink-600">{current.requiredColumns.join(', ')}</span> —
+                    a sheet missing these still loads for editing; they're only checked when you confirm the import.
                   </div>
                 </div>
               )}
@@ -270,9 +355,15 @@ export default function ImportExport() {
             {draft && !preview && !result && (
               <EditableSheet
                 draft={draft}
+                columns={draftColumns}
+                unmappedColumns={currentUnmappedColumns()}
                 rows={draftRows}
                 onChangeCell={updateCell}
                 onRemoveRow={removeDraftRow}
+                onAddRow={addDraftRow}
+                onAddColumn={addDraftColumn}
+                onRemoveColumn={removeDraftColumn}
+                onRenameColumn={renameDraftColumn}
                 onConfirm={validate}
                 onCancel={reset}
                 busy={busy}
@@ -464,14 +555,69 @@ export default function ImportExport() {
   );
 }
 
+// A column header is renamed by typing directly into it — local state so
+// keystrokes don't round-trip through the parent on every character, only
+// committed (blur / Enter) via onRename.
+function ColumnHeader({ column, onRename, onRemove }) {
+  const [label, setLabel] = useState(column.label);
+  return (
+    <th className="th p-1 align-top">
+      <div className="flex items-center gap-1">
+        <input
+          className="input input-sm w-full min-w-[110px] font-semibold"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          onBlur={() => { if (label.trim() && label !== column.label) onRename(label); else setLabel(column.label); }}
+          onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+        />
+        <button
+          type="button"
+          title="Remove column"
+          className="text-ink-300 hover:text-red-600 shrink-0 px-1"
+          onClick={onRemove}
+        >
+          ×
+        </button>
+      </div>
+    </th>
+  );
+}
+
+// Add-column control — a plain text field; typing a label that matches a
+// known ERP field (e.g. "Serial Number") gets mapped to that field
+// automatically, exactly like a recognized header would at upload time.
+function AddColumnControl({ onAdd }) {
+  const [label, setLabel] = useState('');
+  function submit() {
+    if (!label.trim()) return;
+    onAdd(label);
+    setLabel('');
+  }
+  return (
+    <div className="flex items-center gap-2">
+      <input
+        className="input input-sm w-48"
+        placeholder="New column name"
+        value={label}
+        onChange={(e) => setLabel(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
+      />
+      <button type="button" className="btn-sm bg-white border border-ink-200 text-ink-700 hover:bg-ink-25" onClick={submit}>
+        + Add column
+      </button>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
-// The editable draft table — plain cell inputs, not a spreadsheet clone. Every
-// edit and row removal here is pure client-side state; nothing reaches the
-// importer until "Confirm Import" is clicked, and columns are exactly the
-// ones this sheet actually had (see parseImportFile), not every field the
-// importer supports.
+// The editable draft table — a small staging workspace, not a spreadsheet
+// clone. Nothing here reaches the importer until "Confirm Import" is
+// clicked: cells, rows and columns can all be freely edited, added or
+// removed first. Columns start as whatever the sheet actually had (see
+// parseImportFile) but are not fixed to it — this is exactly where an
+// imperfect upload gets turned into something the importer can accept.
 // ---------------------------------------------------------------------------
-function EditableSheet({ draft, rows, onChangeCell, onRemoveRow, onConfirm, onCancel, busy }) {
+function EditableSheet({ draft, columns, unmappedColumns, rows, onChangeCell, onRemoveRow, onAddRow, onAddColumn, onRemoveColumn, onRenameColumn, onConfirm, onCancel, busy }) {
   return (
     <div className="card p-5 space-y-3">
       <div className="flex items-center gap-2">
@@ -479,32 +625,42 @@ function EditableSheet({ draft, rows, onChangeCell, onRemoveRow, onConfirm, onCa
         <h3 className="text-sm font-semibold text-ink-900 truncate">{draft.filename}</h3>
       </div>
       <p className="text-xs text-ink-400">
-        Edit any cell or remove a row below, then click Confirm Import. Nothing is written to ALM Suite until then.
+        Edit any cell, rename a column header, or add/remove rows and columns below, then click Confirm Import.
+        Nothing is written to ALM Suite until then — required fields are only checked once you confirm.
       </p>
 
-      {draft.unmappedColumns?.length > 0 && (
+      {unmappedColumns?.length > 0 && (
         <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm text-amber-800">
-          Columns not recognized and not imported: {draft.unmappedColumns.join(', ')}
+          Not yet recognized as an ERP field, but included below — rename to match if it should be imported: {unmappedColumns.join(', ')}
         </div>
       )}
 
       {!rows.length ? (
-        <p className="text-sm text-ink-400 py-6 text-center">Every row has been removed. Cancel and re-upload, or clear to start over.</p>
+        <p className="text-sm text-ink-400 py-6 text-center">
+          {columns.length ? 'No rows yet — add one below, or cancel and re-upload a filled-in sheet.' : 'Every row and column has been removed. Cancel and re-upload, or clear to start over.'}
+        </p>
       ) : (
         <div className="overflow-x-auto border border-ink-100 rounded-lg">
           <table className="min-w-full text-sm">
             <thead>
               <tr className="bg-ink-25">
                 <th className="th text-right">Row</th>
-                {draft.columns.map((c) => <th key={c.field} className="th whitespace-nowrap">{c.label}</th>)}
+                {columns.map((c) => (
+                  <ColumnHeader
+                    key={c.field}
+                    column={c}
+                    onRename={(label) => onRenameColumn(c.field, label)}
+                    onRemove={() => onRemoveColumn(c.field)}
+                  />
+                ))}
                 <th className="th" />
               </tr>
             </thead>
             <tbody>
               {rows.map((row, i) => (
-                <tr key={row.__row ?? i} className="tr">
-                  <td className="td text-right num text-ink-400">{row.__row ?? '—'}</td>
-                  {draft.columns.map((c) => (
+                <tr key={row.__row ?? `new-${i}`} className="tr">
+                  <td className="td text-right num text-ink-400">{row.__row ?? 'new'}</td>
+                  {columns.map((c) => (
                     <td key={c.field} className="td p-1">
                       <input
                         className="input input-sm w-full min-w-[120px]"
@@ -526,11 +682,16 @@ function EditableSheet({ draft, rows, onChangeCell, onRemoveRow, onConfirm, onCa
       )}
 
       <div className="flex flex-wrap items-center gap-3">
+        <button className="btn-secondary" onClick={onAddRow} disabled={busy || !columns.length}>+ Add row</button>
+        <AddColumnControl onAdd={onAddColumn} />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3">
         <button className="btn-primary" onClick={onConfirm} disabled={busy || !rows.length}>
           {busy ? <><Spinner className="w-4 h-4" /> Checking…</> : 'Confirm Import'}
         </button>
         <button className="btn-secondary" onClick={onCancel} disabled={busy}>Cancel</button>
-        <span className="text-xs text-ink-400">{rows.length} row(s) in this draft.</span>
+        <span className="text-xs text-ink-400">{rows.length} row(s), {columns.length} column(s) in this draft.</span>
       </div>
     </div>
   );

@@ -2,7 +2,7 @@ import asyncHandler from 'express-async-handler';
 import ImportBatch from '../models/ImportBatch.js';
 import { IMPORTERS, ACTIONS } from '../services/importers.js';
 import { EXPORTERS } from '../services/exporters.js';
-import { readSheet, buildWorkbook, buildMultiSheetWorkbook, ExcelError } from '../utils/excel.js';
+import { readSheet, readSheetRaw, buildWorkbook, buildMultiSheetWorkbook, ExcelError } from '../utils/excel.js';
 import { logActivity } from '../utils/activity.js';
 import { receivables as financeReceivables, payables as financePayables } from './finance.controller.js';
 import { profitAndLoss } from './report.controller.js';
@@ -156,26 +156,33 @@ export const listTypes = asyncHandler(async (req, res) => {
       requiredColumns: d.required.map((f) => d.aliases[f][0]),
       allColumns: Object.values(d.aliases).map((a) => a[0]),
       instructions: d.instructions,
+      // Full field->alias-names map, so the editable draft can recognize a
+      // column the user renames by hand (e.g. "Qty" -> "Quantity") as the
+      // same ERP field a matching header would have been parsed into,
+      // without a round trip to the server.
+      fieldAliases: d.aliases,
     })),
     exports: Object.entries(EXPORTERS).filter(([key]) => allowed(key)).map(([key, d]) => ({ key, label: d.label })),
   });
 });
 
 // ---------------------------------------------------------------------------
-// Parse — the first step of the edit-before-import flow. Reads the uploaded
-// file into the same row shape def.prepare() eventually consumes, but runs NO
-// importer business rules and writes nothing: purely the structural parsing
-// (header aliasing, cell-type coercion) readSheet() has always done as the
-// first step of validate()/commit() too. This exists so the frontend has rows
-// to show in an editable grid before any importer rule has run — nothing here
-// is new parsing logic, just calling readSheet() one step earlier.
+// Parse — the first step of the edit-before-import flow. This is a staging
+// step, not a validation step: it reads whatever the uploaded file actually
+// contains into an editable draft and NEVER rejects it for not matching what
+// an importer expects. It runs no importer business rules, checks no
+// required columns, and writes nothing — see readSheetRaw() for what "raw"
+// means here. def.prepare()'s own field-level checks (Serial Number is
+// required, etc.) only ever run later, against whatever the user has by then
+// edited the draft into — see validateImport()/commitImport() below, via
+// resolveRows()'s JSON-rows branch.
 // ---------------------------------------------------------------------------
 export const parseImportFile = asyncHandler(async (req, res) => {
   const def = importer(res, req.params.type);
   const file = requireFile(res, req);
   let sheet;
   try {
-    sheet = await readSheet(file.buffer, { requiredHeaders: def.required, aliases: def.aliases });
+    sheet = await readSheetRaw(file.buffer, { aliases: def.aliases });
   } catch (e) {
     if (e instanceof ExcelError) {
       res.status(400);
@@ -184,12 +191,13 @@ export const parseImportFile = asyncHandler(async (req, res) => {
     throw e;
   }
   const rows = dropCostColumns(req, sheet.rows);
-  const fields = rows.length ? Object.keys(rows[0]).filter((k) => k !== '__row') : [];
+  const stripCost = !(req.user?.role === 'admin' || req.user?.role === 'stock');
+  const columns = stripCost ? sheet.columns.filter((c) => !COST_ALIASES.includes(c.field)) : sheet.columns;
   res.json({
     type: req.params.type,
     label: def.label,
     filename: file.originalname,
-    columns: fields.map((field) => ({ field, label: def.aliases[field]?.[0] || field })),
+    columns,
     rows,
     unmappedColumns: sheet.unmappedColumns,
   });

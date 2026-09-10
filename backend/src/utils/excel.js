@@ -81,6 +81,97 @@ export async function readSheet(buffer, { requiredHeaders = [], aliases = {} } =
   return { rows, unmappedColumns };
 }
 
+// ---------------------------------------------------------------------------
+// Raw, upload-time reading for the edit-before-import draft. Unlike
+// readSheet() above, this NEVER rejects a workbook for not matching what an
+// importer expects — no required-column check, and no column is dropped for
+// being unrecognized. A header that matches a known alias is still mapped to
+// that field's canonical key (so a well-formed sheet behaves exactly as
+// before), but a header that matches nothing gets a synthetic field key
+// derived from its own text instead of being discarded — its data reaches
+// the editable draft either way. The only things that still fail here are
+// genuinely unreadable input (not a valid .xlsx) or a sheet with no header
+// row at all — there is nothing to show in either case, not merely something
+// that doesn't yet satisfy an importer's requirements.
+export async function readSheetRaw(buffer, { aliases = {} } = {}) {
+  const wb = new ExcelJS.Workbook();
+  try {
+    await wb.xlsx.load(buffer);
+  } catch {
+    throw new ExcelError('The file could not be read as an Excel workbook (.xlsx). Re-save it and try again.');
+  }
+  const ws = wb.worksheets[0];
+  if (!ws || ws.rowCount < 1) throw new ExcelError('The workbook is empty — no sheet or no rows found.');
+
+  const headerRow = ws.getRow(1);
+  const headers = [];
+  const rawHeaders = [];
+  headerRow.eachCell({ includeEmpty: true }, (cell, col) => {
+    const text = cellText(cell);
+    headers[col] = norm(text);
+    rawHeaders[col] = text.trim();
+  });
+  if (!headers.filter(Boolean).length) throw new ExcelError('The first row must contain column headers.');
+
+  // Map each declared field to whichever header spelling the sheet used —
+  // identical to readSheet()'s own matching, so a well-formed sheet ends up
+  // with exactly the same field keys either way.
+  const index = {};
+  for (const [field, names] of Object.entries(aliases)) {
+    for (const n of names) {
+      const col = headers.findIndex((h) => h === norm(n));
+      if (col > 0) {
+        index[field] = col;
+        break;
+      }
+    }
+  }
+
+  // Every remaining non-blank header column — recognized or not — gets its
+  // own field key and a place in the draft, rather than being silently
+  // dropped. Unrecognized headers get a synthetic key derived from their own
+  // text (deduplicated against collisions), so their data is never lost.
+  const usedKeys = new Set(Object.keys(index));
+  const columns = [];
+  const colToField = {};
+  headers.forEach((h, col) => {
+    if (!h) return;
+    const mappedField = Object.entries(index).find(([, c]) => c === col)?.[0];
+    if (mappedField) {
+      colToField[col] = mappedField;
+      columns.push({ field: mappedField, label: aliases[mappedField]?.[0] || mappedField });
+      return;
+    }
+    let key = norm(rawHeaders[col]).replace(/\s+/g, '_') || `column_${col}`;
+    let unique = key;
+    let n = 2;
+    while (usedKeys.has(unique)) unique = `${key}_${n++}`;
+    usedKeys.add(unique);
+    colToField[col] = unique;
+    columns.push({ field: unique, label: rawHeaders[col] });
+  });
+
+  const unmappedColumns = columns.filter((c) => !(c.field in index)).map((c) => c.label);
+
+  const rows = [];
+  for (let r = 2; r <= ws.rowCount; r++) {
+    const row = ws.getRow(r);
+    const record = {};
+    let blank = true;
+    for (const [col, field] of Object.entries(colToField)) {
+      const v = cellValue(row.getCell(Number(col)));
+      record[field] = v;
+      if (v !== null && v !== undefined && String(v).trim() !== '') blank = false;
+    }
+    if (blank) continue; // skip spacer rows
+    record.__row = r; // Excel's own row number, for error messages
+    rows.push(record);
+  }
+  // A sheet with headers but no data rows still opens as an editable draft —
+  // the user can add rows by hand. There is simply nothing to prefill.
+  return { rows, columns, unmappedColumns };
+}
+
 function cellText(cell) {
   const v = cell?.value;
   if (v == null) return '';

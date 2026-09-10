@@ -5,7 +5,7 @@ import ExcelJS from 'exceljs';
 import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
 import ImportBatch from '../models/ImportBatch.js';
-import { parseImportFile, validateImport, commitImport } from './importExport.controller.js';
+import { parseImportFile, validateImport, commitImport, listTypes } from './importExport.controller.js';
 
 async function sheetBuffer(headerRow, dataRows) {
   const wb = new ExcelJS.Workbook();
@@ -62,6 +62,55 @@ describe('edit-before-import flow (DB-backed)', () => {
     expect(res.body.rows[0].name).toBe('Original Name');
     expect(res.body.columns.some((c) => c.field === 'sku')).toBe(true);
     expect(await Product.countDocuments({})).toBe(0);
+  });
+
+  // Core requirement: the upload/paste stage is never a validation stage —
+  // a sheet missing every column the products importer requires (Serial
+  // Number) must still open as an editable draft, not be rejected.
+  it('parseImportFile never rejects a sheet for missing required columns or unrecognized headers', async () => {
+    const buffer = await sheetBuffer(['Product', 'Qty', 'Amount'], [['Laptop', 5, 50000]]);
+    const res = mockRes();
+    await parseImportFile(fileReq({ buffer, user: admin, params: { type: 'products' } }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.rows).toHaveLength(1);
+    expect(res.body.columns.map((c) => c.label)).toEqual(['Product', 'Qty', 'Amount']);
+    // The data is present in the draft, not discarded — the user can rename
+    // these columns to the ERP's expected names and fill in what's missing.
+    const productCol = res.body.columns.find((c) => c.label === 'Product');
+    expect(res.body.rows[0][productCol.field]).toBe('Laptop');
+    expect(await Product.countDocuments({})).toBe(0);
+  });
+
+  it('parseImportFile opens a sheet with headers but no data rows instead of throwing', async () => {
+    const buffer = await sheetBuffer(['Serial Number', 'Name'], []);
+    const res = mockRes();
+    await parseImportFile(fileReq({ buffer, user: admin, params: { type: 'products' } }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.rows).toEqual([]);
+    expect(res.body.columns).toHaveLength(2);
+  });
+
+  it('an edited row with a renamed column reaches prepare() under the ERP field it was renamed to', async () => {
+    // Simulates the full edit-before-import workflow: parse a sheet with
+    // wrong headers, "rename" Product -> sku (as EditableSheet would do
+    // client-side), fill in the missing value, then validate.
+    const buffer = await sheetBuffer(['Product', 'Qty', 'Amount'], [['Laptop', 5, 50000]]);
+    const parseRes = mockRes();
+    await parseImportFile(fileReq({ buffer, user: admin, params: { type: 'products' } }), parseRes);
+    const productCol = parseRes.body.columns.find((c) => c.label === 'Product');
+    const qtyCol = parseRes.body.columns.find((c) => c.label === 'Qty');
+    const priceCol = parseRes.body.columns.find((c) => c.label === 'Amount');
+
+    // The user renamed Product -> Name, Qty -> Stock, Price -> Selling Price,
+    // and typed in a Serial Number that the original sheet never had.
+    const editedRow = { __row: 2, sku: 'SKU-RENAMED', name: parseRes.body.rows[0][productCol.field], stock: parseRes.body.rows[0][qtyCol.field], sellingPrice: parseRes.body.rows[0][priceCol.field] };
+
+    const validateRes = mockRes();
+    await validateImport(rowsReq({ rows: [editedRow], user: admin, params: { type: 'products' } }), validateRes);
+    expect(validateRes.body.summary.invalid).toBe(0);
+    expect(validateRes.body.summary.create).toBe(1);
   });
 
   it('validateImport on edited JSON rows writes nothing to the database', async () => {
@@ -186,5 +235,13 @@ describe('edit-before-import flow (DB-backed)', () => {
     expect(commitRes.body.errors).toHaveLength(1);
     expect(commitRes.body.errors[0].field).toBe('Condition');
     expect(await Product.findOne({ sku: 'SKU-COND-H2' })).toBeNull();
+  });
+
+  it('listTypes exposes each importer\'s full alias map, so a renamed column can be resolved client-side', async () => {
+    const res = mockRes();
+    await listTypes({ user: admin }, res);
+    const products = res.body.imports.find((t) => t.key === 'products');
+    expect(products.fieldAliases.sku).toContain('Serial Number');
+    expect(products.fieldAliases.name).toContain('Name');
   });
 });
