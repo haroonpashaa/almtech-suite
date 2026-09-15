@@ -5,7 +5,7 @@ import Supplier from '../models/Supplier.js';
 import StockMovement from '../models/StockMovement.js';
 import { nextNumber } from '../utils/numbering.js';
 import { logActivity } from '../utils/activity.js';
-import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting } from '../utils/ledger.js';
+import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting, runAtomically } from '../utils/ledger.js';
 import { resolvePayment, requireReason, assertReversible, postReversal } from '../services/paymentReversal.js';
 import { resolvePaging, runPaged } from '../utils/pagination.js';
 import { requirePositiveWholeQuantity } from '../utils/quantity.js';
@@ -79,21 +79,44 @@ export const createPO = asyncHandler(async (req, res) => {
   const taxAmount = Math.round(subtotal * (taxRate / 100) * 100) / 100;
   const total = Math.round((subtotal + taxAmount) * 100) / 100;
   const number = await nextNumber('po');
-  const po = await PurchaseOrder.create({
-    number,
-    supplier: supplier._id,
-    items: lines,
-    subtotal,
-    taxRate,
-    taxAmount,
-    total,
-    balance: total,
-    expectedAt,
-    notes,
-    createdBy: req.user._id,
+
+  // ALM-SEC-018 fix: PO creation and the supplier.payable increase are one
+  // atomic operation, using the same runAtomically()/compensating-rollback
+  // architecture as the ALM-SEC-015 fix (invoice.controller.js's
+  // commitInvoiceEffects). `supplier.payable += total; await supplier.save();`
+  // was a read-modify-write with no atomic operator: ten concurrent POs of 30
+  // each against a supplier's payable used to leave it at 30, not 300 — nine
+  // of the ten increments silently lost, even though all ten PurchaseOrder
+  // documents existed correctly. Fixed with a plain atomic `$inc` (there is no
+  // upper bound to enforce here, unlike stock, so no conditional claim is
+  // needed — just no read-modify-write).
+  const po = await runAtomically(async (session) => {
+    const opts = session ? { session } : {};
+    const [created] = await PurchaseOrder.create(
+      [{
+        number,
+        supplier: supplier._id,
+        items: lines,
+        subtotal,
+        taxRate,
+        taxAmount,
+        total,
+        balance: total,
+        expectedAt,
+        notes,
+        createdBy: req.user._id,
+      }],
+      opts
+    );
+    try {
+      await Supplier.updateOne({ _id: supplier._id }, { $inc: { payable: total } }, opts);
+    } catch (e) {
+      if (!session) await PurchaseOrder.deleteOne({ _id: created._id });
+      throw e;
+    }
+    return created;
   });
-  supplier.payable += total;
-  await supplier.save();
+
   await logActivity(req, 'po_created', { entity: 'PurchaseOrder', entityId: po._id, meta: { number, total } });
   res.status(201).json(po);
 });

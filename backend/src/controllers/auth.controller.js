@@ -3,8 +3,11 @@ import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 import { logActivity } from '../utils/activity.js';
 
-const sign = (id) =>
-  jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '12h' });
+// ALM-SEC-003: every token carries the user's *current* tokenVersion at the
+// moment it's issued — see models/User.js for why a version counter, not a
+// timestamp, is what makes this unambiguous.
+const sign = (id, tokenVersion) =>
+  jwt.sign({ id, tokenVersion }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '12h' });
 
 // Surfaces a missing signing key as an explicit configuration error rather than an
 // opaque driver message from jsonwebtoken.
@@ -24,7 +27,7 @@ export const login = asyncHandler(async (req, res) => {
   }
   assertJwtConfigured(res);
   res.json({
-    token: sign(user._id),
+    token: sign(user._id, user.tokenVersion),
     user: { id: user._id, name: user.name, email: user.email, role: user.role },
   });
 });

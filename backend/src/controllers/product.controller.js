@@ -209,19 +209,33 @@ export const adjustStock = asyncHandler(async (req, res) => {
     throw new Error('Product not found');
   }
   const delta = requireNonZeroWholeQuantity(quantity, product.name);
-  product.stock = Math.max(0, product.stock + delta);
-  await product.save();
+
+  // ALM-SEC-016 fix: a single atomic pipeline update, not a JavaScript
+  // read-modify-write. `$max: [0, $add: ['$stock', delta]]` is computed by
+  // MongoDB from its own current value at write time, in the same operation
+  // that writes it back — so two concurrent adjustments can never clobber each
+  // other's change the way "product.stock = Math.max(0, product.stock + delta);
+  // await product.save();" did (ten concurrent +1 adjustments on stock=0 used
+  // to land on 4, not 10). Same idiom `applyInvoicePayment` already uses
+  // elsewhere in this codebase for the identical "clamp atomically" need on
+  // Customer.balance.
+  const updated = await Product.findOneAndUpdate(
+    { _id: product._id },
+    [{ $set: { stock: { $max: [0, { $add: ['$stock', delta] }] } } }],
+    { new: true }
+  );
+
   await StockMovement.create({
-    product: product._id,
+    product: updated._id,
     type: 'adjustment',
     quantity: delta,
-    balanceAfter: product.stock,
+    balanceAfter: updated.stock,
     refType: 'Adjustment',
     note,
     createdBy: req.user._id,
   });
-  await logActivity(req, 'stock_adjusted', { entity: 'Product', entityId: product._id, meta: { quantity, note } });
-  res.json(sanitizeProduct(req, product));
+  await logActivity(req, 'stock_adjusted', { entity: 'Product', entityId: updated._id, meta: { quantity, note } });
+  res.json(sanitizeProduct(req, updated));
 });
 
 export const stockLedger = asyncHandler(async (req, res) => {

@@ -8,7 +8,7 @@ import { nextNumber } from '../utils/numbering.js';
 import { computeItemTotals, applyTax } from '../utils/totals.js';
 import { logActivity } from '../utils/activity.js';
 import { streamInvoicePDF } from '../utils/pdf.js';
-import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting } from '../utils/ledger.js';
+import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting, runAtomically } from '../utils/ledger.js';
 import { resolvePayment, requireReason, assertReversible, postReversal } from '../services/paymentReversal.js';
 import { resolvePaging, runPaged } from '../utils/pagination.js';
 import { requirePositiveWholeQuantity } from '../utils/quantity.js';
@@ -199,6 +199,67 @@ export function validateLineSerials({ product, quantity, serials, claimedSerials
   return serials;
 }
 
+// ---------------------------------------------------------------------------
+// ALM-SEC-008 fix: the server, not the client, is the authority on what a
+// line actually sells for. Previously `unitPrice`/`discount` were trusted
+// verbatim from the request body for every role that can create a sale
+// (today: admin and sales) — a sales-role client could set `unitPrice` to
+// anything (confirmed live: a 249 catalogue item invoiced at 1) or apply an
+// oversized `discount` to the same effect, with no check against the
+// product's own price at all.
+//
+// This is deliberately NOT "sales can only sell at the catalogue price" —
+// editing a line's price at sale time is an existing, intentionally-tested
+// feature (see invoice.controller.test.js's "uses the edited cart price..."
+// case, and POS.jsx/QuotationForm.jsx's editable price field), not something
+// this fix is authorized to remove. There is also no existing concept
+// anywhere in this codebase (schema, Settings, or UI) of a discount-limit or
+// a distinct "admin pricing override" capability, so this doesn't invent a
+// new percentage-based policy either.
+//
+// The boundary actually added: `admin` keeps its existing behavior
+// completely unchanged (whatever it submits is used exactly as before). For
+// every other price-setting role (today, only `sales`), both the submitted
+// `unitPrice` and the effective per-unit price after `discount` are floored
+// at the product's own `purchasePrice` (cost) — reusing data the schema
+// already carries, the same cost figure this app already treats as
+// sensitive (hidden from sales elsewhere), rather than a made-up limit. A
+// sales user can still freely edit the price up or down, and still apply any
+// discount, all the way down to cost; only selling at an actual loss
+// requires admin — exactly what "the server remains the authority for
+// price-sensitive calculations" requires, without touching the legitimate,
+// already-tested editable-price behavior.
+// ---------------------------------------------------------------------------
+export function resolveLinePricing({ role, product, quantity, requestedUnitPrice, requestedDiscount }) {
+  const discount = Number(requestedDiscount) || 0;
+  if (role === 'admin') {
+    return { unitPrice: requestedUnitPrice, discount };
+  }
+
+  const unitPrice = Number(requestedUnitPrice);
+  const minUnitPrice = product.purchasePrice || 0;
+  // A non-numeric/missing unitPrice is left alone here — the Invoice
+  // schema's own `required`/`min: 0` validation rejects it with its own
+  // clear message, same as before this fix existed.
+  if (Number.isFinite(unitPrice) && unitPrice < minUnitPrice) {
+    const err = new Error(
+      `Price for ${product.name} is below cost (${minUnitPrice}) — an admin can authorize selling below cost if needed.`
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const maxDiscount = Math.max(0, quantity * (unitPrice - minUnitPrice));
+  if (discount > maxDiscount) {
+    const err = new Error(
+      `Discount on ${product.name} would sell below cost — the maximum discount for this line is ${maxDiscount.toFixed(2)}. An admin can apply a larger discount if needed.`
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+  return { unitPrice, discount };
+}
+
 export async function buildLineFromProduct({ product, quantity, unitPrice, discount = 0, serials = [], comments, name, model, ram, processor, storage }) {
   return {
     product: product._id,
@@ -216,6 +277,113 @@ export async function buildLineFromProduct({ product, quantity, unitPrice, disco
     comments: resolveLineComments(comments, product),
     lineTotal: Math.max(0, quantity * unitPrice - discount),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Shared atomic core for "commit an invoice's stock and receivable effects" —
+// used by both direct invoice creation (createInvoice, below) and quotation
+// conversion (quotation.controller.js's convertToInvoice), so there is
+// exactly one implementation of this atomicity guarantee instead of two that
+// can independently drift out of sync. This is the fix for ALM-SEC-015;
+// extracting it here is what let convertToInvoice reuse it instead of
+// maintaining its own separate (and separately vulnerable) copy.
+//
+// Must be called from inside runAtomically() — `session` is whatever that
+// passed in (a real session on Atlas, or null on the standalone-dev fallback).
+// On failure, compensates whatever it already committed IF no session is
+// active (mirrors reverseTransaction() in utils/ledger.js) — a real
+// transaction needs none of this, since the caller's runAtomically() aborts
+// everything on throw.
+//
+// `invoiceFields` is the complete document to create (number, customer,
+// items, totals, status, etc. — everything the caller has already computed
+// and validated). `items` on it must be the same enriched line objects used
+// to build totals, each carrying `product`, `quantity`, `name`, and
+// (optionally) `serials`.
+// ---------------------------------------------------------------------------
+export async function commitInvoiceEffects({ session, invoiceFields, customerId, balanceIncrease, userId }) {
+  const opts = session ? { session } : {};
+
+  const [created] = await Invoice.create([invoiceFields], opts);
+
+  const committed = [];
+  try {
+    for (const it of invoiceFields.items) {
+      const claimed = await Product.findOneAndUpdate(
+        { _id: it.product, stock: { $gte: it.quantity } },
+        { $inc: { stock: -it.quantity } },
+        { ...opts, new: true }
+      );
+      if (!claimed) {
+        const err = new Error(`Insufficient stock for ${it.name} (needed ${it.quantity})`);
+        err.statusCode = 400;
+        throw err;
+      }
+      committed.push({ product: it.product, quantity: it.quantity, serials: [] });
+
+      if (it.serials?.length && claimed.tracksSerials) {
+        await Product.updateOne(
+          { _id: it.product },
+          { $set: { 'serials.$[s].status': 'sold', 'serials.$[s].soldInvoice': created._id } },
+          { ...opts, arrayFilters: [{ 's.serial': { $in: it.serials }, 's.status': 'in_stock' }] }
+        );
+        // Verify every requested serial actually flipped — two concurrent
+        // sales choosing the same physical unit is exactly as real a
+        // conflict as running out of plain stock, and gets the same
+        // treatment: fail this claim rather than silently double-sell it.
+        const check = await Product.findOne({ _id: it.product }, { serials: 1 }, opts);
+        const stillUnsold = it.serials.filter((s) => {
+          const rec = check.serials.find((x) => x.serial === s);
+          return !rec || rec.status !== 'sold' || String(rec.soldInvoice) !== String(created._id);
+        });
+        if (stillUnsold.length) {
+          const err = new Error(`${it.name}: serial number "${stillUnsold[0]}" was just sold by another sale`);
+          err.statusCode = 409;
+          throw err;
+        }
+        committed[committed.length - 1].serials = it.serials;
+      }
+
+      await StockMovement.create(
+        [{
+          product: claimed._id,
+          type: 'sale',
+          quantity: -it.quantity,
+          balanceAfter: claimed.stock,
+          refType: 'Invoice',
+          refId: created._id,
+          refNumber: created.number,
+          createdBy: userId,
+        }],
+        opts
+      );
+    }
+
+    if (balanceIncrease) {
+      await Customer.updateOne({ _id: customerId }, { $inc: { balance: balanceIncrease } }, opts);
+    }
+  } catch (e) {
+    if (!session) {
+      // No transaction available (standalone dev database) — undo exactly
+      // what this attempt actually committed, in the same spirit as
+      // reverseTransaction() in utils/ledger.js. A real transaction needs
+      // none of this: throwing out of this callback aborts the whole thing.
+      for (const c of committed) {
+        await Product.updateOne({ _id: c.product }, { $inc: { stock: c.quantity } });
+        if (c.serials.length) {
+          await Product.updateOne(
+            { _id: c.product },
+            { $set: { 'serials.$[s].status': 'in_stock' }, $unset: { 'serials.$[s].soldInvoice': '' } },
+            { arrayFilters: [{ 's.serial': { $in: c.serials } }] }
+          );
+        }
+      }
+      await Invoice.deleteOne({ _id: created._id });
+    }
+    throw e;
+  }
+
+  return created;
 }
 
 export const createInvoice = asyncHandler(async (req, res) => {
@@ -246,10 +414,18 @@ export const createInvoice = asyncHandler(async (req, res) => {
       throw new Error(`Insufficient stock for ${product.name} (have ${product.stock}, need ${quantity})`);
     }
     const serials = validateLineSerials({ product, quantity, serials: it.serials, claimedSerials });
+    const { unitPrice, discount: lineDiscount } = resolveLinePricing({
+      role: req.user.role,
+      product,
+      quantity,
+      requestedUnitPrice: it.unitPrice,
+      requestedDiscount: it.discount,
+    });
     // Order matters: `it.product` is the raw id string from the request, so it must be
     // spread BEFORE `product` or it overwrites the fetched document and the line loses
-    // its product ref.
-    lines.push(await buildLineFromProduct({ ...it, quantity, serials, product }));
+    // its product ref. `unitPrice`/`discount` are spread last so the server-resolved
+    // values always win over whatever the client originally sent in `it`.
+    lines.push(await buildLineFromProduct({ ...it, quantity, serials, product, unitPrice, discount: lineDiscount }));
   }
 
   const { items: enriched, subtotal } = computeItemTotals(lines);
@@ -273,50 +449,53 @@ export const createInvoice = asyncHandler(async (req, res) => {
   // through applyInvoicePayment below — the same path a later payment takes — so
   // there is exactly one implementation of "money received against an invoice".
   const balance = total;
-  const invoice = await Invoice.create({
-    number,
-    customer: customer._id,
-    items: enriched,
-    subtotal,
-    discount,
-    taxRate,
-    taxAmount,
-    total,
-    paid: 0,
-    balance,
-    payments: [],
-    status: 'open',
-    notes,
-    createdBy: req.user._id,
-  });
 
-  for (const it of enriched) {
-    const product = await Product.findById(it.product);
-    product.stock -= it.quantity;
-    if (it.serials?.length && product.tracksSerials) {
-      for (const s of it.serials) {
-        const sn = product.serials.find((x) => x.serial === s);
-        if (sn) {
-          sn.status = 'sold';
-          sn.soldInvoice = invoice._id;
-        }
-      }
-    }
-    await product.save();
-    await StockMovement.create({
-      product: product._id,
-      type: 'sale',
-      quantity: -it.quantity,
-      balanceAfter: product.stock,
-      refType: 'Invoice',
-      refId: invoice._id,
-      refNumber: invoice.number,
-      createdBy: req.user._id,
-    });
-  }
-
-  customer.balance += balance;
-  await customer.save();
+  // ---------------------------------------------------------------------------
+  // ALM-SEC-015 fix: invoice creation, every line's stock deduction, and the
+  // customer receivable bump are one logically atomic operation, exactly like
+  // applyInvoicePayment() above already treats a payment. On Atlas (a replica
+  // set) this runs as a real multi-document transaction via runAtomically(); on
+  // a standalone dev database (no transaction support) it falls back to ordered
+  // writes with an explicit compensating rollback on failure — the same
+  // architecture utils/ledger.js already uses everywhere else.
+  //
+  // Each line's stock is claimed with a single atomic conditional update
+  // (`stock: { $gte: quantity }` in the filter, `$inc` in the update), never a
+  // read-modify-write. The previous "read product.stock -> subtract in a JS
+  // variable -> product.save()" pattern lost concurrent decrements under load:
+  // ten simultaneous one-unit sales against a stock of 20 left stock at 13, not
+  // 10, because most writes clobbered each other's stale in-memory copy instead
+  // of composing — and the identical mistake on customer.balance silently lost
+  // most of the receivable the same way. The pre-flight checks above still run
+  // first (for a fast, friendly error on the overwhelmingly common
+  // non-concurrent case) but the atomic claim below is the real enforcement
+  // point: it is what actually prevents two concurrent requests from both
+  // believing they're selling the last unit.
+  // ---------------------------------------------------------------------------
+  const invoice = await runAtomically((session) =>
+    commitInvoiceEffects({
+      session,
+      invoiceFields: {
+        number,
+        customer: customer._id,
+        items: enriched,
+        subtotal,
+        discount,
+        taxRate,
+        taxAmount,
+        total,
+        paid: 0,
+        balance,
+        payments: [],
+        status: 'open',
+        notes,
+        createdBy: req.user._id,
+      },
+      customerId: customer._id,
+      balanceIncrease: balance,
+      userId: req.user._id,
+    })
+  );
 
   // Apply the POS initial payment, if any, through the shared path above.
   if (initialAccount) {
@@ -579,6 +758,39 @@ export const reverseInvoicePayment = asyncHandler(async (req, res) => {
   const original = await assertReversible(res, payment);
   const amount = original.amount;
 
+  // ALM-SEC-019 fix: the previous version recomputed invoice.paid/balance/
+  // status from the in-memory `invoice` read at the top of this request and
+  // wrote it back with a full-document invoice.save({session}). That save
+  // touches every field Mongoose considers modified — including the whole
+  // `payments` array — so if a genuinely concurrent payment had already
+  // committed its own (correctly atomic) change in between, this save would
+  // silently overwrite it: a real payment applied and reported success, then
+  // vanished from `paid`/`payments` because a reversal of a *different*
+  // payment happened to land afterward. Confirmed live: a 50 payment fired
+  // concurrently with a reversal of an earlier 100 payment left `paid` at 0,
+  // not 50.
+  //
+  // Fixed the same way ALM-SEC-015/018 were: atomic, targeted updates instead
+  // of a read-modify-write, split into two atomic steps (a numeric array-index
+  // path inside an aggregation-pipeline $set does not reliably address a
+  // single array element on every MongoDB version this app may run against —
+  // verified against this environment's own MongoDB, where it silently wrote
+  // a stray literal `"0"` field into every payment subdocument instead of
+  // indexing into the array; classic-update `arrayFilters` is the
+  // version-safe way to target one array element, but arrayFilters cannot be
+  // combined with aggregation-pipeline computed expressions in the same
+  // update, hence two calls, not one):
+  //
+  //   1. A classic update with arrayFilters flips exactly the one payment
+  //      being reversed — identified by its unique ledger transaction id
+  //      (payment subdocuments have no _id of their own), guarded by its own
+  //      `reversed: false` so two concurrent reversals of the same payment
+  //      cannot both match.
+  //   2. A separate aggregation-pipeline update recomputes paid/balance/
+  //      status from the database's own current value at write time — the
+  //      same technique applyInvoicePayment (above) already uses; this step
+  //      touches no array elements, so it isn't affected by the limitation
+  //      step 1 has to work around.
   const reversal = await postReversal(res, {
     original,
     payment,
@@ -587,19 +799,70 @@ export const reverseInvoicePayment = asyncHandler(async (req, res) => {
     user: req.user,
     description: `Reversal of payment on invoice ${invoice.number} — ${reason}`,
     links: { invoice: invoice._id, customer: invoice.customer },
-    applyDocumentUpdates: async (session) => {
-      invoice.paid = Math.max(0, invoice.paid - amount);
-      invoice.balance = Math.max(0, invoice.total - invoice.paid);
-      // Same status vocabulary the payment path uses — no new statuses introduced.
-      invoice.status = invoice.balance === 0 ? 'paid' : invoice.paid > 0 ? 'partial' : 'open';
-      await invoice.save({ session });
+    applyDocumentUpdates: async (session, posted) => {
+      const opts = session ? { session } : {};
+
+      const flipped = await Invoice.updateOne(
+        { _id: invoice._id, payments: { $elemMatch: { transaction: original._id, reversed: false } } },
+        {
+          $set: {
+            'payments.$[p].reversed': true,
+            'payments.$[p].reversedAt': new Date(),
+            'payments.$[p].reversedBy': req.user._id,
+            'payments.$[p].reversalReason': reason,
+            'payments.$[p].reversalTransaction': posted._id,
+          },
+        },
+        { ...opts, arrayFilters: [{ 'p.transaction': original._id, 'p.reversed': false }] }
+      );
+      if (flipped.matchedCount === 0) {
+        const err = new Error('This payment could not be reversed — it was already reversed by another request.');
+        err.statusCode = 409;
+        throw err;
+      }
+
+      try {
+        await Invoice.updateOne(
+          { _id: invoice._id },
+          [
+            { $set: { paid: { $max: [0, { $subtract: ['$paid', amount] }] } } },
+            { $set: { balance: { $max: [0, { $subtract: ['$total', '$paid'] }] } } },
+            {
+              $set: {
+                status: {
+                  $cond: [
+                    { $lte: ['$balance', 0] }, 'paid',
+                    { $cond: [{ $gt: ['$paid', 0] }, 'partial', 'open'] },
+                  ],
+                },
+              },
+            },
+          ],
+          opts
+        );
+      } catch (e) {
+        if (!session) {
+          // Undo step 1 so this failed attempt doesn't leave the payment
+          // marked reversed with no corresponding balance effect.
+          await Invoice.updateOne(
+            { _id: invoice._id },
+            {
+              $set: { 'payments.$[p].reversed': false },
+              $unset: {
+                'payments.$[p].reversedAt': '',
+                'payments.$[p].reversedBy': '',
+                'payments.$[p].reversalReason': '',
+                'payments.$[p].reversalTransaction': '',
+              },
+            },
+            { arrayFilters: [{ 'p.transaction': original._id }] }
+          );
+        }
+        throw e;
+      }
 
       // Receivable returns to Customer.balance, the existing source of truth.
-      await Customer.updateOne(
-        { _id: invoice.customer },
-        { $inc: { balance: amount } },
-        session ? { session } : {}
-      );
+      await Customer.updateOne({ _id: invoice.customer }, { $inc: { balance: amount } }, opts);
     },
   });
 
@@ -608,5 +871,8 @@ export const reverseInvoicePayment = asyncHandler(async (req, res) => {
     entityId: invoice._id,
     meta: { amount, reason, payment: index, reversalTransaction: reversal._id.toString() },
   });
-  res.json(invoice);
+  // Re-read: the reversal is applied by a conditional database update, so the
+  // in-memory copy loaded at the top of this request still shows the
+  // pre-reversal figures (same reasoning as recordPayment's response, above).
+  res.json(await Invoice.findById(invoice._id));
 });

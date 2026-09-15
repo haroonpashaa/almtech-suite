@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import ExcelJS from 'exceljs';
-import { readSheet, readSheetRaw, ExcelError } from './excel.js';
+import { readSheet, readSheetRaw, ExcelError, num } from './excel.js';
 
 async function sheetBuffer(headerRow, dataRows) {
   const wb = new ExcelJS.Workbook();
@@ -148,5 +148,64 @@ describe('readSheetRaw — never rejects for ERP-shape reasons', () => {
     expect(columns.map((c) => c.field)).toEqual(['notes', 'notes_2']);
     expect(rows[0].notes).toBe('A');
     expect(rows[0].notes_2).toBe('B');
+  });
+});
+
+// ===========================================================================
+// num() — ALM-SEC-011. The whole point: a malformed or ambiguous value must
+// never silently become a plausible-but-wrong number. Scientific notation is
+// genuinely supported (parsed correctly), not merely "not mangled".
+// ===========================================================================
+describe('num() — never silently produces a wrong number', () => {
+  it('parses scientific notation correctly, not mangled', () => {
+    expect(num('1.5e3')).toBe(1500);
+    expect(num('1.5E+3')).toBe(1500);
+    expect(num('2e-2')).toBe(0.02);
+  });
+
+  it('rejects garbled mixed text instead of stripping it into a fake number', () => {
+    expect(num('abc123')).toBeNaN();
+    expect(num('1.5e3.2')).toBeNaN();
+  });
+
+  it('tolerates hand-typed currency formatting', () => {
+    expect(num('Rs. 1,234')).toBe(1234);
+    expect(num('PKR 1000')).toBe(1000);
+    expect(num('$50')).toBe(50);
+    expect(num('1,234.50')).toBe(1234.5);
+  });
+
+  it('handles decimals, negatives, zero, and a leading-dot decimal', () => {
+    expect(num('12.5')).toBe(12.5);
+    expect(num('-500')).toBe(-500);
+    expect(num('0')).toBe(0);
+    expect(num('.5')).toBe(0.5);
+  });
+
+  it('trims surrounding whitespace', () => {
+    expect(num(' 100 ')).toBe(100);
+  });
+
+  it('rejects Unicode text that is not a number', () => {
+    expect(num('日本語')).toBeNaN();
+  });
+
+  it('rejects the literal strings "NaN" and "Infinity" rather than passing them through', () => {
+    expect(num('NaN')).toBeNaN();
+    expect(num('Infinity')).toBeNaN();
+  });
+
+  it('treats an empty cell as absent (null), not zero or an error', () => {
+    expect(num('')).toBeNull();
+    expect(num('   ')).toBeNull();
+    expect(num(null)).toBeNull();
+    expect(num(undefined)).toBeNull();
+  });
+
+  it('passes a genuine JS number through unchanged, and rejects a non-finite one', () => {
+    expect(num(100)).toBe(100);
+    expect(num(0)).toBe(0);
+    expect(num(NaN)).toBeNaN();
+    expect(num(Infinity)).toBeNaN();
   });
 });

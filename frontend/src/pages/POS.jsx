@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
+import { newIdempotencyKey } from '../lib/idempotency.js';
 import { money, errorMessage } from '../lib/format.js';
 import { clampQuantity, isValidQuantity } from '../lib/quantity.js';
 import { resizeSerials, compactSerials, serialsAreSubmittable } from '../lib/cartSerials.js';
@@ -25,6 +26,10 @@ export default function POS() {
   const [paymentAccount, setPaymentAccount] = useState('');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+  // One key per sale attempt (ALM-SEC-009), covering the optional initial
+  // payment — reused across retries of the same attempt, rotated once the
+  // sale actually succeeds.
+  const [payKey, setPayKey] = useState(newIdempotencyKey);
   const [barcode, setBarcode] = useState('');
   const [scanning, setScanning] = useState(false);
   const barcodeRef = useRef(null);
@@ -190,11 +195,12 @@ export default function POS() {
         notes,
         initialPayment:
           paymentAmount > 0
-            ? { amount: Number(paymentAmount), method: paymentMethod, account: paymentAccount }
+            ? { amount: Number(paymentAmount), method: paymentMethod, account: paymentAccount, idempotencyKey: payKey }
             : undefined,
       };
       const r = await api.post('/invoices', payload);
       toast.success(`Invoice ${r.data.number} created`);
+      setPayKey(newIdempotencyKey());
       navigate(`/invoices/${r.data._id}`);
     } catch (e) {
       toast.error(errorMessage(e));
