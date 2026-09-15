@@ -4,6 +4,7 @@ import Expense, { EXPENSE_CATEGORIES } from '../models/Expense.js';
 import FinancialTransaction from '../models/FinancialTransaction.js';
 import { logActivity } from '../utils/activity.js';
 import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting } from '../utils/ledger.js';
+import { safeFilterValue } from '../utils/safeFilterValue.js';
 
 export const listCategories = asyncHandler(async (_req, res) => {
   res.json(EXPENSE_CATEGORIES);
@@ -12,8 +13,9 @@ export const listCategories = asyncHandler(async (_req, res) => {
 function buildFilter(query) {
   const { from, to, category, account, status = 'posted' } = query;
   const filter = {};
-  if (status !== 'all') filter.status = status;
-  if (category) filter.category = category;
+  const safeStatus = safeFilterValue(status) ?? 'posted';
+  if (safeStatus !== 'all') filter.status = safeStatus;
+  if (category) filter.category = safeFilterValue(category);
   if (account && mongoose.isValidObjectId(account)) filter.account = account;
   if (from || to) {
     filter.date = {};

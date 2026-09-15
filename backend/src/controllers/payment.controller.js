@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import Invoice from '../models/Invoice.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 import FinancialTransaction from '../models/FinancialTransaction.js';
+import { safeFilterValue } from '../utils/safeFilterValue.js';
 
 // Unified payment / financial history.
 //
@@ -21,8 +22,8 @@ export const recentPayments = asyncHandler(async (req, res) => {
     if (to) filter.date.$lte = new Date(to);
   }
   if (account && mongoose.isValidObjectId(account)) filter.account = account;
-  if (type) filter.type = type;
-  if (direction) filter.direction = direction;
+  if (type) filter.type = safeFilterValue(type);
+  if (direction) filter.direction = safeFilterValue(direction);
   if (customer && mongoose.isValidObjectId(customer)) filter.customer = customer;
   if (supplier && mongoose.isValidObjectId(supplier)) filter.supplier = supplier;
   if (invoice && mongoose.isValidObjectId(invoice)) filter.invoice = invoice;

@@ -5,10 +5,11 @@ import Supplier from '../models/Supplier.js';
 import StockMovement from '../models/StockMovement.js';
 import { nextNumber } from '../utils/numbering.js';
 import { logActivity } from '../utils/activity.js';
-import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting } from '../utils/ledger.js';
+import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting, runAtomically } from '../utils/ledger.js';
 import { resolvePayment, requireReason, assertReversible, postReversal } from '../services/paymentReversal.js';
 import { resolvePaging, runPaged } from '../utils/pagination.js';
 import { requirePositiveWholeQuantity } from '../utils/quantity.js';
+import { safeFilterValue } from '../utils/safeFilterValue.js';
 
 // Notes are free-text metadata on the order (see updatePO's comment on "pure
 // metadata"), not something Sales is authorized to see. Sales cannot create, edit,
@@ -28,7 +29,7 @@ export const listPOs = asyncHandler(async (req, res) => {
   const { supplier, status } = req.query;
   const filter = {};
   if (supplier) filter.supplier = supplier;
-  if (status) filter.status = status;
+  if (status) filter.status = safeFilterValue(status);
   const paging = resolvePaging(req.query, 500);
   const items = await runPaged(res, PurchaseOrder, filter, {
     sort: '-orderedAt',
@@ -79,21 +80,44 @@ export const createPO = asyncHandler(async (req, res) => {
   const taxAmount = Math.round(subtotal * (taxRate / 100) * 100) / 100;
   const total = Math.round((subtotal + taxAmount) * 100) / 100;
   const number = await nextNumber('po');
-  const po = await PurchaseOrder.create({
-    number,
-    supplier: supplier._id,
-    items: lines,
-    subtotal,
-    taxRate,
-    taxAmount,
-    total,
-    balance: total,
-    expectedAt,
-    notes,
-    createdBy: req.user._id,
+
+  // ALM-SEC-018 fix: PO creation and the supplier.payable increase are one
+  // atomic operation, using the same runAtomically()/compensating-rollback
+  // architecture as the ALM-SEC-015 fix (invoice.controller.js's
+  // commitInvoiceEffects). `supplier.payable += total; await supplier.save();`
+  // was a read-modify-write with no atomic operator: ten concurrent POs of 30
+  // each against a supplier's payable used to leave it at 30, not 300 — nine
+  // of the ten increments silently lost, even though all ten PurchaseOrder
+  // documents existed correctly. Fixed with a plain atomic `$inc` (there is no
+  // upper bound to enforce here, unlike stock, so no conditional claim is
+  // needed — just no read-modify-write).
+  const po = await runAtomically(async (session) => {
+    const opts = session ? { session } : {};
+    const [created] = await PurchaseOrder.create(
+      [{
+        number,
+        supplier: supplier._id,
+        items: lines,
+        subtotal,
+        taxRate,
+        taxAmount,
+        total,
+        balance: total,
+        expectedAt,
+        notes,
+        createdBy: req.user._id,
+      }],
+      opts
+    );
+    try {
+      await Supplier.updateOne({ _id: supplier._id }, { $inc: { payable: total } }, opts);
+    } catch (e) {
+      if (!session) await PurchaseOrder.deleteOne({ _id: created._id });
+      throw e;
+    }
+    return created;
   });
-  supplier.payable += total;
-  await supplier.save();
+
   await logActivity(req, 'po_created', { entity: 'PurchaseOrder', entityId: po._id, meta: { number, total } });
   res.status(201).json(po);
 });
@@ -603,17 +627,92 @@ export const reverseSupplierPayment = asyncHandler(async (req, res) => {
     user: req.user,
     description: `Reversal of payment on purchase order ${po.number} — ${reason}`,
     links: { purchaseOrder: po._id, supplier: po.supplier },
-    applyDocumentUpdates: async (session) => {
-      po.paid = Math.max(0, po.paid - amount);
-      po.balance = Math.max(0, po.total - po.paid);
-      // PO status tracks goods receipt, not payment — recordSupplierPayment never
-      // touches it, so neither does the reversal.
-      await po.save({ session });
+    // ALM-SEC-023 fix: the previous version recomputed po.paid/balance from
+    // the in-memory `po` read at the top of this request and wrote it back
+    // with a full-document po.save({session}). That save touches every
+    // field Mongoose considers modified, so if a genuinely concurrent
+    // supplier payment had already committed its own (correctly atomic —
+    // see recordSupplierPayment above) change in between, this save would
+    // silently overwrite it. Confirmed live: a 50 payment fired
+    // concurrently with a reversal of an earlier 100 payment left `paid`
+    // at 0, not 50, even though the payments array and Supplier.payable
+    // both ended up correct — the PO's own paid/balance fields were the
+    // only thing left stale and inconsistent with its own payments array.
+    //
+    // Fixed the identical way reverseInvoicePayment (ALM-SEC-019) was:
+    // atomic, targeted updates instead of a read-modify-write, split into
+    // two atomic steps (arrayFilters cannot be combined with
+    // aggregation-pipeline computed expressions in the same update, hence
+    // two calls, not one):
+    //
+    //   1. A classic update with arrayFilters flips exactly the one
+    //      payment being reversed, guarded by its own `reversed: false` so
+    //      two concurrent reversals of the same payment cannot both match
+    //      (this is the existing duplicate-reversal protection — the
+    //      `assertReversible`/idempotencyKey checks above already cover
+    //      most of it, this is the same belt-and-suspenders match-guard
+    //      reverseInvoicePayment also carries).
+    //   2. A separate aggregation-pipeline update recomputes paid/balance
+    //      from the database's own current value at write time — the same
+    //      technique recordSupplierPayment already uses for its own atomic
+    //      claim. PO status is untouched either way: it tracks goods
+    //      receipt, not payment, exactly as before.
+    applyDocumentUpdates: async (session, posted) => {
+      const opts = session ? { session } : {};
+
+      const flipped = await PurchaseOrder.updateOne(
+        { _id: po._id, payments: { $elemMatch: { transaction: original._id, reversed: false } } },
+        {
+          $set: {
+            'payments.$[p].reversed': true,
+            'payments.$[p].reversedAt': new Date(),
+            'payments.$[p].reversedBy': req.user._id,
+            'payments.$[p].reversalReason': reason,
+            'payments.$[p].reversalTransaction': posted._id,
+          },
+        },
+        { ...opts, arrayFilters: [{ 'p.transaction': original._id, 'p.reversed': false }] }
+      );
+      if (flipped.matchedCount === 0) {
+        const err = new Error('This payment could not be reversed — it was already reversed by another request.');
+        err.statusCode = 409;
+        throw err;
+      }
+
+      try {
+        await PurchaseOrder.updateOne(
+          { _id: po._id },
+          [
+            { $set: { paid: { $max: [0, { $subtract: ['$paid', amount] }] } } },
+            { $set: { balance: { $max: [0, { $subtract: ['$total', '$paid'] }] } } },
+          ],
+          opts
+        );
+      } catch (e) {
+        if (!session) {
+          // Undo step 1 so this failed attempt doesn't leave the payment
+          // marked reversed with no corresponding balance effect.
+          await PurchaseOrder.updateOne(
+            { _id: po._id },
+            {
+              $set: { 'payments.$[p].reversed': false },
+              $unset: {
+                'payments.$[p].reversedAt': '',
+                'payments.$[p].reversedBy': '',
+                'payments.$[p].reversalReason': '',
+                'payments.$[p].reversalTransaction': '',
+              },
+            },
+            { arrayFilters: [{ 'p.transaction': original._id }] }
+          );
+        }
+        throw e;
+      }
 
       await Supplier.updateOne(
         { _id: po.supplier },
         { $inc: { payable: amount } },
-        session ? { session } : {}
+        opts
       );
     },
   });
@@ -623,5 +722,8 @@ export const reverseSupplierPayment = asyncHandler(async (req, res) => {
     entityId: po._id,
     meta: { amount, reason, payment: index, reversalTransaction: reversal._id.toString() },
   });
-  res.json(po);
+  // Re-read: the reversal is applied by a conditional database update, so the
+  // in-memory copy loaded at the top of this request still shows the
+  // pre-reversal figures (same reasoning as reverseInvoicePayment's response).
+  res.json(await PurchaseOrder.findById(po._id));
 });

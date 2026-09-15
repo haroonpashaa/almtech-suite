@@ -1,9 +1,10 @@
 import asyncHandler from 'express-async-handler';
 import Product from '../models/Product.js';
 import StockMovement from '../models/StockMovement.js';
-import { logActivity } from '../utils/activity.js';
+import { logActivity, diffFields } from '../utils/activity.js';
 import { requireNonZeroWholeQuantity } from '../utils/quantity.js';
 import { resolvePaging, runPaged } from '../utils/pagination.js';
+import { safeFilterValue } from '../utils/safeFilterValue.js';
 
 // Barcodes are optional. Treat blank/whitespace-only input as "no barcode" so the
 // partial unique index never sees an empty string, and so clearing the field in the
@@ -83,10 +84,32 @@ function sanitizeProduct(req, doc) {
   return withoutComments(req, withoutCost(req, doc));
 }
 
+// ALM-SEC-007: every legitimate business field the product create form and
+// import path actually set, and nothing else — in particular never `_id`,
+// `createdAt`, `updatedAt`, `__v`, or `serials` (which has its own
+// dedicated sell/return flow via invoices, not a generic create payload).
+// Mirrors the allowlist pattern `pickWritableCustomerFields` already uses
+// for customers, replacing the `{ ...req.body }` spread that previously let
+// a caller set server-owned metadata directly on `.create()`.
+const PRODUCT_WRITABLE_FIELDS = [
+  'name', 'sku', 'brand', 'model', 'category', 'description',
+  'processor', 'ram', 'storage', 'graphics', 'screen', 'condition', 'warranty', 'comments',
+  'image', 'purchasePrice', 'sellingPrice', 'stock', 'lowStockThreshold',
+  'tracksSerials', 'barcode', 'active',
+];
+
+function pickWritableProductFields(body) {
+  const clean = {};
+  for (const f of PRODUCT_WRITABLE_FIELDS) {
+    if (body[f] !== undefined) clean[f] = body[f];
+  }
+  return clean;
+}
+
 export const listProducts = asyncHandler(async (req, res) => {
   const { q, category, lowStock } = req.query;
   const filter = {};
-  if (category) filter.category = category;
+  if (category) filter.category = safeFilterValue(category);
   if (q) {
     // Specifications are part of the search because "16GB" or "i7" is how staff
     // actually look for a machine at the counter.
@@ -125,7 +148,7 @@ export const getProduct = asyncHandler(async (req, res) => {
 });
 
 export const createProduct = asyncHandler(async (req, res) => {
-  const payload = stripCommentsInput(req, stripCostInput(req, { ...req.body }));
+  const payload = stripCommentsInput(req, stripCostInput(req, pickWritableProductFields(req.body)));
   const barcode = cleanBarcode(payload.barcode);
   if (barcode) {
     await assertBarcodeFree(res, barcode);
@@ -144,10 +167,18 @@ export const createProduct = asyncHandler(async (req, res) => {
   res.status(201).json(sanitizeProduct(req, product));
 });
 
+// ALM-SEC-022: the financially/operationally significant fields worth a
+// before/after diff on update — mirrors the level of detail
+// `stock_adjusted`/`payment_reversed` already record. `purchasePrice` is
+// safe to include here even though sales can't see it elsewhere: the
+// activity log itself is admin-only (`activity.routes.js`).
+const PRODUCT_AUDIT_FIELDS = ['sellingPrice', 'purchasePrice', 'active'];
+
 export const updateProduct = asyncHandler(async (req, res) => {
   const { barcode: rawBarcode, ...rest } = req.body;
   const update = { $set: stripCommentsInput(req, stripCostInput(req, rest)) };
   let barcode = '';
+  const before = await Product.findById(req.params.id).select(PRODUCT_AUDIT_FIELDS.join(' ')).lean();
 
   // Only touch the barcode when the client actually sent the key, so partial updates
   // that omit it leave any existing barcode alone.
@@ -171,7 +202,12 @@ export const updateProduct = asyncHandler(async (req, res) => {
     res.status(404);
     throw new Error('Product not found');
   }
-  await logActivity(req, 'product_updated', { entity: 'Product', entityId: product._id });
+  const changes = before ? diffFields(before, product, PRODUCT_AUDIT_FIELDS) : {};
+  await logActivity(req, 'product_updated', {
+    entity: 'Product',
+    entityId: product._id,
+    meta: Object.keys(changes).length ? { changes } : undefined,
+  });
   res.json(sanitizeProduct(req, product));
 });
 
@@ -209,19 +245,42 @@ export const adjustStock = asyncHandler(async (req, res) => {
     throw new Error('Product not found');
   }
   const delta = requireNonZeroWholeQuantity(quantity, product.name);
-  product.stock = Math.max(0, product.stock + delta);
-  await product.save();
+
+  // ALM-SEC-016 fix: a single atomic pipeline update, not a JavaScript
+  // read-modify-write. `$max: [0, $add: ['$stock', delta]]` is computed by
+  // MongoDB from its own current value at write time, in the same operation
+  // that writes it back — so two concurrent adjustments can never clobber each
+  // other's change the way "product.stock = Math.max(0, product.stock + delta);
+  // await product.save();" did (ten concurrent +1 adjustments on stock=0 used
+  // to land on 4, not 10). Same idiom `applyInvoicePayment` already uses
+  // elsewhere in this codebase for the identical "clamp atomically" need on
+  // Customer.balance.
+  const updated = await Product.findOneAndUpdate(
+    { _id: product._id },
+    [{ $set: { stock: { $max: [0, { $add: ['$stock', delta] }] } } }],
+    { new: true }
+  );
+
+  // ALM-SEC-010 fix: record what actually happened to stock, not the raw
+  // requested delta. When the zero floor clamps the change (e.g. -9999
+  // against a stock of 4), the movement previously still claimed quantity:
+  // -9999 even though the real change was only -4 — internally
+  // inconsistent with its own balanceAfter and unreconcilable in any
+  // forensic review. `product.stock` here is this request's own pre-update
+  // read, so the applied delta is exactly what this specific adjustment
+  // contributed.
+  const appliedDelta = updated.stock - product.stock;
   await StockMovement.create({
-    product: product._id,
+    product: updated._id,
     type: 'adjustment',
-    quantity: delta,
-    balanceAfter: product.stock,
+    quantity: appliedDelta,
+    balanceAfter: updated.stock,
     refType: 'Adjustment',
     note,
     createdBy: req.user._id,
   });
-  await logActivity(req, 'stock_adjusted', { entity: 'Product', entityId: product._id, meta: { quantity, note } });
-  res.json(sanitizeProduct(req, product));
+  await logActivity(req, 'stock_adjusted', { entity: 'Product', entityId: updated._id, meta: { quantity, note } });
+  res.json(sanitizeProduct(req, updated));
 });
 
 export const stockLedger = asyncHandler(async (req, res) => {

@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { useSubmit } from '../hooks/useSubmit.js';
+import { newIdempotencyKey } from '../lib/idempotency.js';
 import { api } from '../api/client.js';
 import { money, date, datetime, errorMessage } from '../lib/format.js';
 import { useCurrency } from '../hooks/useSettings.js';
@@ -30,6 +31,9 @@ export default function InvoiceDetail() {
   const [editingNotes, setEditingNotes] = useState(false);
   const [notesDraft, setNotesDraft] = useState('');
   const [savingNotes, setSavingNotes] = useState(false);
+  // One key per payment attempt (ALM-SEC-009) — reused across retries of the
+  // same attempt, rotated once a payment actually succeeds.
+  const [payKey, setPayKey] = useState(newIdempotencyKey);
   const { data: invoice, isLoading, isError, refetch } = useQuery({
     queryKey: ['invoice', id],
     queryFn: async () => (await api.get(`/invoices/${id}`)).data,
@@ -42,10 +46,11 @@ export default function InvoiceDetail() {
 
   async function doPay() {
     try {
-      await api.post(`/invoices/${id}/payments`, { amount: Number(amount), method, reference, account });
+      await api.post(`/invoices/${id}/payments`, { amount: Number(amount), method, reference, account, idempotencyKey: payKey });
       toast.success('Payment recorded');
       setAmount('');
       setReference('');
+      setPayKey(newIdempotencyKey());
       qc.invalidateQueries({ queryKey: ['invoice', id] });
       qc.invalidateQueries({ queryKey: ['accounts-summary'] });
       qc.invalidateQueries({ queryKey: ['dashboard'] });

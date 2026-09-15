@@ -1,5 +1,23 @@
 import ExcelJS from 'exceljs';
 
+// ALM-SEC-012: defense-in-depth against a downstream spreadsheet program
+// interpreting an exported text cell as a formula. ExcelJS already writes
+// these as explicit string-typed XLSX cells — a materially safer situation
+// than a raw CSV export, where a program infers "is this a formula" purely
+// from the leading character — but prefixing the standard CSV-injection
+// trigger set with an apostrophe costs nothing for the overwhelming
+// majority of real values (which never start with these characters) and
+// closes the gap defensively for any spreadsheet program/version/workflow
+// that infers formula-ness from content rather than from XLSX's own
+// cell-type metadata. Never applied to number/date-typed cells — those are
+// written as their real numeric/date value, never a string, so there's
+// nothing to sanitize there.
+const FORMULA_TRIGGER = /^[=+\-@\t\r]/;
+function sanitizeCellText(value) {
+  const s = String(value);
+  return FORMULA_TRIGGER.test(s) ? `'${s}` : s;
+}
+
 // ---------------------------------------------------------------------------
 // Workbook reading
 // ---------------------------------------------------------------------------
@@ -199,14 +217,47 @@ function cellValue(cell) {
 // ---------------------------------------------------------------------------
 export const str = (v) => (v == null ? '' : String(v).trim());
 
+// ALM-SEC-011 fix: the previous version stripped every character that wasn't
+// a digit/dot/minus, which silently mangled two very different inputs into
+// plausible-but-wrong numbers instead of rejecting them: "1.5e3" (scientific
+// notation for 1500 — a format Excel auto-applies to large/small numbers)
+// lost its "e" and became "1.53"; "abc123" (a stray label or paste error)
+// had its letters stripped and became "123", as if someone had deliberately
+// typed that price. Neither was flagged as invalid.
+//
+// A recognized number — including scientific notation — is now tried first,
+// with no destructive stripping, so "1.5e3" parses to the mathematically
+// correct 1500. Only if that fails is a narrow, explicit set of hand-typed
+// currency formatting (a specific currency word/symbol, and thousands-
+// separating commas) removed and the result re-checked — never an
+// unrestricted "delete anything non-numeric" pass. If what's left still
+// isn't a clean number (as with "abc123", where "abc" matches no known
+// currency marker), this returns NaN — an explicit validation error at
+// commit time — rather than a fabricated value.
+const NUMERIC_PATTERN = /^-?(\d+(\.\d+)?|\.\d+)([eE][-+]?\d+)?$/;
+const CURRENCY_TOKENS = /\b(rs|pkr|usd|inr)\b\.?|[$£€₹]/gi;
+
 export function num(v) {
   if (v === null || v === undefined || String(v).trim() === '') return null;
   if (typeof v === 'number') return Number.isFinite(v) ? v : NaN;
-  // Tolerate "1,234.50" and "Rs. 1,234" as typed by hand in spreadsheets.
-  const cleaned = String(v).replace(/[^0-9.\-]/g, '');
-  if (cleaned === '' || cleaned === '-' || cleaned === '.') return NaN;
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : NaN;
+
+  const raw = String(v).trim();
+  if (NUMERIC_PATTERN.test(raw)) {
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : NaN;
+  }
+
+  // Tolerate "1,234.50" and "Rs. 1,234" as typed by hand — but only a
+  // recognized currency marker and thousands-separating commas are removed;
+  // anything else left over (like the letters in "abc123") means this was
+  // never actually a formatted number, and it stays rejected.
+  const withoutFormatting = raw.replace(CURRENCY_TOKENS, '').replace(/,/g, '').trim();
+  if (NUMERIC_PATTERN.test(withoutFormatting)) {
+    const n = Number(withoutFormatting);
+    return Number.isFinite(n) ? n : NaN;
+  }
+
+  return NaN;
 }
 
 export function date(v) {
@@ -285,7 +336,7 @@ export async function buildWorkbook({ sheetName = 'Sheet1', columns, rows, title
         cell.value = Number.isNaN(d.getTime()) ? null : d;
         cell.numFmt = 'dd mmm yyyy hh:mm';
       } else {
-        cell.value = String(raw);
+        cell.value = sanitizeCellText(raw);
       }
     });
   });
@@ -322,7 +373,7 @@ export async function buildMultiSheetWorkbook(sheets) {
           const d = raw instanceof Date ? raw : new Date(raw);
           cell.value = Number.isNaN(d.getTime()) ? null : d;
           cell.numFmt = 'dd mmm yyyy';
-        } else cell.value = String(raw);
+        } else cell.value = sanitizeCellText(raw);
       });
     });
     s.columns.forEach((c, i) => (ws.getColumn(i + 1).width = c.width || 18));

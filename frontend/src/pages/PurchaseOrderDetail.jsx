@@ -4,6 +4,7 @@ import { Link, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
+import { newIdempotencyKey } from '../lib/idempotency.js';
 import { money, date, datetime, errorMessage } from '../lib/format.js';
 import { useCurrency } from '../hooks/useSettings.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -26,6 +27,9 @@ export default function PurchaseOrderDetail() {
   const [account, setAccount] = useState('');
   const [reference, setReference] = useState('');
   const [reverseTarget, setReverseTarget] = useState(null);
+  // One key per payment attempt (ALM-SEC-009) — reused across retries of the
+  // same attempt, rotated once a payment actually succeeds.
+  const [payKey, setPayKey] = useState(newIdempotencyKey);
 
   const { data: po, isLoading, isError, refetch } = useQuery({
     queryKey: ['po', id],
@@ -56,10 +60,11 @@ export default function PurchaseOrderDetail() {
 
   async function doPay() {
     try {
-      await api.post(`/purchase-orders/${id}/payments`, { amount: Number(amount), method, reference, account });
+      await api.post(`/purchase-orders/${id}/payments`, { amount: Number(amount), method, reference, account, idempotencyKey: payKey });
       toast.success('Payment recorded');
       setAmount('');
       setReference('');
+      setPayKey(newIdempotencyKey());
       qc.invalidateQueries({ queryKey: ['po', id] });
       qc.invalidateQueries({ queryKey: ['accounts-summary'] });
       qc.invalidateQueries({ queryKey: ['dashboard'] });

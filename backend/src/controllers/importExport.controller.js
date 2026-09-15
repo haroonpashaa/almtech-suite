@@ -7,6 +7,7 @@ import { logActivity } from '../utils/activity.js';
 import { receivables as financeReceivables, payables as financePayables } from './finance.controller.js';
 import { profitAndLoss } from './report.controller.js';
 import { dailyExpenses, monthlyExpenses } from './expense.controller.js';
+import { safeFilterValue } from '../utils/safeFilterValue.js';
 
 // Reuses an existing express handler as a data source by invoking it with a captured
 // response. This is deliberate: the Receivables, P&L and expense-report exports return
@@ -384,7 +385,7 @@ function send(res, buffer, filename) {
 // ---------------------------------------------------------------------------
 export const importHistory = asyncHandler(async (req, res) => {
   const filter = {};
-  if (req.query.type) filter.type = req.query.type;
+  if (req.query.type) filter.type = safeFilterValue(req.query.type);
   const batches = await ImportBatch.find(filter)
     .populate('importedBy', 'name')
     .sort('-createdAt')

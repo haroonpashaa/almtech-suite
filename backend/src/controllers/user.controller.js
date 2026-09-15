@@ -1,6 +1,6 @@
 import asyncHandler from 'express-async-handler';
 import User, { ROLES } from '../models/User.js';
-import { logActivity } from '../utils/activity.js';
+import { logActivity, diffFields } from '../utils/activity.js';
 
 export const listUsers = asyncHandler(async (_req, res) => {
   const users = await User.find().select('-password').sort('-createdAt');
@@ -24,12 +24,17 @@ export const createUser = asyncHandler(async (req, res) => {
   res.status(201).json(safe);
 });
 
+// ALM-SEC-022: the significant fields worth a before/after diff on update
+// — never `password`, which is deliberately excluded from this allowlist.
+const USER_AUDIT_FIELDS = ['role', 'active'];
+
 export const updateUser = asyncHandler(async (req, res) => {
   const user = await User.findById(req.params.id);
   if (!user) {
     res.status(404);
     throw new Error('User not found');
   }
+  const before = { role: user.role, active: user.active };
   const { name, role, active, password } = req.body;
   if (name !== undefined) user.name = name;
   if (role !== undefined) {
@@ -42,7 +47,12 @@ export const updateUser = asyncHandler(async (req, res) => {
   if (active !== undefined) user.active = active;
   if (password) user.password = password;
   await user.save();
-  await logActivity(req, 'user_updated', { entity: 'User', entityId: user._id });
+  const changes = diffFields(before, user, USER_AUDIT_FIELDS);
+  await logActivity(req, 'user_updated', {
+    entity: 'User',
+    entityId: user._id,
+    meta: Object.keys(changes).length ? { changes } : undefined,
+  });
   const { password: _p, ...safe } = user.toObject();
   res.json(safe);
 });

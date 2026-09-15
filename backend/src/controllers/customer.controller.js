@@ -1,7 +1,7 @@
 import asyncHandler from 'express-async-handler';
 import Customer from '../models/Customer.js';
 import Invoice from '../models/Invoice.js';
-import { logActivity } from '../utils/activity.js';
+import { logActivity, diffFields } from '../utils/activity.js';
 import { resolvePaging, runPaged } from '../utils/pagination.js';
 
 export const listCustomers = asyncHandler(async (req, res) => {
@@ -56,14 +56,23 @@ export const createCustomer = asyncHandler(async (req, res) => {
   res.status(201).json(customer);
 });
 
+// ALM-SEC-022: the significant fields worth a before/after diff on update.
+const CUSTOMER_AUDIT_FIELDS = ['creditLimit', 'active'];
+
 export const updateCustomer = asyncHandler(async (req, res) => {
   const updates = pickWritableCustomerFields(req.body);
+  const before = await Customer.findById(req.params.id).select(CUSTOMER_AUDIT_FIELDS.join(' ')).lean();
   const customer = await Customer.findByIdAndUpdate(req.params.id, updates, { new: true, runValidators: true });
   if (!customer) {
     res.status(404);
     throw new Error('Customer not found');
   }
-  await logActivity(req, 'customer_updated', { entity: 'Customer', entityId: customer._id });
+  const changes = before ? diffFields(before, customer, CUSTOMER_AUDIT_FIELDS) : {};
+  await logActivity(req, 'customer_updated', {
+    entity: 'Customer',
+    entityId: customer._id,
+    meta: Object.keys(changes).length ? { changes } : undefined,
+  });
   res.json(customer);
 });
 

@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { useSubmit } from '../hooks/useSubmit.js';
+import { newIdempotencyKey } from '../lib/idempotency.js';
 import { api } from '../api/client.js';
 import { money, date as fmtDate, errorMessage } from '../lib/format.js';
 import { useCurrency } from '../hooks/useSettings.js';
@@ -23,6 +24,10 @@ export default function PayableDetail() {
   const [account, setAccount] = useState('');
   const [method, setMethod] = useState('bank');
   const [reference, setReference] = useState('');
+  // One key per payment attempt (ALM-SEC-009), generated fresh each time the
+  // payment dialog opens (openPay, below) — reused across retries of the
+  // same attempt for as long as the dialog stays open.
+  const [payKey, setPayKey] = useState(newIdempotencyKey);
 
   const [adjusting, setAdjusting] = useState(false);
   const [adjustAmount, setAdjustAmount] = useState('');
@@ -45,6 +50,7 @@ export default function PayableDetail() {
     setAccount('');
     setMethod('bank');
     setReference('');
+    setPayKey(newIdempotencyKey());
   }
 
   function openAdjust() {
@@ -84,6 +90,7 @@ export default function PayableDetail() {
         method,
         reference,
         account,
+        idempotencyKey: payKey,
       });
       toast.success('Payment recorded');
       setPayTarget(null);
