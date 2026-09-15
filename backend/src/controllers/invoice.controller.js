@@ -8,7 +8,7 @@ import { nextNumber } from '../utils/numbering.js';
 import { computeItemTotals, applyTax } from '../utils/totals.js';
 import { logActivity } from '../utils/activity.js';
 import { streamInvoicePDF } from '../utils/pdf.js';
-import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting, runAtomically } from '../utils/ledger.js';
+import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting, runAtomically, reverseTransaction } from '../utils/ledger.js';
 import { resolvePayment, requireReason, assertReversible, postReversal } from '../services/paymentReversal.js';
 import { resolvePaging, runPaged } from '../utils/pagination.js';
 import { requirePositiveWholeQuantity } from '../utils/quantity.js';
@@ -678,68 +678,203 @@ export const returnInvoice = asyncHandler(async (req, res) => {
   // below regardless of whether there was anything to refund, not just folded into
   // a refund's own description (which would silently lose it on an unpaid invoice).
   const reason = requireReason(res, req.body?.reason);
-  for (const { p, i } of refundable) {
-    const original = await assertReversible(res, p);
-    await postReversal(res, {
-      original,
-      payment: p,
-      index: i,
-      reason,
-      user: req.user,
-      description: `Refund on returned invoice ${invoice.number} — ${reason}`,
-      links: { invoice: invoice._id, customer: invoice.customer },
-      applyDocumentUpdates: async (session) => {
-        invoice.paid = Math.max(0, invoice.paid - original.amount);
-        invoice.balance = Math.max(0, invoice.total - invoice.paid);
-        await invoice.save({ session });
-        await Customer.updateOne(
-          { _id: invoice.customer },
-          { $inc: { balance: original.amount } },
-          session ? { session } : {}
-        );
-      },
-    });
+
+  // ALM-SEC-024 fix: the pre-check above only ever read `invoice.status` once,
+  // before any write — two concurrent return requests for the SAME invoice
+  // could both pass it and both proceed to fully process the return.
+  // Confirmed live: 5 concurrent return requests on one invoice, 4 of 5
+  // succeeded, each restoring stock and crediting the customer again — not
+  // a lost update, actual duplicate execution of a real business operation.
+  // Separately, `product.stock += it.quantity; await product.save();` and
+  // `customer.balance = Math.max(0, ...); await customer.save();` were both
+  // classic non-atomic read-modify-writes — the identical shape ALM-SEC-016
+  // fixed for adjustStock — so even two genuinely DIFFERENT invoices being
+  // returned concurrently, sharing a product or customer, could lose one
+  // return's stock/balance effect to the other's.
+  //
+  // Fixed by claiming the invoice atomically FIRST — the same
+  // `findOneAndUpdate` compare-and-swap `convertToInvoice` already uses to
+  // claim a quotation — so only one concurrent request can ever win the
+  // race; every other loses the claim and is rejected immediately, before
+  // touching any payment, stock, or balance, so a losing request can never
+  // leave partial state. Stock restoration and the final customer-balance
+  // adjustment are now atomic single-document operations (`$inc` / a
+  // pipeline `$max` clamp), immune to lost updates regardless of what else
+  // is happening to the same product or customer concurrently. Each
+  // payment refund continues to go through the existing `postReversal` /
+  // `postPaymentAtomically` machinery unchanged — it was already correctly
+  // atomic with its own compensating rollback, exactly like
+  // `reverseInvoicePayment` (ALM-SEC-019) relies on; only the invoice
+  // `paid`/`balance` write inside it changes to a conditional pipeline
+  // update instead of `invoice.save()`, so it can no longer race against
+  // the atomic stock/balance writes below it.
+  //
+  // `postPaymentAtomically` already opens its own `runAtomically()`
+  // transaction per payment reversed — nesting a second, independent
+  // transaction around the whole function (a different session touching
+  // the same documents) risks a self-deadlock, so this claim-then-atomic-
+  // steps shape is used instead, the same non-nested pattern
+  // `commitInvoiceEffects`/`convertToInvoice` already establish for a
+  // claim-then-multi-step-work operation.
+  //
+  // A targeted verification after this fix's first version surfaced a
+  // real question: if an invoice has more than one refundable payment and
+  // the FIRST one's refund completes successfully but a LATER one (or the
+  // stock/balance steps after them) then fails, does the already-committed
+  // first refund stay applied while the overall return reports failure?
+  // Live-forced reproduction (two payments, the second made deterministically
+  // unreversible after the first had already committed) confirmed: yes —
+  // without explicit compensation, the first payment's reversal (money
+  // moved, ledger entry posted, invoice.paid/balance updated) survived a
+  // failed overall return, while the invoice itself reverted to its
+  // pre-return status. That is exactly the "payment refunds... partially
+  // applied in a state inconsistent with the overall return result" this
+  // fix must prevent. `completedRefunds` below tracks every refund this
+  // attempt has actually committed so the catch block can undo them in
+  // full — using `reverseTransaction()`, the same same-request
+  // compensating-rollback primitive `postPaymentAtomically` itself already
+  // uses to undo its own posting when a later step in ONE payment's own
+  // flow fails — extended here to also undo an EARLIER payment's already-
+  // completed refund when a LATER step in the same return attempt fails.
+  const originalStatus = invoice.status;
+  const claimed = await Invoice.findOneAndUpdate(
+    { _id: invoice._id, status: { $nin: ['returned', 'cancelled'] } },
+    { $set: { status: 'returned' } },
+    { new: true }
+  );
+  if (!claimed) {
+    const current = await Invoice.findById(invoice._id);
+    res.status(400);
+    throw new Error(`Invoice already ${current?.status || 'returned'}`);
   }
 
-  for (const it of invoice.items) {
-    const product = await Product.findById(it.product);
-    if (!product) continue;
-    product.stock += it.quantity;
-    if (it.serials?.length && product.tracksSerials) {
-      for (const s of it.serials) {
-        const sn = product.serials.find((x) => x.serial === s);
-        if (sn) {
-          sn.status = 'returned';
-          sn.soldInvoice = undefined;
-        }
-      }
+  const restoredStock = [];
+  const completedRefunds = [];
+  try {
+    for (const { p, i } of refundable) {
+      const original = await assertReversible(res, p);
+      const reversal = await postReversal(res, {
+        original,
+        payment: p,
+        index: i,
+        reason,
+        user: req.user,
+        description: `Refund on returned invoice ${invoice.number} — ${reason}`,
+        links: { invoice: invoice._id, customer: invoice.customer },
+        applyDocumentUpdates: async (session, posted) => {
+          const opts = session ? { session } : {};
+          const flipped = await Invoice.updateOne(
+            { _id: invoice._id, payments: { $elemMatch: { transaction: original._id, reversed: false } } },
+            {
+              $set: {
+                'payments.$[p].reversed': true,
+                'payments.$[p].reversedAt': new Date(),
+                'payments.$[p].reversedBy': req.user._id,
+                'payments.$[p].reversalReason': reason,
+                'payments.$[p].reversalTransaction': posted._id,
+              },
+            },
+            { ...opts, arrayFilters: [{ 'p.transaction': original._id, 'p.reversed': false }] }
+          );
+          if (flipped.matchedCount === 0) {
+            const err = new Error('This payment could not be reversed — it was already reversed by another request.');
+            err.statusCode = 409;
+            throw err;
+          }
+          await Invoice.updateOne(
+            { _id: invoice._id },
+            [
+              { $set: { paid: { $max: [0, { $subtract: ['$paid', original.amount] }] } } },
+              { $set: { balance: { $max: [0, { $subtract: ['$total', '$paid'] }] } } },
+            ],
+            opts
+          );
+          await Customer.updateOne(
+            { _id: invoice.customer },
+            { $inc: { balance: original.amount } },
+            opts
+          );
+        },
+      });
+      completedRefunds.push({ original, amount: original.amount, reversal });
     }
-    await product.save();
-    await StockMovement.create({
-      product: product._id,
-      type: 'return',
-      quantity: it.quantity,
-      balanceAfter: product.stock,
-      refType: 'Invoice',
-      refId: invoice._id,
-      refNumber: invoice.number,
-      createdBy: req.user._id,
-    });
-  }
-  invoice.status = 'returned';
-  await invoice.save();
 
-  // Unchanged from before: clears whatever this invoice still had outstanding. Combined
-  // with the refunds above the customer nets to -(original outstanding), which is correct —
-  // they owe nothing on a returned invoice and have their money back.
-  const customer = await Customer.findById(invoice.customer);
-  if (customer) {
-    customer.balance = Math.max(0, customer.balance - invoice.balance);
-    await customer.save();
+    for (const it of invoice.items) {
+      const updated = await Product.findOneAndUpdate(
+        { _id: it.product },
+        { $inc: { stock: it.quantity } },
+        { new: true }
+      );
+      if (!updated) continue;
+      restoredStock.push({ product: it.product, quantity: it.quantity });
+      if (it.serials?.length && updated.tracksSerials) {
+        await Product.updateOne(
+          { _id: it.product },
+          { $set: { 'serials.$[s].status': 'returned' }, $unset: { 'serials.$[s].soldInvoice': '' } },
+          { arrayFilters: [{ 's.serial': { $in: it.serials } }] }
+        );
+      }
+      await StockMovement.create({
+        product: updated._id,
+        type: 'return',
+        quantity: it.quantity,
+        balanceAfter: updated.stock,
+        refType: 'Invoice',
+        refId: invoice._id,
+        refNumber: invoice.number,
+        createdBy: req.user._id,
+      });
+    }
+
+    // Unchanged arithmetic from before: clears whatever this invoice still had
+    // outstanding, read fresh (the refund loop above already brought it back
+    // toward the full total for whatever was actually refunded). Combined
+    // with the refunds, the customer nets to -(original outstanding), which
+    // is correct — they owe nothing on a returned invoice and have their
+    // money back.
+    const freshInvoice = await Invoice.findById(invoice._id);
+    await Customer.updateOne(
+      { _id: invoice.customer },
+      [{ $set: { balance: { $max: [0, { $subtract: ['$balance', freshInvoice.balance] }] } } }]
+    );
+  } catch (e) {
+    for (const r of restoredStock) {
+      await Product.updateOne({ _id: r.product }, { $inc: { stock: -r.quantity } });
+    }
+    // Undo every refund THIS attempt already completed, in reverse order —
+    // otherwise a return that fails on payment 2 of 2 (or on stock/balance
+    // afterward) would leave payment 1's reversal durably applied while the
+    // overall return reports failure and the invoice reverts to non-returned.
+    for (const r of completedRefunds.reverse()) {
+      await reverseTransaction(r.reversal);
+      await Invoice.updateOne(
+        { _id: invoice._id },
+        {
+          $set: { 'payments.$[p].reversed': false },
+          $unset: {
+            'payments.$[p].reversedAt': '',
+            'payments.$[p].reversedBy': '',
+            'payments.$[p].reversalReason': '',
+            'payments.$[p].reversalTransaction': '',
+          },
+        },
+        { arrayFilters: [{ 'p.transaction': r.original._id }] }
+      );
+      await Invoice.updateOne(
+        { _id: invoice._id },
+        [
+          { $set: { paid: { $min: ['$total', { $add: ['$paid', r.amount] }] } } },
+          { $set: { balance: { $max: [0, { $subtract: ['$total', '$paid'] }] } } },
+        ]
+      );
+      await Customer.updateOne({ _id: invoice.customer }, { $inc: { balance: -r.amount } });
+    }
+    await Invoice.updateOne({ _id: invoice._id }, { $set: { status: originalStatus } });
+    throw e;
   }
 
   await logActivity(req, 'invoice_returned', { entity: 'Invoice', entityId: invoice._id, meta: { reason } });
-  res.json(invoice);
+  res.json(await Invoice.findById(invoice._id));
 });
 
 export const invoicePDF = asyncHandler(async (req, res) => {
