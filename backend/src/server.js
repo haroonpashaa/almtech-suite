@@ -1,7 +1,7 @@
 // Server entry point for every environment, local and deployed. Vercel runs this via
 // the backend package's `start` script (see vercel.json experimentalServices).
 import 'dotenv/config';
-import { createApp } from './app.js';
+import { createApp, readiness } from './app.js';
 import { connectDB } from './config/db.js';
 import { seedAll, ensureAccounts, bootstrapAdmin } from './scripts/seedData.js';
 
@@ -57,6 +57,18 @@ const PORT = process.env.PORT || 5050;
 // production. Local development keeps its existing one-command experience.
 const demoSeed = process.env.ENABLE_DEMO_SEED === 'true' || (!isProd && process.env.ENABLE_DEMO_SEED !== 'false');
 
+// Hostinger (and similar platform health checks) expect the process to bind
+// its port within a few seconds of starting. The previous sequence gated
+// app.listen() behind connectDB() + demo-seed/bootstrap + ensureAccounts,
+// which together can easily exceed that window against a real remote
+// MongoDB Atlas connection — the platform then concludes startup failed and
+// restarts the process in a loop before it ever finishes connecting. The
+// listener now starts immediately; `readiness.ready` (see app.js) gates
+// every other /api/* route until the connect/seed/ensureAccounts chain
+// below actually completes, so no request can act on a database that isn't
+// ready or reflect a state seeding hasn't finished writing yet.
+app.listen(PORT, '0.0.0.0', () => console.log(`Server listening on http://localhost:${PORT}`));
+
 connectDB().then(async () => {
   if (demoSeed) {
     const seedResult = await seedAll({ force: false });
@@ -70,7 +82,7 @@ connectDB().then(async () => {
   // account to post them to. Idempotent.
   const newAccounts = await ensureAccounts();
   if (newAccounts.length) console.log(`Financial accounts created: ${newAccounts.join(', ')}`);
-  app.listen(PORT, '0.0.0.0', () => console.log(`Server listening on http://localhost:${PORT}`));
+  readiness.ready = true;
 }).catch((e) => {
   // A database that cannot be reached must stop the boot with a readable message rather
   // than an unhandled rejection and a driver stack trace.

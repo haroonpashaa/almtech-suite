@@ -12,7 +12,7 @@
     "dev": "nodemon src/server.js",
     "seed": "node src/scripts/seed.js",
     "test": "vitest run",
-    "build": "npm --prefix ../frontend install --include=dev --no-audit --no-fund && npm --prefix ../frontend run build"
+    "build": "npm --prefix ../frontend install --include=dev --no-audit --no-fund && npm --prefix ../frontend run build && rm -rf ./public && node -e \"require('fs').cpSync('../frontend/dist','./public',{recursive:true})\""
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

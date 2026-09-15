@@ -36,6 +36,25 @@ import adminRoutes from './routes/admin.routes.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Hostinger fix: server.js now starts app.listen() immediately instead of
+// waiting for MongoDB to connect and startup seeding/bootstrap to finish
+// (see server.js for why). Mongoose's default query buffering would queue
+// most requests that arrive in that gap, but relying on that alone is not
+// enough to call safe: a buffered query resolves the instant the connection
+// itself is ready, which can be *before* seedAll()/bootstrapAdmin()/
+// ensureAccounts() have actually written their data (e.g. a login landing
+// between "connected" and "admin user actually inserted", or a payment
+// landing before the required Cash/Bank accounts exist) — and if MongoDB is
+// genuinely unreachable, buffered queries don't fail fast, they hang for the
+// full buffer timeout before erroring, so every request would appear to hang
+// rather than getting an honest, immediate answer. `readiness.ready` is
+// flipped to `true` by server.js only once that entire startup chain has
+// actually completed; until then, the guard below gives every `/api/*`
+// request (other than the health check itself, which must always be able to
+// report real-time status) an explicit, immediate 503 instead of an
+// unpredictable delay or a confusing downstream error.
+export const readiness = { ready: false };
+
 export function createApp({ serveFrontend = true } = {}) {
   const app = express();
 
@@ -96,6 +115,16 @@ export function createApp({ serveFrontend = true } = {}) {
     });
   });
 
+  // See the `readiness` comment above — every other /api/* route is gated
+  // behind startup actually finishing, so a request arriving during that
+  // (now very short, health-check-visible) window gets an explicit 503
+  // instead of silently queuing on Mongoose's buffering or racing ahead of
+  // seeding.
+  app.use('/api', (req, res, next) => {
+    if (req.path === '/health' || readiness.ready) return next();
+    res.status(503).json({ message: 'Server is starting up — please retry in a moment.' });
+  });
+
   app.use('/api/auth', authRoutes);
   app.use('/api/users', userRoutes);
   app.use('/api/products', productRoutes);
@@ -117,8 +146,16 @@ export function createApp({ serveFrontend = true } = {}) {
 
   // Serve the built React app (local production-mode test only).
   // On Vercel, the frontend is served by Vercel's CDN, not Express.
+  //
+  // Hostinger's backend-rooted deployment builds the frontend during the
+  // build step, but its runtime doesn't appear to carry the sibling
+  // ../frontend/dist forward — backend/package.json's build script now also
+  // copies the built frontend into backend/public, checked first. Falls
+  // back to the sibling path unchanged for local production-mode testing.
   if (serveFrontend) {
-    const frontendDist = path.resolve(__dirname, '../../frontend/dist');
+    const selfContainedDist = path.resolve(__dirname, '../public');
+    const siblingDist = path.resolve(__dirname, '../../frontend/dist');
+    const frontendDist = fs.existsSync(selfContainedDist) ? selfContainedDist : siblingDist;
     if (fs.existsSync(frontendDist)) {
       app.use(express.static(frontendDist));
       app.get(/^(?!\/api).*/, (_req, res) => {
