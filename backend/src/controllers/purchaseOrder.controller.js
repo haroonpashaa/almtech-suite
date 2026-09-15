@@ -9,6 +9,7 @@ import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting, runAtom
 import { resolvePayment, requireReason, assertReversible, postReversal } from '../services/paymentReversal.js';
 import { resolvePaging, runPaged } from '../utils/pagination.js';
 import { requirePositiveWholeQuantity } from '../utils/quantity.js';
+import { safeFilterValue } from '../utils/safeFilterValue.js';
 
 // Notes are free-text metadata on the order (see updatePO's comment on "pure
 // metadata"), not something Sales is authorized to see. Sales cannot create, edit,
@@ -28,7 +29,7 @@ export const listPOs = asyncHandler(async (req, res) => {
   const { supplier, status } = req.query;
   const filter = {};
   if (supplier) filter.supplier = supplier;
-  if (status) filter.status = status;
+  if (status) filter.status = safeFilterValue(status);
   const paging = resolvePaging(req.query, 500);
   const items = await runPaged(res, PurchaseOrder, filter, {
     sort: '-orderedAt',

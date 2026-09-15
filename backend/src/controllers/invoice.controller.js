@@ -12,6 +12,7 @@ import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting, runAtom
 import { resolvePayment, requireReason, assertReversible, postReversal } from '../services/paymentReversal.js';
 import { resolvePaging, runPaged } from '../utils/pagination.js';
 import { requirePositiveWholeQuantity } from '../utils/quantity.js';
+import { safeFilterValue } from '../utils/safeFilterValue.js';
 
 // Single implementation of "money received against an invoice", shared by the POS
 // initial payment and by later payments on the invoice detail screen.
@@ -108,7 +109,7 @@ export const listInvoices = asyncHandler(async (req, res) => {
   const { customer, status, from, to, q } = req.query;
   const filter = {};
   if (customer) filter.customer = customer;
-  if (status) filter.status = status;
+  if (status) filter.status = safeFilterValue(status);
   if (from || to) {
     filter.issuedAt = {};
     if (from) filter.issuedAt.$gte = new Date(from);
@@ -360,7 +361,35 @@ export async function commitInvoiceEffects({ session, invoiceFields, customerId,
     }
 
     if (balanceIncrease) {
-      await Customer.updateOne({ _id: customerId }, { $inc: { balance: balanceIncrease } }, opts);
+      // ALM-SEC-017 fix: the credit-limit check in createInvoice (and,
+      // previously, the complete absence of one in convertToInvoice) only
+      // ever read `customer.balance` once, before this point — a stale
+      // pre-flight read that many concurrent requests can each pass
+      // independently, since none of them see each other's increase before
+      // deciding. The actual enforcement point has to be this atomic write,
+      // exactly like the stock claim above: the filter re-reads the
+      // customer's *current* balance and creditLimit from the database in
+      // the same operation that commits the increase, so two concurrent
+      // invoices can never both believe there's room. `creditLimit <= 0`
+      // keeps meaning "no limit", matching the existing pre-flight check.
+      const claimed = await Customer.updateOne(
+        {
+          _id: customerId,
+          $expr: {
+            $or: [
+              { $lte: ['$creditLimit', 0] },
+              { $lte: [{ $add: ['$balance', balanceIncrease] }, '$creditLimit'] },
+            ],
+          },
+        },
+        { $inc: { balance: balanceIncrease } },
+        opts
+      );
+      if (claimed.matchedCount === 0) {
+        const err = new Error("This sale would exceed the customer's credit limit");
+        err.statusCode = 400;
+        throw err;
+      }
     }
   } catch (e) {
     if (!session) {

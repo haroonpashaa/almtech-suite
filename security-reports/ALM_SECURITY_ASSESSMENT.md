@@ -8,9 +8,13 @@ payable), ALM-SEC-019 (HIGH, invoice payment/reversal race), ALM-SEC-008
 (HIGH, invoice line pricing/discount below-cost bypass), ALM-SEC-009 (HIGH,
 frontend now sends duplicate-payment idempotency keys), ALM-SEC-011
 (HIGH, spreadsheet numeric-parsing silent corruption), ALM-SEC-003
-(MEDIUM–HIGH, JWT session revocation after password change). All other 14
-findings remain OPEN, unremediated, awaiting authorization. See §25 for the
-full consolidated summary.
+(MEDIUM–HIGH, JWT session revocation after password change), ALM-SEC-002
+(MEDIUM, login rate limiting), ALM-SEC-013 (MEDIUM, NoSQL operator
+injection across 9 filter fields), ALM-SEC-017 (MEDIUM, credit-limit
+concurrency race, including a previously-unchecked gap in
+`convertToInvoice`). All other 11 findings (Low/Informational) remain
+OPEN, unremediated, awaiting authorization. See §25 for the full
+consolidated summary.
 **Assessment type:** Internal, authorized, source-available security review by an AI coding
 agent. This is NOT an accredited penetration test and does not constitute certification
 (ISO, SOC 2, PCI-DSS, or otherwise).
@@ -397,7 +401,8 @@ retries (recommend ~5-10 attempts per 15 min per IP+email as a starting point, t
 with the business).
 *Retest procedure:* repeat the 30-attempt burst; expect a `429` or increasing latency
 well before attempt 30.
-*Status:* OPEN.
+*Status:* **FIXED — remediated and retested. See §24 for the complete
+remediation record.**
 
 ---
 **ALM-SEC-003 — No server-side session/token revocation (logout and password-change do not invalidate outstanding tokens)**
@@ -1188,7 +1193,8 @@ overwhelming majority of legitimate string values already being sent.
 *Retest procedure:* repeat every row in the table above; every injected request
 should return the same result as an equivalent, obviously-nonexistent literal
 value (i.e. 0 matches), never more than the honest baseline.
-*Status:* OPEN.
+*Status:* **FIXED — remediated and retested. See §24 for the complete
+remediation record.**
 
 ### 16.2 Other findings
 
@@ -1874,7 +1880,8 @@ into another fix.
 *Retest procedure:* repeat the exact reproduction; expect the sum of succeeded
 invoices' totals to never push `customer.balance` past `creditLimit` when
 `creditLimit > 0`.
-*Status:* OPEN — not authorized for remediation in this pass.
+*Status:* **FIXED — remediated and retested. See §24 for the complete
+remediation record.**
 
 ---
 **ALM-SEC-018 — Concurrent purchase-order creation loses updates to supplier payable (same root cause as ALM-SEC-015, different entity/direction)**
@@ -2807,3 +2814,329 @@ LOW precisely because the full exploit chain wasn't demonstrated; the dependency
 findings in Phase 11 are scored by confirmed advisory severity but explicitly
 annotated with this application's actual exploitability assessment rather than
 assumed at face value).
+
+---
+
+## 24. Remediation record — Batch 4 (ALM-SEC-002, ALM-SEC-013, ALM-SEC-017)
+
+Authorized scope for this batch: exactly these three MEDIUM findings.
+Low/Informational findings explicitly deferred pending separate
+authorization. Git checkpoint: tag `pre-alm-sec-002-013-017-fix-checkpoint`,
+created on branch `security/remediation` at commit
+`74edb69556a96573ac608b39a76bf10755ce8be4` (the Batch 1-3 checkpoint). Full
+suite (327/327) confirmed green before any code was touched.
+
+### ALM-SEC-002 — brute-force / credential-stuffing protection on login
+
+**Files changed:** `backend/src/middleware/loginRateLimit.js` (new),
+`backend/src/routes/auth.routes.js` (rate limiter applied to `POST
+/auth/login`), `backend/package.json`/`package-lock.json` (added
+`express-rate-limit`, the report's own recommended library).
+
+**Root cause:** no rate-limiting middleware existed anywhere in the app; `POST
+/auth/login` accepted unlimited-rate guesses with no delay, `429`, or
+lockout of any kind.
+
+**Remediation:** `express-rate-limit`, keyed by **IP + attempted email**
+(not IP alone — a shared office IP with several staff logging into their
+own accounts is unaffected, and a distributed attacker spread across many
+IPs still has each IP+account pair capped individually). Default 8 failed
+attempts per 15-minute window (matches the report's own suggested
+5-10/15min starting point); the window is configurable via
+`LOGIN_RATE_LIMIT_WINDOW_MS`/`LOGIN_RATE_LIMIT_MAX` env vars (used only to
+speed up this retest, not part of the security property itself — unset in
+production, defaults apply). `skipSuccessfulRequests: true` means only
+genuinely failed attempts count — a normal user who mistypes their
+password a couple of times and then succeeds never sees a `429`, and a
+successful login never consumes any of the budget. The window auto-expires
+(no permanent lockout an attacker could weaponize against a legitimate
+user by deliberately triggering it). The rate-limit key itself never
+appears in any response — no new enumeration signal.
+
+**Original reproduction:** 30 rapid invalid-password attempts against
+`admin@almtech.org` — all `401`, no `429`, no increasing delay; a correct
+login immediately after the burst succeeded normally (`200`), confirming
+zero throttling.
+
+**Post-fix reproduction:**
+- 8 consecutive wrong-password attempts against one account (limit set to
+  6 for this retest): first 6 → `401`, remaining 2 → `429`.
+- A correct password submitted while the window is still active → `429`
+  (the limiter doesn't special-case a correct password once the budget is
+  spent — this is intentional: distinguishing "attacker's 7th guess
+  happens to be right" from "legitimate user's 7th attempt is right" is
+  not possible from the server's perspective).
+- 8 attempts against 8 different nonexistent emails → all `401`, none
+  throttled (confirms the per-email keying — this is not a blanket
+  IP-wide lockout).
+- A different, unrelated user (`sales@almtech.org`) logging in during the
+  above burst → `200`, unaffected (separate bucket).
+- After the window expires → correct login → `200`.
+- `admin`/`sales`/`stock` roles all verified to log in normally outside of
+  a throttled window.
+- ALM-SEC-003 interaction: password-change session revocation
+  (`tokenVersion`) still correctly rejects the old token (`401`) and the
+  new login still succeeds (`200`) — rate limiting doesn't interfere with
+  or bypass session revocation.
+- Deactivated-user login still returns `401` with the same message as
+  before, unaffected by rate limiting.
+- Response body for "wrong password, existing user" vs. "wrong password,
+  nonexistent user" remains byte-identical (`{"message":"Invalid email or
+  password"}`) — the rate limiter introduces no new username-enumeration
+  signal (dev-mode stack traces differ only because of the pre-existing,
+  already-gated-to-development error handler, unrelated to this change).
+
+**Database verification:** not applicable — the rate limiter's state is
+in-memory only (per the library's default store), by design; no schema or
+document changes.
+
+**Regression results:** full suite green (327/327 — no existing test hits
+the login HTTP endpoint at all, confirmed by grep before making the
+change, so there was no risk of the limiter interfering with the
+automated suite).
+
+**Normal user behavior changed?** No change for the overwhelming majority
+of real logins. The only behavior change is the intended one: an account
+that has just failed 8+ login attempts within 15 minutes gets a `429`
+until the window rolls over, instead of unlimited retries.
+
+**Residual risks:** the rate-limit store is in-memory and per-process — it
+resets on a server restart/redeploy and, in a multi-instance deployment,
+each instance would track its own independent budget rather than sharing
+one (this application currently runs as a single Vercel
+`experimentalService`, so this isn't a live gap today, but would need a
+shared store, e.g. Redis, if horizontally scaled later). ALM-SEC-001
+(the login timing side-channel) remains a separate, still-OPEN finding —
+this fix does not address response-time-based enumeration, only
+request-rate.
+
+### ALM-SEC-013 — NoSQL operator injection via unsanitized string filters
+
+**Files changed:** `backend/src/utils/safeFilterValue.js` (new, shared
+helper), `backend/src/controllers/product.controller.js`,
+`backend/src/controllers/invoice.controller.js`,
+`backend/src/controllers/purchaseOrder.controller.js`,
+`backend/src/controllers/expense.controller.js`,
+`backend/src/controllers/payment.controller.js` (x2 fields),
+`backend/src/controllers/activity.controller.js`,
+`backend/src/controllers/importExport.controller.js` — all 9 confirmed
+call sites from the Phase 6 table.
+
+**Root cause:** each of the 9 fields assigned a raw `req.query` value
+straight into a Mongo filter object with no type constraint. Express's
+`qs` parser turns bracket-notation query params (`?category[$ne]=null`)
+into nested objects, which Mongo then interprets as real query operators
+instead of a literal string to match.
+
+**Remediation:** a small shared `safeFilterValue(v)` helper (`String(v)`
+coercion, `undefined`/`null`/`''` passed through as "no filter") applied
+at all 9 confirmed sites, exactly the report's own recommended
+smallest-fix option, centralized so the same mistake can't be
+silently reintroduced in a new controller later. Coercing to `String`
+turns any object/array shape into a harmless literal that cannot match a
+real record — the query still runs (never a `500`, never "unintended"
+broadened results), it just correctly finds nothing, identical to any
+other honest nonexistent filter value. `ObjectId`-typed ref fields
+(already protected by Mongoose's cast layer and, in several places, an
+explicit `isValidObjectId` guard) were confirmed untouched — out of this
+finding's scope, and already safe per the Phase 6 assessment.
+
+**Original reproduction:** `GET /products?category[$ne]=null` returned
+all 8 seeded products (bypassing the filter entirely); the report's
+`$regex` oracle (`category[$regex]=^P`) correctly isolated a single
+category, confirming a working blind-oracle capability.
+
+**Post-fix reproduction (every one of the 9 confirmed fields
+individually retested):**
+```
+products.category           $ne  -> 200, 0 results   (was: all 8)
+invoices.status              $ne  -> 200, 0 results
+purchaseOrders.status        $ne  -> 200, 0 results
+expenses.status               $ne  -> 200, 0 results
+expenses.category             $ne  -> 200, 0 results
+payments.type                 $ne  -> 200, 0 results
+payments.direction            $ne  -> 200, 0 results
+activity.entity                $ne  -> 200, 0 results
+data/history.type             $ne  -> 200, 0 results
+```
+`$regex` oracle re-attempted on `products.category` → 0 results (no
+longer isolates anything). Also probed `$where`, a deeply-nested bracket
+path, and `qs` array-bracket syntax (`category[]=A&category[]=B`) — all
+return `200`/0 results, never a `500`.
+
+Legitimate filters re-verified working normally: `category=Printers` → 1
+match, `status=open` on invoices → 15 matches, `entity=Invoice` on
+activity → 15 matches, pagination (`limit`/`page`) unaffected. The
+report's own "duplicate query parameter" informational case
+(`?category=A&category=B`, which `qs` turns into an array) now coerces to
+the literal string `"A,B"` — confirmed via grep that no frontend code
+currently sends duplicate params for any of these 9 fields, so this is not
+a behavior change for the real UI, only for the previously-undocumented
+raw-API edge case the report itself flagged as informational/unused.
+
+**Database verification:** not applicable — a read-only filtering fix; no
+documents written. Result-set counts were verified directly against
+`GET .../:id` and list-endpoint responses for each case above.
+
+**Regression results:** full suite green (327/327).
+
+**Normal user behavior changed?** No — every legitimate single-value
+filter (the only shape the real frontend ever sends) behaves identically
+before and after. The only behavior change is that a previously-successful
+operator-injection or multi-value-array attempt against one of these 9
+fields now correctly finds nothing instead of bypassing the filter.
+
+**Residual risks:** the fix is scoped to the 9 confirmed call sites from
+the Phase 6 sweep, matching this finding's authorized scope exactly; it
+does not re-audit every controller for a new pattern that might emerge in
+future code (the Phase 6 report itself notes the sweep covered every
+`filter.field = value` textual pattern found by grep, not a full semantic
+audit of every controller body — unchanged by this fix).
+
+### ALM-SEC-017 — credit-limit concurrency race
+
+**Files changed:** `backend/src/controllers/invoice.controller.js`
+(`commitInvoiceEffects` — the shared atomic core also used by
+`convertToInvoice`).
+
+**Root cause:** the credit-limit check in `createInvoice` read
+`customer.balance` once, before any atomic write, and was never
+re-validated at write time — many concurrent requests could each read the
+same stale balance and independently conclude they were within limit.
+Separately (discovered during this fix's own investigation, not
+previously flagged as part of ALM-SEC-017): `convertToInvoice` had **no**
+credit-limit check at all, staleness or otherwise — quotations could be
+converted to invoices regardless of the resulting balance.
+
+**Remediation:** the customer-balance increase inside
+`commitInvoiceEffects` — the single shared atomic core both `createInvoice`
+and `convertToInvoice` already funnel through (the ALM-SEC-015 fix) — is
+now a single conditional atomic update: `Customer.updateOne({_id,
+$expr: {$or: [{creditLimit <= 0}, {balance + increase <= creditLimit}]}},
+{$inc: {balance: increase}})`. The filter re-reads the customer's *own
+current* `balance` and `creditLimit` from the database in the same
+operation that commits the increase — exactly the same pattern already
+used for the atomic stock claim just above it in the same function — so
+two concurrent invoices (or a concurrent invoice and quotation
+conversion) can never both believe there's room. A failed claim
+(`matchedCount === 0`) throws, which the existing compensating-rollback
+path (standalone dev) or transaction abort (Atlas) already unwinds
+exactly like any other failure inside this function — no new rollback
+logic was needed. The pre-existing fast, friendly pre-flight check in
+`createInvoice` is unchanged (still gives an immediate, specific error
+message in the common non-concurrent case); the atomic update is the real
+enforcement backstop, matching the stock-claim architecture already
+established by ALM-SEC-015.
+
+Because the fix lives in the shared `commitInvoiceEffects`, it
+automatically extends the same protection to `convertToInvoice`, closing
+the separate no-check-at-all gap noted above as a natural consequence of
+reusing the existing atomic core rather than as separately-scoped new
+work.
+
+**Original reproduction:** customer with `creditLimit: 300`, `balance: 0`.
+10 concurrent invoices of 100 each: 10/10 succeeded, final balance 1000 —
+a 700 overrun.
+
+**Post-fix reproduction:**
+- Same reproduction: exactly 3/10 succeed (3×100=300=limit), 7 rejected
+  (`400`, "This sale would exceed the customer's credit limit"); final
+  balance exactly 300, never exceeding the limit.
+- Rejected invoices verified to leave **no side effects**: product stock
+  after the run is 997 (1000 seeded − 3 successful sales, not −10), no
+  orphan `Invoice` documents exist for any rejected attempt (`GET
+  /invoices?customer=...` confirms), customer balance untouched by
+  rejected attempts.
+- No credit limit (`creditLimit: 0`, "unlimited"): 10/10 concurrent
+  invoices all succeed — the `creditLimit <= 0` branch is unaffected.
+- Exact-limit case: a single invoice totaling exactly the limit (300 vs.
+  limit 300) → `201`, balance becomes exactly 300 (the boundary is
+  inclusive, matching the pre-existing pre-flight check's `>` comparison).
+- Just-over-limit case: a single invoice of 301.02 vs. limit 300 → `400`,
+  balance stays 0 (untouched).
+- Sequential (non-concurrent) invoices: still correctly enforced (200 vs.
+  limit 250 succeeds, a further 100 that would push to 300 is rejected) —
+  confirms the fix didn't regress the ordinary non-race case.
+- Quotation → invoice path: a quotation whose total (1000) exceeds the
+  customer's limit (300) is now correctly rejected at conversion
+  (`400`), with the underlying stock claim rolled back (product stock
+  unchanged) and the quotation's status correctly reverted to its
+  pre-attempt value (not left stuck as "converted" with no invoice behind
+  it) — verified directly against the database.
+
+**Database verification:** customer `balance`, product `stock`, and
+`Invoice`/`Quotation` document existence/status were all read directly
+from the database (not just from API response bodies) for every scenario
+above and matched expectations exactly.
+
+**Regression results:** full suite green (327/327); the concurrency
+regression suite for ALM-SEC-015 (`createInvoice` stock claim,
+`convertToInvoice` double-conversion), ALM-SEC-016 (`adjustStock`),
+ALM-SEC-018 (`createPO` payable), and ALM-SEC-019 (payment reversal) all
+re-run and passing (see §24.1 below) — the credit-limit change adds one
+more atomic conditional update inside the same function without touching
+the existing stock-claim or serial-claim logic.
+
+**Normal user behavior changed?** Two changes, both intentional and
+in-scope: (1) the credit-limit check is now unconditionally correct under
+concurrency, where before it could be raced past — legitimate
+non-concurrent usage sees no difference. (2) **`convertToInvoice` now
+enforces the customer's credit limit, which it previously did not check
+at all.** A quotation that would push a credit-limited customer over
+their limit will now be rejected at conversion time where it previously
+always succeeded. This is flagged explicitly as a user-visible behavior
+change, not silently bundled in.
+
+**Residual risks:** the atomic check enforces the limit at the moment of
+commit; it does not add any new pre-flight check to `convertToInvoice` for
+a friendlier error message before that point (out of scope — the atomic
+backstop alone satisfies the required concurrency-safe property, and
+avoids unrelated UX work beyond this finding's authorization). If the
+business does not want quotations to be blocked by credit limit at
+conversion time, that would be a deliberate policy decision requiring
+separate authorization, not a bug in this fix.
+
+### 24.1 Regression requirements — full results
+
+**Full automated suite:** `npx vitest run` → **327/327 passed** (23 test
+files), run once before this batch's changes (confirming the clean
+baseline) and once after (confirming zero regressions).
+
+**Security regression re-checks (explicitly required, re-run live against
+the isolated test environment after all three fixes landed):**
+- **ALM-SEC-003** (session revocation): full required 10-step test
+  re-run — all 10 steps pass, including old-token rejection after a
+  password change and continued-deactivation enforcement.
+- **ALM-SEC-008** (pricing floor): full 9-scenario test re-run — exploit
+  still blocked (`400` below-cost), excessive discount still blocked,
+  legitimate edited price (750 on a 900/cost-500 item) still honored,
+  admin still unrestricted, quotation→invoice path still inherits the
+  protection, cost price still hidden from sales.
+- **ALM-SEC-009** (payment idempotency): double-click, identical-retry,
+  and delayed-retry (partial-payment variant) all still correctly dedupe;
+  distinct legitimate payments still both succeed.
+- **ALM-SEC-011** (numeric import parsing): covered by the automated
+  suite (`excel.test.js`, 25/25 including the 9 dedicated tests) — green.
+- **ALM-SEC-015** (`createInvoice` stock claim / `convertToInvoice`
+  double-conversion): 10 concurrent invoices of qty 2 vs. stock 10 →
+  exactly 5 succeed, final stock 0; 5 concurrent converts of the same
+  quotation → exactly 1 succeeds, final stock 0.
+- **ALM-SEC-016** (`adjustStock`): 20 concurrent +5 adjustments from
+  stock 0 → final stock exactly 100.
+- **ALM-SEC-018** (`createPO` supplier payable): 10 concurrent POs of
+  cost 50 → supplier payable exactly 500.
+- **ALM-SEC-019** (payment reversal): 5 concurrent reversal attempts of
+  the same payment → exactly 1 succeeds, invoice `paid` correctly returns
+  to 0.
+
+**Conclusion: no regression to pricing, imports, sessions, payments,
+stock, invoice concurrency, PO concurrency, quotation conversion, or
+payment reversal.**
+
+**Test environment teardown:** isolated `mongodb-memory-server` and
+backend test instances stopped; `backend/start-mongo-sec.mjs` deleted —
+no changes made to the developer's real local dev database or
+production.
+
+**All three items in this batch: FIXED. Reproduced → remediated →
+retested, per the required procedure, for each.**

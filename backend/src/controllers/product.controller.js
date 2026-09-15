@@ -4,6 +4,7 @@ import StockMovement from '../models/StockMovement.js';
 import { logActivity } from '../utils/activity.js';
 import { requireNonZeroWholeQuantity } from '../utils/quantity.js';
 import { resolvePaging, runPaged } from '../utils/pagination.js';
+import { safeFilterValue } from '../utils/safeFilterValue.js';
 
 // Barcodes are optional. Treat blank/whitespace-only input as "no barcode" so the
 // partial unique index never sees an empty string, and so clearing the field in the
@@ -86,7 +87,7 @@ function sanitizeProduct(req, doc) {
 export const listProducts = asyncHandler(async (req, res) => {
   const { q, category, lowStock } = req.query;
   const filter = {};
-  if (category) filter.category = category;
+  if (category) filter.category = safeFilterValue(category);
   if (q) {
     // Specifications are part of the search because "16GB" or "i7" is how staff
     // actually look for a machine at the counter.
