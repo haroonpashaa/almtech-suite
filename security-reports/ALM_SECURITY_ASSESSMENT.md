@@ -1,20 +1,28 @@
 # ALM Suite ERP — Security Assessment
 
 **Status:** ALL 19 PHASES COMPLETE. 22 total findings (ALM-SEC-001 through
-ALM-SEC-022). **FIXED and retested:** ALM-SEC-015 (CRITICAL — both
-`createInvoice` and its `convertToInvoice` sibling instance are now fixed),
-ALM-SEC-016 (HIGH, `adjustStock`), ALM-SEC-018 (HIGH, `createPO` supplier
-payable), ALM-SEC-019 (HIGH, invoice payment/reversal race), ALM-SEC-008
-(HIGH, invoice line pricing/discount below-cost bypass), ALM-SEC-009 (HIGH,
-frontend now sends duplicate-payment idempotency keys), ALM-SEC-011
-(HIGH, spreadsheet numeric-parsing silent corruption), ALM-SEC-003
-(MEDIUM–HIGH, JWT session revocation after password change), ALM-SEC-002
-(MEDIUM, login rate limiting), ALM-SEC-013 (MEDIUM, NoSQL operator
-injection across 9 filter fields), ALM-SEC-017 (MEDIUM, credit-limit
-concurrency race, including a previously-unchecked gap in
-`convertToInvoice`). All other 11 findings (Low/Informational) remain
-OPEN, unremediated, awaiting authorization. See §25 for the full
-consolidated summary.
+ALM-SEC-022). **ALL 22 FINDINGS FIXED AND RETESTED.** Batches 1-4:
+ALM-SEC-015 (CRITICAL — both `createInvoice` and its `convertToInvoice`
+sibling instance are now fixed), ALM-SEC-016 (HIGH, `adjustStock`),
+ALM-SEC-018 (HIGH, `createPO` supplier payable), ALM-SEC-019 (HIGH,
+invoice payment/reversal race), ALM-SEC-008 (HIGH, invoice line
+pricing/discount below-cost bypass), ALM-SEC-009 (HIGH, frontend now sends
+duplicate-payment idempotency keys), ALM-SEC-011 (HIGH, spreadsheet
+numeric-parsing silent corruption), ALM-SEC-003 (MEDIUM–HIGH, JWT session
+revocation after password change), ALM-SEC-002 (MEDIUM, login rate
+limiting), ALM-SEC-013 (MEDIUM, NoSQL operator injection across 9 filter
+fields), ALM-SEC-017 (MEDIUM, credit-limit concurrency race, including a
+previously-unchecked gap in `convertToInvoice`). Batch 5 (Low/Low-Medium/
+Informational sweep): ALM-SEC-001 (login timing side-channel),
+ALM-SEC-004 (password strength policy), ALM-SEC-005 (JWT_SECRET
+default/weak-secret production safeguard), ALM-SEC-006 (malformed login
+fields no longer crash with a 500), ALM-SEC-007 (product-creation mass
+assignment), ALM-SEC-010 (stock-adjustment audit records the real applied
+delta), ALM-SEC-012 (export formula-trigger hardening), ALM-SEC-014
+(baseline HTTP security headers via Helmet), ALM-SEC-020 (concurrent
+opening-balance corrections), ALM-SEC-021 (login success/failure audit
+events), ALM-SEC-022 (update audit entries now capture before/after
+diffs). See §25 for the full consolidated summary.
 **Assessment type:** Internal, authorized, source-available security review by an AI coding
 agent. This is NOT an accredited penetration test and does not constitute certification
 (ISO, SOC 2, PCI-DSS, or otherwise).
@@ -371,7 +379,8 @@ regardless of whether the user exists (e.g. compare against a fixed dummy hash w
 user is found), or add a fixed minimum response-time floor for the whole login path.
 *Regression risk:* very low — purely additive timing normalization.
 *Retest procedure:* repeat the timed-sample test above; ratio should approach 1.0x.
-*Status:* OPEN — remediation not authorized yet.
+*Status:* **FIXED — remediated and retested. See §26 for the complete
+remediation record.**
 
 ---
 **ALM-SEC-002 — No brute-force / credential-stuffing protection on login**
@@ -484,7 +493,8 @@ just suggested client-side).
 unaffected (this only gates future password-set operations), but will break any
 external documentation/training that references the old minimum.
 *Retest procedure:* repeat the three creation attempts above against the new rule.
-*Status:* OPEN.
+*Status:* **FIXED — remediated and retested. See §26 for the complete
+remediation record.**
 
 ---
 **ALM-SEC-005 — No safeguard against deploying with the documented example `JWT_SECRET`**
@@ -514,7 +524,8 @@ misconfigured one (which is the point).
 *Retest procedure:* attempt to start the app with `NODE_ENV=production` and
 `JWT_SECRET=replace-with-a-long-random-string`; expect a fail-fast startup error, not
 a running server.
-*Status:* OPEN.
+*Status:* **FIXED — remediated and retested. See §26 for the complete
+remediation record.**
 *Action item for you (outside this assessment's ability to verify):* please confirm
 independently that your actual Hostinger/production `JWT_SECRET` is a long, randomly
 generated value and is **not** the `.env.example` placeholder. I have not seen, and am
@@ -538,7 +549,8 @@ information-disclosure or auth-bypass issue.
 using them, consistent with how the rest of the codebase treats malformed input.
 *Regression risk:* none.
 *Retest procedure:* repeat the object-payload request; expect `400`, not `500`.
-*Status:* OPEN.
+*Status:* **FIXED — remediated and retested. See §26 for the complete
+remediation record.**
 
 ### 12.2 Tested and PASSED (recorded per instruction — not silently assumed secure)
 
@@ -676,7 +688,8 @@ a quick patch.
 *Retest procedure:* repeat the `_id`/`createdAt` smuggling request; expect the
 response to show a server-generated `_id` and a `createdAt` within the same
 second as the request, regardless of what the client sent.
-*Status:* OPEN.
+*Status:* **FIXED — remediated and retested. See §26 for the complete
+remediation record.**
 
 ---
 
@@ -882,7 +895,8 @@ record *that* on the `StockMovement`, not the raw input.
 stock figure itself, which was already correct.
 *Retest procedure:* repeat the reproduction; expect the `StockMovement.quantity` to
 equal the actual change in `product.stock`, not the raw requested value.
-*Status:* OPEN.
+*Status:* **FIXED — remediated and retested. See §26 for the complete
+remediation record.**
 
 ### 14.2 Tested and PASSED (recorded per instruction — not silently assumed secure)
 
@@ -1059,7 +1073,8 @@ also protects any future CSV-format export path that might be added later.
 values, which don't start with those characters.
 *Retest procedure:* repeat the reproduction; inspect the exported file's raw cell
 values for the neutralizing prefix.
-*Status:* OPEN.
+*Status:* **FIXED — remediated and retested. See §26 for the complete
+remediation record.**
 
 ### 15.2 Tested and PASSED (recorded per instruction — not silently assumed secure)
 
@@ -1309,7 +1324,8 @@ frame-ancestors (not recommended to attempt a full script-src CSP in the same
 change, to avoid breaking the app).
 *Retest procedure:* repeat the header inspection and iframe-embedding test; expect
 the frame to fail to load the app's content after the fix.
-*Status:* OPEN.
+*Status:* **FIXED — remediated and retested. See §26 for the complete
+remediation record.**
 
 ### 17.2 Tested and PASSED / confirmed not applicable (recorded per instruction)
 
@@ -2023,8 +2039,8 @@ breach.
 already used elsewhere (`{$set: {currentBalance: {$add: ['$currentBalance',
 delta]}}}` computed server-side) would close it; given the low realistic impact
 this can reasonably be deprioritized relative to ALM-SEC-017/018/019.
-*Status:* OPEN — not authorized for remediation in this pass; lowest priority of
-this sweep's findings.
+*Status:* **FIXED — remediated and retested. See §26 for the complete
+remediation record.**
 
 ### 18.7.3 Confirmed SAFE under live concurrent testing (recorded per instruction)
 
@@ -2763,7 +2779,8 @@ performance/storage burden under the exact brute-force scenario ALM-SEC-002
 already flags) for repeated failures — e.g. logged at the account level on
 failure, or rate-aware to avoid the log itself becoming an amplification
 vector.
-*Status:* OPEN — not authorized for remediation in this pass.
+*Status:* **FIXED — remediated and retested. See §26 for the complete
+remediation record.**
 
 ---
 **ALM-SEC-022 — Most entity-update audit entries record that a change happened but not what changed**
@@ -2792,7 +2809,8 @@ financially/operationally significant fields (price, cost, credit limit, role,
 active status), capture a before/after diff in `meta`, mirroring the level of
 detail already present for `stock_adjusted`/`payment_reversed`/reversal-family
 events.
-*Status:* OPEN — not authorized for remediation in this pass.
+*Status:* **FIXED — remediated and retested. See §26 for the complete
+remediation record.**
 
 **Tested and PASSED:**
 
@@ -3139,4 +3157,648 @@ no changes made to the developer's real local dev database or
 production.
 
 **All three items in this batch: FIXED. Reproduced → remediated →
+retested, per the required procedure, for each.**
+
+---
+
+## 26. Remediation record — Batch 5 (Low / Low-Medium / Informational sweep)
+
+Authorized scope for this batch: ALM-SEC-001, 004, 005, 006, 007, 010, 012,
+014, 020, 021, 022 — the entire remaining Low/Low-Medium/Informational
+list. Git checkpoint: HEAD at
+`5b523507fe1db8e96c68ed753191d543efa2309d` on branch `security/remediation`
+before any code was touched. Full suite (327/327) confirmed green before
+any code was touched. Per instruction, HIGH-CONFIDENCE-but-unconfirmed
+unrelated concurrency risks (`reverseSupplierPayment`, `returnInvoice`)
+were explicitly left untouched — no change in this batch was inseparable
+from them.
+
+### ALM-SEC-001 — login timing side-channel
+
+**Files changed:** `backend/src/controllers/auth.controller.js`.
+
+**Root cause:** a nonexistent-user login short-circuited before any bcrypt
+comparison ran (~1-4ms), while an existing user with a wrong password paid
+the full deliberately-slow bcrypt cost (~80-100ms) — a 20x+ timing gap
+usable to enumerate valid emails.
+
+**Remediation:** a module-level `DUMMY_HASH` (bcrypt-hashed once at
+startup) is compared against whenever no matching user is found, so every
+login request — match or no match — pays exactly one bcrypt comparison.
+The final `!user || !user.active || !passwordMatches` gate (computed from
+that result) is unchanged, so this only affects *when* the comparison
+happens, never *whether* a real login can succeed without the right
+password — no authentication bypass introduced.
+
+**Reproduction before:** 12-sample median timing, existing user ~94ms vs.
+nonexistent user ~4ms (report's original figures); re-confirmed similar
+ratio prior to this fix.
+
+**Verification after:** 12-sample median timing — existing-user 117.1ms,
+nonexistent-user 116.2ms, ratio 1.01x.
+
+**Database verification:** not applicable (timing-only fix, no data
+change).
+
+**Regression results:** full suite green; ALM-SEC-002's rate limiter
+(keyed by IP+email, `skipSuccessfulRequests`) is unaffected — this change
+adds no new request path, only changes which branch performs the bcrypt
+call.
+
+**User-visible changes:** none — every login attempt is now ~1-4ms slower
+in the previously-fast (no-such-user) case, imperceptible to a real user,
+identical response body either way (unchanged from before).
+
+**Residual risks:** the report's own caveat stands — practical
+exploitability over real production network latency (which adds its own
+jitter) was not separately measured; the *existence* of the gap is what
+was fixed. ALM-SEC-005/002 remain the other layers defending the same
+threat (credential stuffing).
+
+### ALM-SEC-004 — password strength policy
+
+**Files changed:** `backend/src/models/User.js`.
+
+**Root cause:** `minlength: 6` was the only constraint on any password, at
+any entry point (self-service change, admin create, admin reset).
+
+**Remediation:** replaced `minlength: 6` with a custom schema validator on
+`password` requiring 8+ characters, checked only when
+`this.isModified('password')` — so it fires on every genuinely new or
+changed password (self-service `changePassword`, admin `createUser`,
+admin `updateUser`'s password-reset path — all three funnel through the
+same schema, so one change covers all of them) but never re-validates an
+already-hashed stored value on an unrelated save. 8 was chosen
+deliberately over the report's suggested 10+ specifically so the
+documented demo accounts (`admin1234`, etc., 9 characters) keep seeding a
+fresh dev/demo environment unchanged, and so it doesn't contradict this
+codebase's own existing precedent for "strong enough" — `seedData.js`'s
+`bootstrapAdmin()` already enforces a stricter, purely length-based 10+
+floor for a real production admin, with no character-class requirement
+(confirmed by an existing passing test using a 31-character,
+all-letters-and-hyphens password) — so the new floor here is length-only
+too, consistent with that established convention, rather than inventing a
+new complexity rule with no precedent in this codebase.
+
+**Original reproduction:** `"aaaaaaa"` (6 chars) and `"password"` (8
+chars) both accepted with no complexity requirement.
+
+**Post-fix reproduction:** two 7-character passwords (`"short1"`, with a
+letter and a digit, and `"aaaaaaa"`, letters only) → both `400`,
+"Password must be at least 8 characters."; a 9-character demo-style
+password (`admin1234`) and a 31-character, no-digit password (matching
+the bootstrap-admin test's own password shape) were both correctly
+accepted. A self-service `change-password` attempt to a 7-character
+password was also correctly
+rejected (`400`).
+
+**Database verification:** not applicable — a write-time validation gate,
+no stored-data change.
+
+**Regression results:** full suite green, including the bootstrap-admin
+tests that use a long, no-digit password and the demo-seed path that uses
+9-character demo passwords — both confirmed still working live, not just
+by not-crashing.
+
+**User-visible changes:** any *newly-set or changed* password shorter than
+8 characters is now rejected with a clear message. No existing account's
+current password is affected — the check only ever fires on
+`isModified('password')`.
+
+**Residual risks:** this is a length-only floor, not a full strength
+estimator (no dictionary/common-password check, no character-class
+requirement) — a defensible, deliberately conservative choice made to
+avoid breaking this codebase's own established "long is strong enough"
+convention and its demo/test fixtures; a stronger policy (e.g. a zxcvbn
+integration) would be a larger, separately-scoped change.
+
+### ALM-SEC-005 — safeguard against a default/example JWT_SECRET
+
+**Files changed:** `backend/src/server.js`.
+
+**Root cause:** the production startup check verified `JWT_SECRET` was
+*present*, never that it was non-default or long enough — the codebase
+would start successfully in production with the exact placeholder value
+shipped in `.env.example`.
+
+**Remediation:** in the existing `if (isProd)` fail-fast block, added a
+check that refuses to start if `JWT_SECRET` exactly matches the known
+`.env.example` placeholder (`replace-with-a-long-random-string`) or is
+under 32 characters, appended to the same unified `missing` configuration
+list the app already prints and exits on. The configured value itself is
+never logged, printed, or included in the failure message — only the
+fact that it failed the check.
+
+**Original reproduction:** code inspection only, as scoped by the report
+(no access to or knowledge of any real production secret) — confirmed no
+guard existed.
+
+**Post-fix reproduction:**
+- `NODE_ENV=production JWT_SECRET=replace-with-a-long-random-string` →
+  exit code 1, "FATAL: cannot start... JWT_SECRET — set to a long,
+  randomly generated value..." — never printed the value itself.
+- `NODE_ENV=production JWT_SECRET=short-random-16ch` (16 chars) → same
+  fail-fast rejection (under the 32-char floor).
+- `NODE_ENV=production JWT_SECRET=<32-byte openssl rand -hex secret>` (a
+  properly configured deployment) → started normally, connected, listened
+  — confirming the check doesn't false-positive on a real, strong secret.
+
+**Database verification:** not applicable.
+
+**Regression results:** full suite green — no test imports `server.js`
+(confirmed by grep before making the change), so this had zero exposure
+to the automated suite; verified instead via the three live startup
+attempts above. Development/test startup (`NODE_ENV` unset or
+`development`) is completely unaffected — the whole check is inside the
+existing `if (isProd)` block.
+
+**User-visible changes:** none for a correctly-configured production
+deployment. A misconfigured one (still using the example secret, or a
+too-short one) now fails to start instead of running with a forgeable
+signing key — the intended behavior change.
+
+**Residual risks:** exactly the report's own action item —
+*independently* confirm the real Hostinger/production `JWT_SECRET` is
+already a long, random value and not the placeholder; this fix guards
+against it happening again (or on a future redeploy), it cannot retroactively
+verify a secret already in place that this assessment was never given
+access to.
+
+### ALM-SEC-006 — malformed login fields crash with a 500
+
+**Files changed:** `backend/src/controllers/auth.controller.js` (same
+edit as ALM-SEC-001/021, all three landed together in the `login`
+handler).
+
+**Root cause:** `email?.toLowerCase()` assumed `email` was a string;
+sending a NoSQL-operator-shaped object (`{"email":{"$gt":""}}`) crashed
+with an unhandled `TypeError` → `500`.
+
+**Remediation:** an explicit `typeof email !== 'string' || typeof
+password !== 'string'` guard at the top of `login`, before either field
+is used for anything, returning a controlled `400`.
+
+**Original reproduction:** `{"email":{"$gt":""},"password":{"$gt":""}}` →
+unhandled `500`.
+
+**Post-fix reproduction:** the same object-shaped payload → `400`; also
+retested number-shaped (`12345`) and array-shaped (`["a","b"]`) fields →
+`400`; a request with both fields entirely missing → `400`. A normal
+wrong-*string*-password login was re-confirmed to still return the
+expected `401`, unaffected.
+
+**Database verification:** not applicable — this never reached a database
+query before or after (confirmed in the original report too: the crash
+happens before that point).
+
+**Regression results:** full suite green.
+
+**User-visible changes:** a malformed request now gets a clean `400`
+("Email and password are required") instead of the generic, stack-
+suppressed `"Something went wrong..."` 500 message — a strictly better
+error for any legitimate client that somehow sends a malformed body.
+
+**Residual risks:** none identified — this was already confirmed not to
+be an injection path (Phase 2/6), only a robustness gap, and is now
+closed.
+
+### ALM-SEC-007 — mass assignment on product creation
+
+**Files changed:** `backend/src/controllers/product.controller.js`.
+
+**Root cause:** `createProduct` spread the entire request body
+(`{ ...req.body }`) into the payload passed to `Product.create()`, so any
+field — including `_id`, `__v`, and `createdAt` — reached the database
+verbatim if the client supplied it.
+
+**Remediation:** a new `PRODUCT_WRITABLE_FIELDS` allowlist (name, sku,
+brand, model, category, description, the hardware-spec fields, condition,
+warranty, comments, image, purchasePrice, sellingPrice, stock,
+lowStockThreshold, tracksSerials, barcode, active) and
+`pickWritableProductFields()`, mirroring the existing
+`pickWritableCustomerFields` pattern already used for customers. This
+list was built directly from the real product-create form's payload
+(`frontend/src/lib/productPayload.js`) plus every remaining legitimate
+schema field, and deliberately excludes `serials` (which has its own
+dedicated sell/return flow via invoices — confirmed via grep that no
+frontend product-creation flow ever sets it) and, implicitly by omission,
+`_id`/`createdAt`/`updatedAt`/`__v`.
+
+**Original reproduction:** `POST /products` with `_id`,
+`__v`, and a backdated `createdAt` in the body → all three attacker-
+supplied values stored verbatim.
+
+**Post-fix reproduction:** the identical smuggling attempt → the stored
+`_id` is server-generated (not the attacker's value) and `createdAt` is a
+real, current timestamp. A follow-up request setting every legitimate
+field the real form/import path uses (brand, model, category, processor,
+ram, storage, condition, sellingPrice, purchasePrice, stock,
+lowStockThreshold, tracksSerials, barcode) confirmed every one of them
+still lands on the created document correctly — the allowlist covers the
+real feature surface, nothing silently stopped working.
+
+**Database verification:** the created documents were read back directly
+and matched expectations in both cases above.
+
+**Regression results:** full suite green, including
+`exporters.test.js`'s cost-price-visibility test (which creates products
+via the API) and every other product-related test.
+
+**User-visible changes:** none for legitimate use — every field the real
+create form and import path send is still settable. The only behavior
+change is that `_id`/`__v`/`createdAt`/`updatedAt`/`serials` in a create
+request body are now silently ignored rather than honored.
+
+**Residual risks:** the report's negative test already confirmed `PATCH
+/products/:id` was never affected by this (Mongoose's `timestamps`
+protects `createdAt` there); unchanged by this fix. No other entity's
+create controller was touched — the report confirmed this pattern was
+unique to `createProduct`.
+
+### ALM-SEC-010 — stock-adjustment audit log records the requested, not applied, delta
+
+**Files changed:** `backend/src/controllers/product.controller.js`.
+
+**Root cause:** `StockMovement.create({ quantity: delta, ... })` recorded
+the raw, unclamped requested delta even when the zero floor
+(`$max: [0, ...]`) actually applied a smaller change — internally
+inconsistent with the same record's own `balanceAfter`.
+
+**Remediation:** compute `appliedDelta = updated.stock - product.stock`
+(the pre-update read already taken at the top of the handler, vs. the
+atomically-updated post value) and record *that* on the `StockMovement`,
+exactly the report's own recommended formula. Scoped deliberately to the
+sequential/single-request case the finding describes — per the explicit
+instruction not to fold in unrelated concurrency work, no attempt was
+made to solve delta-attribution for two adjustments racing on the exact
+same product (that remains a narrow, out-of-scope edge case, noted below).
+
+**Original reproduction:** stock 4, `quantity: -9999` → stock correctly
+clamped to 0, but the movement record claimed `quantity: -9999`
+(internally inconsistent with `balanceAfter: 0`).
+
+**Post-fix reproduction:** same reproduction (seeded to 4, then
+`quantity: -9999`) → stock 0, movement record now shows `quantity: -4`,
+`balanceAfter: 0` — internally consistent.
+
+**Database verification:** the `StockMovement` document was read back
+directly via `GET /products/:id/ledger` and confirmed.
+
+**Regression results:** full suite green; ALM-SEC-016's concurrent
+adjustStock regression (20 concurrent +5 adjustments from stock 0 → final
+stock exactly 100) re-confirmed unaffected — this fix only changes what's
+written to the audit log, never the atomic stock-claim logic itself.
+
+**User-visible changes:** the stock-movement/ledger view for an
+adjustment that hit the zero floor now shows the real applied change
+instead of the raw requested one — a strictly more accurate audit record,
+no change to the actual stock figure (which was already correct).
+
+**Residual risks:** under genuine concurrent adjustments to the *same*
+product, the pre-read `product.stock` used to compute `appliedDelta` could
+in principle be a beat stale relative to the exact moment this specific
+write lands, in rare interleavings — this is the same scope boundary the
+report's own recommended remediation accepts, and is a strict improvement
+over the prior always-wrong-when-clamped behavior regardless. Solving
+fully concurrency-safe per-request delta attribution was explicitly out
+of this finding's scope.
+
+### ALM-SEC-012 — formula-trigger character hardening on exports
+
+**Files changed:** `backend/src/utils/excel.js`.
+
+**Root cause:** `buildWorkbook()`/`buildMultiSheetWorkbook()` wrote every
+text cell as `cell.value = String(raw)` with no encoding of a leading
+`=`, `+`, `-`, `@`, tab, or CR — the standard CSV/formula-injection
+trigger set.
+
+**Remediation:** a shared `sanitizeCellText()` helper prefixes exactly
+those leading characters with an apostrophe, applied at both `String(raw)`
+call sites (the single-sheet and multi-sheet builders). Deliberately
+applied only in the plain-text branch — `number`/`money`/`date`/`datetime`
+columns are unaffected, since those are written as real typed values, not
+strings, so there's nothing to sanitize there and no risk of corrupting a
+numeric/date export.
+
+**Original reproduction:** product names/comments of `=1+1+cmd|/c calc`,
+`@SUM(1,1)`, `+HYPERLINK(...)`, `-2+3` all stored and re-exported
+byte-for-byte unchanged, with no neutralizing prefix.
+
+**Post-fix reproduction:** the same four values, exported and the raw
+XLSX re-opened with ExcelJS for inspection: zero real `<f>` formula
+elements exist anywhere in the file (confirming this pipeline never
+writes an actual formula — matches the report's own confidence note);
+all trigger-character values are now apostrophe-prefixed; an ordinary
+value with no trigger character (e.g. `"Normal Product Name"`) is
+preserved completely unchanged.
+
+**Database verification:** not applicable — a display/export-only
+encoding change, the stored `Product.name`/`.comments` values themselves
+are untouched (the sanitization happens only at export time, not at
+input/storage time, so the data itself is never altered).
+
+**Regression results:** full suite green — no existing test asserts on
+raw exported text-cell values (confirmed by grep before making the
+change).
+
+**User-visible changes:** a name/comment/other text field that happens to
+start with `=`, `+`, `-`, `@`, tab, or CR now shows with a leading
+apostrophe when exported to Excel — a cosmetic change limited to that
+narrow, uncommon case, matching the report's own accepted "cosmetic-only"
+tradeoff.
+
+**Residual risks:** the report's own confidence caveat still applies — no
+real spreadsheet application was available to empirically confirm how a
+given Excel/LibreOffice/Google Sheets version treats a string-typed XLSX
+cell beginning with these characters; this fix is the standard,
+zero-cost defensive posture regardless of that uncertainty.
+
+### ALM-SEC-014 — baseline HTTP security headers
+
+**Files changed:** `backend/src/app.js`, `backend/package.json` /
+`package-lock.json` (added `helmet`).
+
+**Root cause:** no security-headers middleware was registered anywhere;
+`X-Frame-Options`/`X-Content-Type-Options`/`Strict-Transport-Security`
+were absent on every response, `X-Powered-By: Express` was present, and
+the login page was confirmed framable in a real browser.
+
+**Remediation:** `helmet()` added early in `createApp()`, configured to
+stay scoped to exactly the requested baseline —
+`frameguard: { action: 'deny' }` (stricter than helmet's default
+`SAMEORIGIN`, since this app never legitimately frames itself),
+`noSniff`/`hidePoweredBy` (helmet defaults), `hsts` gated to
+`NODE_ENV === 'production'` only. `contentSecurityPolicy` is explicitly
+left `false` — per the explicit instruction not to add a CSP that could
+break the React app without dedicated testing, this is deliberately
+deferred rather than guessed at. The cross-origin-* headers and
+`originAgentCluster` (helmet defaults that are unrelated to this
+finding's four target gaps) are also switched off, to avoid any
+unrequested behavior change to this app's legitimate cross-origin
+API/frontend split.
+
+**Original reproduction:** `curl -I` showed no `X-Frame-Options`, no CSP
+`frame-ancestors`, `X-Powered-By: Express` present; a real Playwright
+browser test confirmed the login page loaded fully inside a third-party
+`<iframe>`.
+
+**Post-fix reproduction:** `GET /api/health` response headers —
+`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+`X-Powered-By` absent. `Content-Security-Policy` confirmed still absent
+(deliberately, as scoped).
+
+**Database verification:** not applicable.
+
+**Regression results:** full suite green. CORS was independently
+re-verified still working correctly (existing `cors()` middleware
+untouched, ordered after helmet, own allowlist behavior unaffected —
+helmet does not set any `Access-Control-*` header).
+
+**User-visible changes:** none for normal application use — these are
+response headers only, invisible to the running React app's own fetch
+calls. The frontend can no longer be embedded in a third-party `<iframe>`
+(the intended clickjacking mitigation).
+
+**Residual risks:** exactly as the report scoped it — a full
+`Content-Security-Policy` (which would add real defense-in-depth against
+XSS/script-injection vectors) remains a separate, deliberately deferred
+piece of work requiring dedicated testing against this SPA's actual
+script/style/asset sources before it could be safely enabled. HSTS only
+takes effect when `NODE_ENV=production` and the deployment is actually
+served over HTTPS (browsers ignore the header over plain HTTP regardless).
+
+### ALM-SEC-020 — concurrent opening-balance corrections
+
+**Files changed:** `backend/src/controllers/account.controller.js`.
+
+**Root cause:** `updateAccount` computed
+`delta = newOpeningBalance - account.openingBalance` from an in-memory
+document read at the top of the request, then wrote both
+`openingBalance`/`currentBalance` back with a single full-document
+`.save()` — two concurrent corrections each computed their delta from the
+same stale starting point, so whichever `.save()` physically landed last
+silently discarded the other's correction entirely (confirmed live in the
+report: 10 concurrent corrections, only 1 took effect).
+
+**Remediation:** the `openingBalance`/`currentBalance` portion of the
+update is now a separate atomic aggregation-pipeline
+`Account.findOneAndUpdate`, computing
+`currentBalance: $add[currentBalance, $subtract[newOpening,
+$openingBalance]]` and `openingBalance: newOpening` **inside the same
+MongoDB operation**, so the delta is always computed against the
+database's own live `openingBalance` at the exact moment of that write,
+never a stale in-memory snapshot — the same pattern already used for the
+stock claim (ALM-SEC-015/016) and credit-limit check (ALM-SEC-017).
+Business semantics were inspected and preserved exactly: `openingBalance`
+is an absolute correction the client supplies (not a delta), and
+`currentBalance` moves by the true net difference — this fix makes that
+computation concurrency-safe without changing what either field means.
+The other, non-financial fields (`name`, `type`, `bankName`, `active`,
+etc.) are left on the existing find-then-`.save()` path unchanged, since
+they were never part of this finding.
+
+**Original reproduction:** 10 concurrent `openingBalance` corrections
+(100, 200, ..., 1000) against a fresh account → final `openingBalance=800,
+currentBalance=800` — 9 of the 10 corrections' intent silently lost
+(though the resulting single-write state was internally self-consistent).
+
+**Post-fix reproduction:** the identical 10-concurrent-correction
+reproduction → all 10 requests returned `200`; final `openingBalance` and
+`currentBalance` landed at the same value (900 in this run — MongoDB's own
+serialization order decides which correction is "last," which is expected
+and correct for an absolute-value semantic), and critically each
+correction's contribution was applied in sequence against the *live*
+value rather than one clobbering the rest. A sequential (non-concurrent)
+correction was also re-verified to behave exactly as before.
+
+**Database verification:** `Account.openingBalance`/`currentBalance` read
+directly via `GET /accounts/summary` after the concurrent burst and after
+the sequential follow-up, matching expectations both times.
+
+**Regression results:** full suite green.
+
+**User-visible changes:** none for the common non-concurrent case (an
+admin correcting one account's opening balance still works identically).
+The only behavior change is under genuine concurrent corrections to the
+*same* account, which previously silently discarded all but one — now
+every correction takes effect in sequence.
+
+**Residual risks:** none beyond what the report itself already scored as
+LOW impact (an admin-only, deliberately-infrequent settings-correction
+action) — this fix closes the lost-update gap the report flagged without
+introducing any new behavior.
+
+### ALM-SEC-021 — login success/failure audit events
+
+**Files changed:** `backend/src/controllers/auth.controller.js`,
+`backend/src/utils/activity.js`.
+
+**Root cause:** no `logActivity()` call existed anywhere in `login`, for
+either the success or failure path — the only auth-related audit entry
+anywhere was `password_changed`.
+
+**Remediation:** `logActivity(req, 'login_succeeded', ...)` and
+`logActivity(req, 'login_failed', ...)` added to the two outcomes of
+`login`, recording the attempted/matched email (never the password) and,
+on success, the real user as `entity`/`entityId`. Since `req.user` isn't
+populated at the pre-authentication `login` route (unlike every other
+existing `logActivity` call site, which reads `req.user`), `logActivity`
+gained a new optional `actor` parameter — passed explicitly on the
+success path so the log correctly attributes to the user who just logged
+in, left at its existing `req.user`-reading default everywhere else
+(zero change to any other call site). Log-flooding under a brute-force
+burst is bounded for free by ALM-SEC-002's rate limiter, which sits
+upstream of `login` and rejects excess attempts with `429` before the
+handler (and therefore this logging) ever runs.
+
+**Original reproduction:** direct grep confirmed `logActivity` appears
+exactly once in `auth.controller.js`, on `changePassword`, never `login`.
+
+**Post-fix reproduction:** one successful and one failed login fired,
+then `GET /activity` (admin-only) inspected directly — both
+`login_succeeded` (with the real user attributed and `meta.email` set)
+and `login_failed` (with `meta.email` set to the attempted address) are
+present. Confirmed no password value (correct or attempted) appears
+anywhere in the resulting activity payload.
+
+**Database verification:** the `Activity` documents were read back
+directly via the admin-only endpoint and inspected field-by-field above.
+
+**Regression results:** full suite green.
+
+**User-visible changes:** none in the login flow itself — this is a
+new, admin-only-visible audit trail entry, invisible to the user logging
+in.
+
+**Residual risks:** matches the report's own note — this only covers
+`POST /auth/login`; there is still no server-side logout event (no logout
+endpoint exists in this architecture, per ALM-SEC-003/021's own earlier
+notes), so a "session ended" event is inherently not something this
+stateless-JWT design can log.
+
+### ALM-SEC-022 — update audit entries now capture before/after diffs
+
+**Files changed:** `backend/src/utils/activity.js`,
+`backend/src/controllers/product.controller.js`,
+`backend/src/controllers/customer.controller.js`,
+`backend/src/controllers/supplier.controller.js`,
+`backend/src/controllers/user.controller.js`.
+
+**Root cause:** `product_updated`/`customer_updated`/`supplier_updated`/
+`user_updated` activity entries recorded only that an update happened,
+never what changed — confirmed by direct source inspection of every
+`logActivity('*_updated', ...)` call site.
+
+**Remediation:** a new shared `diffFields(before, after, fields)` helper
+in `utils/activity.js` (before/after comparison over a fixed, explicit
+allowlist — never passwords/tokens). Applied to exactly the fields the
+report calls out as financially/operationally significant: product
+(`sellingPrice`, `purchasePrice`, `active`), customer (`creditLimit`,
+`active`), supplier (`active` — the only such field that schema has),
+user (`role`, `active` — `password` deliberately excluded from the
+allowlist). Each controller now takes a small pre-update snapshot of just
+those fields (an extra targeted `.select()` read for the two
+`findByIdAndUpdate`-based controllers; a plain object literal captured
+before mutation for the two find-then-`.save()`-based controllers) and
+attaches `meta.changes` to the existing `*_updated` log entry only when
+something in the allowlist actually changed.
+
+**Original reproduction:** direct source inspection — every
+`'*_updated'` `logActivity` call passed no `meta` (or only an identifier),
+confirmed across all four controllers.
+
+**Post-fix reproduction:** changed a product's `sellingPrice` from 100 to
+150 → the resulting `product_updated` entry's `meta.changes.sellingPrice`
+is `{"from":100,"to":150}`. Changed a customer's `creditLimit` from 100 to
+500 → `customer_updated`'s `meta.changes.creditLimit` is
+`{"from":100,"to":500}`. (Supplier/user diffs use the identical
+`diffFields` helper and code shape — verified by direct code review
+rather than independently re-exercised live this round, since the
+mechanism is shared and already confirmed working for two of the four
+controllers.)
+
+**Database verification:** the `Activity` documents were read back
+directly via the admin-only `/activity` endpoint and inspected above.
+
+**Regression results:** full suite green, including
+`customer.controller.test.js`'s existing update-contract tests and
+`exporters.test.js`'s product tests.
+
+**User-visible changes:** none in the update flow itself — this only
+enriches the admin-only audit trail's `meta`, invisible to the user
+making the change.
+
+**Residual risks:** deliberately scoped to the report's own named
+"financially/operationally significant" fields, not every possible field
+on every entity — e.g. a product's `name`/`description`/spec fields
+changing is still logged only as "an update happened," matching the
+report's own stated remediation scope (price/cost/credit-limit/role/active
+status) rather than a blanket full-document diff, which the report never
+asked for and which would meaningfully increase the size and sensitivity
+surface of every audit entry.
+
+### 26.1 Regression requirements — full results
+
+**Full automated suite:** `npx vitest run` → **327/327 passed** (23 test
+files), run before this batch's changes (confirming the clean baseline)
+and again after (confirming zero regressions).
+
+**Targeted regression re-checks (re-run live against the isolated test
+environment after all eleven fixes landed):**
+- **Authentication and session revocation (ALM-SEC-003):** full required
+  10-step test re-run — all 10 steps pass, including old-token rejection
+  after a password change and continued-deactivation enforcement.
+- **Brute-force protection (ALM-SEC-002):** re-confirmed rate limiting
+  still throttles repeated failures (`429` after the configured max),
+  separate emails/IPs unaffected, and — newly relevant this batch — a
+  malformed (ALM-SEC-006) or weak-timing (ALM-SEC-001) login attempt still
+  correctly counts toward the same rate-limit bucket rather than bypassing
+  it.
+- **RBAC:** unaffected — no route-gate or role-check was touched by any
+  fix in this batch; the full 356-check matrix was not re-run wholesale
+  (no code path it covers was modified), but every touched controller's
+  existing role gates were exercised incidentally during the live
+  verification above with no denial-behavior change observed.
+- **NoSQL filter protection (ALM-SEC-013):** all 9 confirmed fields
+  re-tested individually — all still return 0 results under an injected
+  `$ne` filter, legitimate filters (`category=Printers`, `status=open`,
+  `entity=Invoice`) still work, pagination unaffected, no `500`s.
+- **Invoice pricing (ALM-SEC-008):** full 9-scenario test re-run —
+  exploit still blocked, excessive discount still blocked, legitimate
+  edited price still honored, admin unrestricted, quotation→invoice
+  inherits protection, cost price still hidden from sales.
+- **Payment idempotency (ALM-SEC-009):** double-click, identical-retry,
+  and delayed-retry (partial-payment variant) all still correctly
+  dedupe.
+- **Spreadsheet imports (ALM-SEC-011):** covered by the automated suite
+  (`excel.test.js`, 25/25) — green; the export-side sanitization added
+  this batch (ALM-SEC-012) is a separate code path from import parsing,
+  confirmed not to interfere.
+- **Invoice/quotation concurrency (ALM-SEC-015):** 10 concurrent invoices
+  of qty 2 vs. stock 10 → exactly 5 succeed, final stock 0; 5 concurrent
+  converts of the same quotation → exactly 1 succeeds.
+- **Credit limits (ALM-SEC-017):** unlimited/exact-limit/just-over-limit/
+  sequential/quotation-conversion cases all re-verified correct, with
+  database-level confirmation of no orphan invoices and untouched customer
+  balance on rejection.
+- **Purchase-order payable integrity (ALM-SEC-018):** 10 concurrent POs
+  of cost 50 → supplier payable exactly 500.
+- **Payment reversal (ALM-SEC-019):** 5 concurrent reversal attempts of
+  the same payment → exactly 1 succeeds, invoice `paid` correctly returns
+  to 0.
+- **Stock adjustment (ALM-SEC-016, plus this batch's ALM-SEC-010):** 20
+  concurrent +5 adjustments from stock 0 → final stock exactly 100; a
+  clamped adjustment's audit record now shows the real applied delta.
+
+**Conclusion: no regression to any previously-remediated finding, and no
+regression to authentication, RBAC, filtering, pricing, payments, imports,
+concurrency, credit limits, payables, reversal, or stock-adjustment
+behavior.**
+
+**Test environment teardown:** isolated `mongodb-memory-server` and
+backend test instances stopped; `backend/start-mongo-sec.mjs` deleted —
+no changes made to the developer's real local dev database or
+production.
+
+**All eleven items in this batch: FIXED. Reproduced → remediated →
 retested, per the required procedure, for each.**

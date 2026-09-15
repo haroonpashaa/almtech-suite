@@ -24,6 +24,22 @@ if (isProd) {
     missing.push('MONGO_URI        — production database connection string (MONGODB_URI is also accepted)');
   }
   if (!process.env.CORS_ORIGIN) missing.push('CORS_ORIGIN      — the exact origin of your frontend, e.g. https://your-domain');
+
+  // ALM-SEC-005: refuse to start in production with a JWT_SECRET that is
+  // either the literal placeholder shipped in .env.example (publicly
+  // visible in the repo, so not a secret at all once an operator forgets
+  // to rotate it) or too short to carry meaningful entropy. JWT_SECRET is
+  // symmetric — anyone who knows it can forge a validly-signed token for
+  // any user, including an admin. The configured value itself is never
+  // logged or included in this message, only the fact that it failed the
+  // check.
+  const jwtSecret = process.env.JWT_SECRET || '';
+  const KNOWN_EXAMPLE_JWT_SECRETS = new Set(['replace-with-a-long-random-string']);
+  if (jwtSecret && (KNOWN_EXAMPLE_JWT_SECRETS.has(jwtSecret) || jwtSecret.length < 32)) {
+    missing.push(
+      'JWT_SECRET       — set to a long, randomly generated value (32+ characters) that has never appeared in .env.example or any other documentation'
+    );
+  }
 }
 if (missing.length) {
   console.error(

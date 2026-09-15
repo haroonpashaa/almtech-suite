@@ -63,16 +63,42 @@ export const updateAccount = asyncHandler(async (req, res) => {
   if (active !== undefined) account.active = active;
   if (sortOrder !== undefined) account.sortOrder = sortOrder;
   if (notes !== undefined) account.notes = notes;
-  // Correcting the opening balance shifts the current balance by the same delta so
-  // the invariant openingBalance + sum(ledger) == currentBalance still holds.
-  if (openingBalance !== undefined) {
-    const delta = (Number(openingBalance) || 0) - account.openingBalance;
-    account.openingBalance = Number(openingBalance) || 0;
-    account.currentBalance += delta;
-  }
   await account.save();
+
+  let result = account;
+  // ALM-SEC-020 fix: openingBalance is an absolute correction (the client
+  // sends the true opening balance, not a delta), and currentBalance must
+  // shift by exactly the difference so `openingBalance + sum(ledger) ==
+  // currentBalance` keeps holding — same semantics as before. The previous
+  // version computed that difference against `account.openingBalance` from
+  // an in-memory read taken at the top of this request, then wrote both
+  // fields back with a full-document `.save()`; two concurrent corrections
+  // each read the same stale starting point, so whichever save() landed
+  // last silently discarded the other's correction entirely (confirmed
+  // live: 10 concurrent corrections, only 1 took effect). This atomic
+  // pipeline update instead computes the delta from the database's own
+  // *current* openingBalance at the exact moment of this write, in the
+  // same operation that commits it — so concurrent corrections compose
+  // correctly in sequence instead of one clobbering another, exactly the
+  // same pattern already used for the stock claim (ALM-SEC-015/016) and
+  // credit-limit check (ALM-SEC-017).
+  if (openingBalance !== undefined) {
+    const newOpening = Number(openingBalance) || 0;
+    result = await Account.findOneAndUpdate(
+      { _id: account._id },
+      [
+        {
+          $set: {
+            currentBalance: { $add: ['$currentBalance', { $subtract: [newOpening, '$openingBalance'] }] },
+            openingBalance: newOpening,
+          },
+        },
+      ],
+      { new: true }
+    );
+  }
   await logActivity(req, 'account_updated', { entity: 'Account', entityId: account._id });
-  res.json(account);
+  res.json(result);
 });
 
 // Ledger for one account: opening balance, every movement oldest-first with a

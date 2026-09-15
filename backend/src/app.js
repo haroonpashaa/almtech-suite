@@ -6,6 +6,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import morgan from 'morgan';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,6 +45,30 @@ export function createApp({ serveFrontend = true } = {}) {
   const corsOrigin = process.env.CORS_ORIGIN
     ? process.env.CORS_ORIGIN.split(',').map((o) => o.trim()).filter(Boolean)
     : '*';
+  // ALM-SEC-014: baseline security headers. `contentSecurityPolicy` is left
+  // off deliberately — a real CSP needs to be built and tested against this
+  // specific SPA's script/style/asset sources before it can be safely
+  // enabled, and shipping a wrong one risks breaking the app outright,
+  // which was explicitly out of scope for this fix. `frameguard: 'deny'`
+  // (stricter than helmet's `SAMEORIGIN` default — this app never
+  // legitimately frames itself) closes the clickjacking precondition the
+  // assessment demonstrated; `noSniff`/`hidePoweredBy` are helmet's
+  // defaults already. The cross-origin-* headers and `originAgentCluster`
+  // are switched off to stay scoped to exactly the requested baseline
+  // (clickjacking, MIME-sniffing, fingerprinting, HSTS) without changing
+  // any other cross-origin behavior this app relies on (the API and
+  // frontend are served from different origins in production).
+  app.use(
+    helmet({
+      contentSecurityPolicy: false,
+      crossOriginEmbedderPolicy: false,
+      crossOriginOpenerPolicy: false,
+      crossOriginResourcePolicy: false,
+      originAgentCluster: false,
+      frameguard: { action: 'deny' },
+      hsts: process.env.NODE_ENV === 'production' ? undefined : false,
+    })
+  );
   // X-Total-Count must be readable by the browser, otherwise a cross-origin
   // frontend cannot tell the user how many records a capped list is hiding.
   app.use(cors({ origin: corsOrigin, credentials: true, exposedHeaders: ['X-Total-Count'] }));

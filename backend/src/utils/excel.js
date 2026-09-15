@@ -1,5 +1,23 @@
 import ExcelJS from 'exceljs';
 
+// ALM-SEC-012: defense-in-depth against a downstream spreadsheet program
+// interpreting an exported text cell as a formula. ExcelJS already writes
+// these as explicit string-typed XLSX cells — a materially safer situation
+// than a raw CSV export, where a program infers "is this a formula" purely
+// from the leading character — but prefixing the standard CSV-injection
+// trigger set with an apostrophe costs nothing for the overwhelming
+// majority of real values (which never start with these characters) and
+// closes the gap defensively for any spreadsheet program/version/workflow
+// that infers formula-ness from content rather than from XLSX's own
+// cell-type metadata. Never applied to number/date-typed cells — those are
+// written as their real numeric/date value, never a string, so there's
+// nothing to sanitize there.
+const FORMULA_TRIGGER = /^[=+\-@\t\r]/;
+function sanitizeCellText(value) {
+  const s = String(value);
+  return FORMULA_TRIGGER.test(s) ? `'${s}` : s;
+}
+
 // ---------------------------------------------------------------------------
 // Workbook reading
 // ---------------------------------------------------------------------------
@@ -318,7 +336,7 @@ export async function buildWorkbook({ sheetName = 'Sheet1', columns, rows, title
         cell.value = Number.isNaN(d.getTime()) ? null : d;
         cell.numFmt = 'dd mmm yyyy hh:mm';
       } else {
-        cell.value = String(raw);
+        cell.value = sanitizeCellText(raw);
       }
     });
   });
@@ -355,7 +373,7 @@ export async function buildMultiSheetWorkbook(sheets) {
           const d = raw instanceof Date ? raw : new Date(raw);
           cell.value = Number.isNaN(d.getTime()) ? null : d;
           cell.numFmt = 'dd mmm yyyy';
-        } else cell.value = String(raw);
+        } else cell.value = sanitizeCellText(raw);
       });
     });
     s.columns.forEach((c, i) => (ws.getColumn(i + 1).width = c.width || 18));

@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 import Supplier from '../models/Supplier.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 import OpeningBalance from '../models/OpeningBalance.js';
-import { logActivity } from '../utils/activity.js';
+import { logActivity, diffFields } from '../utils/activity.js';
 import { resolvePaging, runPaged } from '../utils/pagination.js';
 
 // ---------------------------------------------------------------------------
@@ -153,9 +153,13 @@ export const createSupplier = asyncHandler(async (req, res) => {
   res.status(201).json(supplier);
 });
 
+// ALM-SEC-022: the significant fields worth a before/after diff on update.
+const SUPPLIER_AUDIT_FIELDS = ['active'];
+
 export const updateSupplier = asyncHandler(async (req, res) => {
   const supplier = await findSupplier(res, req.params.id);
   const data = pickWritable(req.body);
+  const before = { active: supplier.active };
 
   if (data.name !== undefined && !data.name) {
     res.status(400);
@@ -170,7 +174,12 @@ export const updateSupplier = asyncHandler(async (req, res) => {
 
   Object.assign(supplier, data);
   await supplier.save();
-  await logActivity(req, 'supplier_updated', { entity: 'Supplier', entityId: supplier._id });
+  const changes = diffFields(before, supplier, SUPPLIER_AUDIT_FIELDS);
+  await logActivity(req, 'supplier_updated', {
+    entity: 'Supplier',
+    entityId: supplier._id,
+    meta: Object.keys(changes).length ? { changes } : undefined,
+  });
   res.json(supplier);
 });
 
