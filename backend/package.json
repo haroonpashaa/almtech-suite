@@ -11,7 +11,8 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "seed": "node src/scripts/seed.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build": "echo \"no build step required for the backend\""
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
