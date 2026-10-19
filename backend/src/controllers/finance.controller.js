@@ -7,6 +7,7 @@ import Supplier from '../models/Supplier.js';
 import OpeningBalance from '../models/OpeningBalance.js';
 import { logActivity } from '../utils/activity.js';
 import { requireReason } from '../services/paymentReversal.js';
+import { createRateSnapshot, getCurrentRate, roundCurrency } from '../services/exchangeRate.service.js';
 
 // ---------------------------------------------------------------------------
 // Receivables & Payables
@@ -33,6 +34,16 @@ const DAY = 86400000;
 // issued. The same reasoning applies to cancelled purchase orders.
 const OPEN_INVOICE_MATCH = { status: { $nin: ['cancelled', 'returned', 'draft'] }, balance: { $gt: 0 } };
 const OPEN_PO_MATCH = { status: { $nin: ['cancelled', 'draft'] }, balance: { $gt: 0 } };
+const payableField = (currency) => currency === 'GBP' ? 'payableGBP' : 'payable';
+
+export const exchangeRate = asyncHandler(async (req, res) => {
+  const { from, to } = req.query;
+  if (!['GBP', 'PKR'].includes(from) || !['GBP', 'PKR'].includes(to)) {
+    res.status(400); throw new Error('Exchange rate must be requested between GBP and PKR');
+  }
+  const quote = await getCurrentRate(from, to);
+  res.json({ ...quote, validUntil: new Date(quote.validUntil) });
+});
 
 const BUCKETS = ['current', 'd1_30', 'd31_60', 'd61_90', 'd90_plus'];
 
@@ -83,9 +94,11 @@ function dateMatch(field, from, to) {
 // order behind them, so they are merged into the rows, the aging buckets and the totals
 // here. Without this they would show up only as an unexplained reconciliation gap.
 // They are aged from their as-of date, which is a real recorded date.
-async function openingBalanceRows(entityType, PartyModel, nameFields, now) {
+async function openingBalanceRows(entityType, PartyModel, nameFields, now, currency) {
+  const match = { entityType };
+  if (currency) match.$expr = { $eq: [{ $ifNull: ['$currency', 'PKR'] }, currency] };
   const entries = await OpeningBalance.aggregate([
-    { $match: { entityType } },
+    { $match: match },
     { $group: { _id: '$entity', amount: { $sum: '$amount' }, oldest: { $min: '$asOf' } } },
   ]);
   if (!entries.length) return { byEntity: new Map(), total: 0 };
@@ -302,9 +315,13 @@ export const customerReceivable = asyncHandler(async (req, res) => {
 // ---------------------------------------------------------------------------
 export const payables = asyncHandler(async (req, res) => {
   const { q, from, to, bucket, status } = req.query;
+  const currency = req.query.currency || 'PKR';
+  if (!['GBP', 'PKR'].includes(currency)) { res.status(400); throw new Error('Payable currency must be GBP or PKR'); }
+  const field = payableField(currency);
   const now = new Date();
 
   const match = { ...OPEN_PO_MATCH };
+  match.$expr = { $eq: [{ $ifNull: ['$currency', 'PKR'] }, currency] };
   if (status) match.status = status;
   const dm = dateMatch('orderedAt', from, to);
   if (dm) Object.assign(match, dm);
@@ -340,7 +357,7 @@ export const payables = asyncHandler(async (req, res) => {
       name: '$supplier.name',
       contactPerson: '$supplier.contactPerson',
       phone: '$supplier.phone',
-      storedPayable: '$supplier.payable',
+      storedPayable: `$supplier.${field}`,
       total: 1,
       paid: 1,
       outstanding: 1,
@@ -354,7 +371,7 @@ export const payables = asyncHandler(async (req, res) => {
 
   let rows = await PurchaseOrder.aggregate(pipeline);
 
-  const opening = await openingBalanceRows('supplier', Supplier, 'name contactPerson phone payable', now);
+  const opening = await openingBalanceRows('supplier', Supplier, 'name contactPerson phone payable payableGBP', now, currency);
   const obFilter = { q, from, to, searchFields: ['name', 'contactPerson', 'phone'] };
   for (const row of rows) {
     const ob = opening.byEntity.get(String(row.supplierId));
@@ -373,7 +390,7 @@ export const payables = asyncHandler(async (req, res) => {
     aging[bucketFor(ob.ageDays)] = ob.amount;
     rows.push({
       supplierId: ob.party._id, name: ob.party.name, contactPerson: ob.party.contactPerson, phone: ob.party.phone,
-      storedPayable: ob.party.payable, total: ob.amount, paid: 0, outstanding: ob.amount,
+      storedPayable: ob.party[field] || 0, total: ob.amount, paid: 0, outstanding: ob.amount,
       poCount: 0, oldestDate: ob.asOf, oldestAgeDays: ob.ageDays, openingBalance: ob.amount, aging,
     });
   }
@@ -389,12 +406,12 @@ export const payables = asyncHandler(async (req, res) => {
     const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
     supplierMatch.$or = [{ name: rx }, { contactPerson: rx }, { phone: rx }];
   }
-  const remaining = await Supplier.find(supplierMatch).select('name contactPerson phone payable').sort('name');
+  const remaining = await Supplier.find(supplierMatch).select('name contactPerson phone payable payableGBP').sort('name');
   for (const s of remaining) {
     if (covered.has(String(s._id))) continue;
     rows.push({
       supplierId: s._id, name: s.name, contactPerson: s.contactPerson, phone: s.phone,
-      storedPayable: s.payable, total: 0, paid: 0, outstanding: 0,
+      storedPayable: s[field] || 0, total: 0, paid: 0, outstanding: 0,
       poCount: 0, oldestDate: null, oldestAgeDays: 0, aging: emptyAging(),
     });
   }
@@ -404,15 +421,13 @@ export const payables = asyncHandler(async (req, res) => {
 
   const derivedTotal = rows.reduce((s, r) => s + r.outstanding, 0);
   const openingTotal = rows.reduce((s, r) => s + (r.openingBalance || 0), 0);
-  const storedAgg = await Supplier.aggregate([
-    { $match: { payable: { $gt: 0 } } },
-    { $group: { _id: null, total: { $sum: '$payable' } } },
-  ]);
+  const storedAgg = await Supplier.aggregate([{ $group: { _id: null, total: { $sum: { $ifNull: [`$${field}`, 0] } } } }]);
   const storedTotal = storedAgg[0]?.total || 0;
   const unfiltered = !q && !from && !to && !bucket && !status;
 
   res.json({
     agingBasis: 'transaction_date',
+    currency,
     rows,
     totalOutstanding: derivedTotal,
     openingBalances: openingTotal,
@@ -431,6 +446,9 @@ export const supplierPayable = asyncHandler(async (req, res) => {
     res.status(400);
     throw new Error('Invalid supplier id');
   }
+  const currency = req.query.currency || 'PKR';
+  if (!['GBP', 'PKR'].includes(currency)) { res.status(400); throw new Error('Payable currency must be GBP or PKR'); }
+  const field = payableField(currency);
   const supplier = await Supplier.findById(id);
   if (!supplier) {
     res.status(404);
@@ -438,11 +456,13 @@ export const supplierPayable = asyncHandler(async (req, res) => {
   }
   const now = new Date();
 
-  const pos = await PurchaseOrder.find({ supplier: supplier._id, ...OPEN_PO_MATCH }).sort('orderedAt');
+  const pos = await PurchaseOrder.find({ supplier: supplier._id, ...OPEN_PO_MATCH, $expr: { $eq: [{ $ifNull: ['$currency', 'PKR'] }, currency] } }).sort('orderedAt');
   const rows = pos.map((po) => {
     const ageDays = Math.floor((now - po.orderedAt) / DAY);
     return {
       _id: po._id,
+      currency,
+      fxSnapshot: po.fxSnapshots?.at(-1) || null,
       number: po.number,
       date: po.orderedAt,
       // Expected delivery date, surfaced for context only — it is not a payment due date.
@@ -461,7 +481,7 @@ export const supplierPayable = asyncHandler(async (req, res) => {
   for (const r of rows) aging[bucketFor(r.ageDays)] += r.balance;
 
   const obAgg = await OpeningBalance.aggregate([
-    { $match: { entityType: 'supplier', entity: supplier._id } },
+    { $match: { entityType: 'supplier', entity: supplier._id, $expr: { $eq: [{ $ifNull: ['$currency', 'PKR'] }, currency] } } },
     { $group: { _id: null, amount: { $sum: '$amount' }, oldest: { $min: '$asOf' } } },
   ]);
   const openingBalance = obAgg[0]?.amount || 0;
@@ -474,14 +494,15 @@ export const supplierPayable = asyncHandler(async (req, res) => {
 
   res.json({
     agingBasis: 'transaction_date',
+    currency,
     supplier,
     purchaseOrders: rows,
     openingBalance,
     total: rows.reduce((s, r) => s + r.total, 0),
     paid: rows.reduce((s, r) => s + r.paid, 0),
     outstanding,
-    storedPayable: supplier.payable,
-    reconciled: Math.abs(outstanding - supplier.payable) < 0.005,
+    storedPayable: supplier[field] || 0,
+    reconciled: Math.abs(outstanding - (supplier[field] || 0)) < 0.005,
     aging,
     oldestAgeDays: Math.max(openingAgeDays, ...rows.map((r) => r.ageDays), 0),
   });
@@ -505,50 +526,61 @@ export const adjustSupplierPayable = asyncHandler(async (req, res) => {
     throw new Error('Invalid supplier id');
   }
   const note = requireReason(res, req.body?.note);
+  const currency = req.body?.currency || 'PKR';
+  if (!['GBP', 'PKR'].includes(currency)) { res.status(400); throw new Error('Payable currency must be GBP or PKR'); }
   const newTotal = Number(req.body?.amount);
-  if (!Number.isFinite(newTotal) || newTotal < 0) {
+  if (!Number.isFinite(newTotal) || newTotal < 0 || Math.abs(newTotal - roundCurrency(newTotal)) > 1e-8) {
     res.status(400);
-    throw new Error('Enter a valid corrected payable amount (0 or more)');
+    throw new Error(`Enter a valid ${currency} corrected payable amount (0 or more, up to 2 decimal places)`);
   }
+  const expectedUpdatedAt = new Date(req.body?.expectedUpdatedAt);
+  if (!req.body?.expectedUpdatedAt || Number.isNaN(expectedUpdatedAt.getTime())) { res.status(400); throw new Error('Reload the supplier payable before editing it'); }
+  const idempotencyKey = typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey.trim() : '';
+  if (!idempotencyKey || idempotencyKey.length > 200) { res.status(400); throw new Error('A valid idempotency key is required'); }
 
   const supplier = await Supplier.findById(id);
   if (!supplier) {
     res.status(404);
     throw new Error('Supplier not found');
   }
-  const delta = Math.round((newTotal - supplier.payable) * 100) / 100;
+  if (supplier.updatedAt.getTime() !== expectedUpdatedAt.getTime()) { res.status(409); throw new Error('Supplier payable changed since it was loaded. Reload and try again.'); }
+  const field = payableField(currency);
+  const delta = roundCurrency(newTotal - (supplier[field] || 0));
   if (delta === 0) {
     res.status(400);
     throw new Error('The corrected amount matches the current payable — nothing to adjust');
   }
 
-  const adjustment = await OpeningBalance.create({
-    entityType: 'supplier',
-    entity: supplier._id,
-    entityName: supplier.name,
-    amount: delta,
-    reference: `manual-adjust:${Date.now()}`,
-    note,
-    createdBy: req.user._id,
-  });
+  const fxSnapshot = await createRateSnapshot(newTotal, currency, currency === 'GBP' ? 'PKR' : 'GBP');
+  let adjustment;
+  try {
+    adjustment = await OpeningBalance.create({
+      entityType: 'supplier', entity: supplier._id, entityName: supplier.name,
+      amount: delta, currency, fxSnapshot, idempotencyKey,
+      reference: `manual-adjust:${idempotencyKey}`, note, createdBy: req.user._id,
+    });
+  } catch (error) {
+    if (error?.code === 11000) { res.status(409); throw new Error('This payable adjustment has already been submitted'); }
+    throw error;
+  }
 
   const updated = await Supplier.findOneAndUpdate(
-    { _id: supplier._id },
-    { $inc: { payable: delta } },
+    { _id: supplier._id, updatedAt: expectedUpdatedAt },
+    { $inc: { [field]: delta } },
     { new: true }
   );
   if (!updated) {
     // Supplier vanished between the read above and this write — undo the audit
     // row rather than leave a recorded adjustment with nothing applied.
     await OpeningBalance.deleteOne({ _id: adjustment._id });
-    res.status(404);
-    throw new Error('Supplier not found');
+    res.status(409);
+    throw new Error('Supplier payable changed during the edit. Reload and try again.');
   }
 
   await logActivity(req, 'payable_adjusted', {
     entity: 'Supplier',
     entityId: supplier._id,
-    meta: { delta, newTotal, note },
+    meta: { delta, newTotal, currency, note, adjustmentId: adjustment._id },
   });
 
   res.status(201).json({ supplier: updated, adjustment });
@@ -562,27 +594,34 @@ export const position = asyncHandler(async (_req, res) => {
   const now = new Date();
   const [recAgg, payAgg, storedRec, storedPay] = await Promise.all([
     Invoice.aggregate([{ $match: OPEN_INVOICE_MATCH }, { $group: { _id: null, total: { $sum: '$balance' } } }]),
-    PurchaseOrder.aggregate([{ $match: OPEN_PO_MATCH }, { $group: { _id: null, total: { $sum: '$balance' } } }]),
+    PurchaseOrder.aggregate([{ $match: OPEN_PO_MATCH }, { $group: { _id: { $ifNull: ['$currency', 'PKR'] }, total: { $sum: '$balance' } } }]),
     Customer.aggregate([{ $match: { balance: { $gt: 0 } } }, { $group: { _id: null, total: { $sum: '$balance' } } }]),
-    Supplier.aggregate([{ $match: { payable: { $gt: 0 } } }, { $group: { _id: null, total: { $sum: '$payable' } } }]),
+    Supplier.aggregate([{ $group: { _id: null, PKR: { $sum: { $ifNull: ['$payable', 0] } }, GBP: { $sum: { $ifNull: ['$payableGBP', 0] } } } }]),
   ]);
 
   const [openRec, openPay] = await Promise.all([
     OpeningBalance.aggregate([{ $match: { entityType: 'customer' } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
-    OpeningBalance.aggregate([{ $match: { entityType: 'supplier' } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
+    OpeningBalance.aggregate([{ $match: { entityType: 'supplier' } }, { $group: { _id: { $ifNull: ['$currency', 'PKR'] }, total: { $sum: '$amount' } } }]),
   ]);
   const receivablesTotal = (recAgg[0]?.total || 0) + (openRec[0]?.total || 0);
-  const payablesTotal = (payAgg[0]?.total || 0) + (openPay[0]?.total || 0);
+  const payablesByCurrency = { PKR: 0, GBP: 0 };
+  for (const row of payAgg) payablesByCurrency[row._id] += row.total;
+  for (const row of openPay) if (payablesByCurrency[row._id] !== undefined) payablesByCurrency[row._id] += row.total;
+  const storedPayablesByCurrency = { PKR: storedPay[0]?.PKR || 0, GBP: storedPay[0]?.GBP || 0 };
+  const payablesTotal = payablesByCurrency.PKR;
 
   res.json({
     asOf: now,
     receivables: receivablesTotal,
     payables: payablesTotal,
+    payablesByCurrency,
     netPosition: receivablesTotal - payablesTotal,
     storedReceivables: storedRec[0]?.total || 0,
-    storedPayables: storedPay[0]?.total || 0,
+    storedPayables: storedPayablesByCurrency.PKR,
+    storedPayablesByCurrency,
     reconciled:
       Math.abs(receivablesTotal - (storedRec[0]?.total || 0)) < 0.005 &&
-      Math.abs(payablesTotal - (storedPay[0]?.total || 0)) < 0.005,
+      Math.abs(payablesByCurrency.PKR - storedPayablesByCurrency.PKR) < 0.005 &&
+      Math.abs(payablesByCurrency.GBP - storedPayablesByCurrency.GBP) < 0.005,
   });
 });

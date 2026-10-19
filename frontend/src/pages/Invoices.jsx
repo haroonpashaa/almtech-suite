@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { money, date } from '../lib/format.js';
 import { useCurrency } from '../hooks/useSettings.js';
@@ -7,6 +8,7 @@ import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
 import Money from '../components/Money.jsx';
 import { Badge } from '../components/ui.jsx';
+import { api } from '../api/client.js';
 
 const STATUSES = [
   { value: '', label: 'All' },
@@ -24,14 +26,17 @@ const statusTone = { paid: 'success', partial: 'warning', open: 'info', returned
 
 export default function Invoices() {
   const [status, setStatus] = useState('');
+  const [product, setProduct] = useState('');
+  const [model, setModel] = useState('');
   const currency = useCurrency();
+  const { data: productData } = useQuery({ queryKey: ['invoice-product-filters'], queryFn: async () => (await api.get('/products', { params: { limit: 500 } })).data });
   // Paged rather than capped: with 523 invoices the old call returned the newest
   // 500 and made the remaining 23 — including one carrying 210,000 outstanding —
   // unreachable from this screen.
   const list = usePagedList({
-    key: ['invoices', status],
+    key: ['invoices', status, product, model],
     path: '/invoices',
-    params: { status: status || undefined },
+    params: { status: status || undefined, product: product || undefined, model: model.trim() || undefined },
     limit: 50,
   });
 
@@ -59,6 +64,13 @@ export default function Invoices() {
               </button>
             ))}
           </div>
+          <label className="sr-only" htmlFor="invoices-product-filter">Product</label>
+          <select id="invoices-product-filter" className="select w-56" value={product} onChange={(e) => setProduct(e.target.value)}>
+            <option value="">All products</option>
+            {(productData?.items || []).map((p) => <option key={p._id} value={p._id}>{p.name} · {p.sku}</option>)}
+          </select>
+          <label className="sr-only" htmlFor="invoices-model-filter">Model</label>
+          <input id="invoices-model-filter" className="input w-44" value={model} onChange={(e) => setModel(e.target.value)} placeholder="Filter model…" />
           <span className="text-sm text-ink-400 ml-auto num">
             {list.total ?? 0} invoice{list.total === 1 ? '' : 's'}
           </span>

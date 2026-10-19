@@ -6,7 +6,6 @@ import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
 import { newIdempotencyKey } from '../lib/idempotency.js';
 import { money, date, datetime, errorMessage } from '../lib/format.js';
-import { useCurrency } from '../hooks/useSettings.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import DocumentActions from '../components/DocumentActions.jsx';
@@ -39,7 +38,13 @@ export default function PurchaseOrderDetail() {
     queryKey: ['accounts'],
     queryFn: async () => (await api.get('/accounts')).data,
   });
-  const currency = useCurrency();
+  const currency = po?.currency || 'PKR';
+  const fxQuote = useQuery({
+    enabled: false,
+    queryKey: ['po-current-fx', currency],
+    queryFn: async () => (await api.get('/finance/exchange-rate', { params: { from: currency, to: currency === 'GBP' ? 'PKR' : 'GBP' } })).data,
+  });
+  const fxSnapshot = po?.fxSnapshots?.at(-1);
 
   async function doReceive() {
     const list = Object.entries(receipts)
@@ -277,6 +282,16 @@ export default function PurchaseOrderDetail() {
               <span className="text-sm font-medium text-ink-900">Total</span>
               <span className="text-xl font-semibold num text-ink-900">{money(po.total, currency)}</span>
             </div>
+            {fxSnapshot ? (
+              <div className="mt-3 rounded-md bg-ink-25 p-3 text-xs text-ink-600">
+                Saved equivalent: {money(Math.round(po.total * fxSnapshot.rate * 100) / 100, fxSnapshot.toCurrency)} at {fxSnapshot.rate} {fxSnapshot.toCurrency}/{fxSnapshot.fromCurrency} · effective {new Date(fxSnapshot.effectiveAt).toLocaleString()} ({fxSnapshot.source})
+              </div>
+            ) : <div className="mt-3 rounded-md bg-amber-50 p-3 text-xs text-amber-800">No historical exchange-rate snapshot is available for this legacy payable.</div>}
+            <div className="mt-2">
+              <button type="button" className="btn-sm btn-secondary" onClick={() => fxQuote.refetch()} disabled={fxQuote.isFetching}>Refresh displayed equivalent</button>
+              {fxQuote.data && <p className="mt-1 text-xs text-ink-600">Current estimate: {money(Math.round(po.total * fxQuote.data.rate * 100) / 100, fxQuote.data.toCurrency)} · effective {new Date(fxQuote.data.effectiveAt).toLocaleString()}; this does not change the saved snapshot.</p>}
+              {fxQuote.isError && <p role="alert" className="mt-1 text-xs text-red-700">Current equivalent unavailable: {errorMessage(fxQuote.error)}{fxSnapshot ? ' The saved historical snapshot remains shown above.' : ''}</p>}
+            </div>
             <div className="mt-3 pt-3 border-t border-ink-100 space-y-1.5">
               <div className="flex justify-between text-sm"><span className="text-ink-500">Paid</span><span className="num text-emerald-600">{money(po.paid, currency)}</span></div>
               <div className="flex justify-between text-sm"><span className="text-ink-500">Balance</span><span className={`num font-medium ${po.balance > 0 ? 'text-amber-600' : 'text-ink-400'}`}>{money(po.balance, currency)}</span></div>
@@ -285,12 +300,12 @@ export default function PurchaseOrderDetail() {
           {has('admin') && po.balance > 0 && (
             <div className="card p-5">
               <h3 className="text-sm font-semibold text-ink-900 mb-3">Record Payment</h3>
-              <label htmlFor="purchaseorderdetail-amount-51" className="label">Amount</label>
+              <label htmlFor="purchaseorderdetail-amount-51" className="label">Amount ({currency})</label>
               <input id="purchaseorderdetail-amount-51" className="input num input-money" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={money(po.balance, currency)} />
               <label className="label mt-3">Pay From <span className="text-red-500">*</span></label>
               <select className="select" value={account} onChange={(e) => setAccount(e.target.value)}>
                 <option value="">— select account —</option>
-                {(accounts || []).map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
+                {(accounts || []).filter((a) => (a.currency || 'PKR') === currency).map((a) => <option key={a._id} value={a._id}>{a.name} · {a.currency || 'PKR'}</option>)}
               </select>
               <label className="label mt-3">Method</label>
               <select className="select" value={method} onChange={(e) => setMethod(e.target.value)}>

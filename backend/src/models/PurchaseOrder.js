@@ -19,6 +19,7 @@ const paymentLineSchema = new mongoose.Schema(
     date: { type: Date, default: Date.now },
     method: { type: String, enum: ['cash', 'bank', 'cheque', 'other'], default: 'bank' },
     amount: { type: Number, required: true, min: 0 },
+    currency: { type: String, enum: ['GBP', 'PKR'], default: 'PKR', required: true },
     reference: String,
     recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     // Which financial account the money left, and the ledger row recording it.
@@ -37,10 +38,26 @@ const paymentLineSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const fxSnapshotSchema = new mongoose.Schema({
+  fromCurrency: { type: String, enum: ['GBP', 'PKR'], required: true },
+  toCurrency: { type: String, enum: ['GBP', 'PKR'], required: true },
+  rate: { type: Number, required: true, min: 0 },
+  effectiveAt: { type: Date, required: true },
+  fetchedAt: { type: Date, required: true },
+  validUntil: { type: Date, required: true },
+  source: { type: String, required: true },
+  sourceIdentifier: { type: String, required: true },
+  originalAmount: { type: Number, required: true, min: 0 },
+  equivalentAmount: { type: Number, required: true, min: 0 },
+}, { _id: false });
+
 const poSchema = new mongoose.Schema(
   {
     number: { type: String, required: true, unique: true },
     supplier: { type: mongoose.Schema.Types.ObjectId, ref: 'Supplier', required: true },
+    deal: { type: mongoose.Schema.Types.ObjectId, ref: 'Deal', index: true },
+    currency: { type: String, enum: ['GBP', 'PKR'], default: 'PKR', required: true },
+    fxSnapshots: { type: [fxSnapshotSchema], default: [] },
     items: [lineSchema],
     subtotal: { type: Number, required: true, min: 0 },
     taxRate: { type: Number, default: 0, min: 0 },

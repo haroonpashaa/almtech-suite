@@ -8,6 +8,8 @@ import Account from '../models/Account.js';
 import Expense from '../models/Expense.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 
+const PKR_ONLY = { $expr: { $eq: [{ $ifNull: ['$currency', 'PKR'] }, 'PKR'] } };
+
 function dateRange(from, to) {
   const f = from ? new Date(from) : new Date(Date.now() - 30 * 86400000);
   const t = to ? new Date(to) : new Date();
@@ -24,15 +26,15 @@ export const dashboard = asyncHandler(async (req, res) => {
   const [salesToday, salesWeek, salesMonth, receivables, payables, lowStock, recentInvoices, topProducts, dailySeries] =
     await Promise.all([
       Invoice.aggregate([
-        { $match: { issuedAt: { $gte: startOfDay }, status: { $ne: 'cancelled' } } },
+        { $match: { issuedAt: { $gte: startOfDay }, status: { $ne: 'cancelled' }, ...PKR_ONLY } },
         { $group: { _id: null, total: { $sum: '$total' }, count: { $sum: 1 } } },
       ]),
       Invoice.aggregate([
-        { $match: { issuedAt: { $gte: startOfWeek }, status: { $ne: 'cancelled' } } },
+        { $match: { issuedAt: { $gte: startOfWeek }, status: { $ne: 'cancelled' }, ...PKR_ONLY } },
         { $group: { _id: null, total: { $sum: '$total' } } },
       ]),
       Invoice.aggregate([
-        { $match: { issuedAt: { $gte: startOfMonth }, status: { $ne: 'cancelled' } } },
+        { $match: { issuedAt: { $gte: startOfMonth }, status: { $ne: 'cancelled' }, ...PKR_ONLY } },
         { $group: { _id: null, total: { $sum: '$total' } } },
       ]),
       Customer.aggregate([{ $group: { _id: null, total: { $sum: '$balance' } } }]),
@@ -40,12 +42,12 @@ export const dashboard = asyncHandler(async (req, res) => {
       Product.find({ active: true, $expr: { $lte: ['$stock', '$lowStockThreshold'] } })
         .sort('stock')
         .limit(10),
-      Invoice.find({ status: { $ne: 'cancelled' } })
+      Invoice.find({ status: { $ne: 'cancelled' }, ...PKR_ONLY })
         .populate('customer', 'name company')
         .sort('-issuedAt')
         .limit(8),
       Invoice.aggregate([
-        { $match: { issuedAt: { $gte: startOfWeek }, status: { $ne: 'cancelled' } } },
+        { $match: { issuedAt: { $gte: startOfWeek }, status: { $ne: 'cancelled' }, ...PKR_ONLY } },
         { $unwind: '$items' },
         {
           $group: {
@@ -60,7 +62,7 @@ export const dashboard = asyncHandler(async (req, res) => {
         { $limit: 5 },
       ]),
       Invoice.aggregate([
-        { $match: { issuedAt: { $gte: new Date(Date.now() - 30 * 86400000) }, status: { $ne: 'cancelled' } } },
+        { $match: { issuedAt: { $gte: new Date(Date.now() - 30 * 86400000) }, status: { $ne: 'cancelled' }, ...PKR_ONLY } },
         {
           $group: {
             _id: { $dateToString: { format: '%Y-%m-%d', date: '$issuedAt' } },
@@ -77,7 +79,7 @@ export const dashboard = asyncHandler(async (req, res) => {
   // dashboard payload they got before, with the key absent.
   const accounts =
     req.user?.role === 'admin'
-      ? await Account.find({ active: true }).select('name type currentBalance').sort('sortOrder name')
+      ? await Account.find({ active: true }).select('name type currency currentBalance').sort('sortOrder name')
       : undefined;
 
   // Expense figures follow the same admin-only visibility rule as account balances.
@@ -86,11 +88,11 @@ export const dashboard = asyncHandler(async (req, res) => {
   if (req.user?.role === 'admin') {
     const [todayAgg, monthAgg] = await Promise.all([
       Expense.aggregate([
-        { $match: { status: 'posted', date: { $gte: startOfDay } } },
+        { $match: { status: 'posted', date: { $gte: startOfDay }, ...PKR_ONLY } },
         { $group: { _id: null, total: { $sum: '$amount' } } },
       ]),
       Expense.aggregate([
-        { $match: { status: 'posted', date: { $gte: startOfMonth } } },
+        { $match: { status: 'posted', date: { $gte: startOfMonth }, ...PKR_ONLY } },
         { $group: { _id: null, total: { $sum: '$amount' } } },
       ]),
     ]);
@@ -111,7 +113,12 @@ export const dashboard = asyncHandler(async (req, res) => {
     ...(accounts
       ? {
           accounts,
-          accountsTotal: accounts.reduce((s, a) => s + a.currentBalance, 0),
+          accountsTotal: accounts.filter((a) => (a.currency || 'PKR') === 'PKR').reduce((s, a) => s + a.currentBalance, 0),
+          accountsTotalByCurrency: accounts.reduce((totals, a) => {
+            const code = a.currency || 'PKR';
+            totals[code] = (totals[code] || 0) + a.currentBalance;
+            return totals;
+          }, {}),
           expensesToday,
           expensesMonth,
           // Money owed to the business minus money it owes. Not profit.
@@ -125,7 +132,7 @@ export const dailySales = asyncHandler(async (req, res) => {
   const date = req.query.date ? new Date(req.query.date) : new Date();
   const start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
   const end = new Date(start.getTime() + 86400000);
-  const invoices = await Invoice.find({ issuedAt: { $gte: start, $lt: end }, status: { $ne: 'cancelled' } })
+  const invoices = await Invoice.find({ issuedAt: { $gte: start, $lt: end }, status: { $ne: 'cancelled' }, ...PKR_ONLY })
     .populate('customer', 'name')
     .sort('issuedAt');
   const totals = invoices.reduce(
@@ -143,7 +150,7 @@ export const dailySales = asyncHandler(async (req, res) => {
 export const profitAndLoss = asyncHandler(async (req, res) => {
   const issuedAt = dateRange(req.query.from, req.query.to);
   const pipeline = [
-    { $match: { issuedAt, status: { $nin: ['cancelled', 'returned'] } } },
+    { $match: { issuedAt, status: { $nin: ['cancelled', 'returned'] }, ...PKR_ONLY } },
     { $unwind: '$items' },
     {
       $group: {
@@ -160,11 +167,11 @@ export const profitAndLoss = asyncHandler(async (req, res) => {
   const [[result], expenseAgg, expenseByCategory] = await Promise.all([
     Invoice.aggregate(pipeline),
     Expense.aggregate([
-      { $match: { status: 'posted', date: issuedAt } },
+      { $match: { status: 'posted', date: issuedAt, ...PKR_ONLY } },
       { $group: { _id: null, total: { $sum: '$amount' } } },
     ]),
     Expense.aggregate([
-      { $match: { status: 'posted', date: issuedAt } },
+      { $match: { status: 'posted', date: issuedAt, ...PKR_ONLY } },
       { $group: { _id: '$category', total: { $sum: '$amount' } } },
       { $sort: { total: -1 } },
     ]),
@@ -192,7 +199,7 @@ export const profitAndLoss = asyncHandler(async (req, res) => {
 export const salesByProduct = asyncHandler(async (req, res) => {
   const issuedAt = dateRange(req.query.from, req.query.to);
   const pipeline = [
-    { $match: { issuedAt, status: { $nin: ['cancelled', 'returned'] } } },
+    { $match: { issuedAt, status: { $nin: ['cancelled', 'returned'] }, ...PKR_ONLY } },
     { $unwind: '$items' },
     {
       $group: {
@@ -211,7 +218,7 @@ export const salesByProduct = asyncHandler(async (req, res) => {
 export const salesByCustomer = asyncHandler(async (req, res) => {
   const issuedAt = dateRange(req.query.from, req.query.to);
   const pipeline = [
-    { $match: { issuedAt, status: { $nin: ['cancelled', 'returned'] } } },
+    { $match: { issuedAt, status: { $nin: ['cancelled', 'returned'] }, ...PKR_ONLY } },
     {
       $group: {
         _id: '$customer',
@@ -264,7 +271,7 @@ export const monthlySummary = asyncHandler(async (_req, res) => {
   from.setMonth(from.getMonth() - 11);
   from.setDate(1);
   const pipeline = [
-    { $match: { issuedAt: { $gte: from }, status: { $nin: ['cancelled', 'returned'] } } },
+    { $match: { issuedAt: { $gte: from }, status: { $nin: ['cancelled', 'returned'] }, ...PKR_ONLY } },
     { $unwind: '$items' },
     {
       $group: {
@@ -309,18 +316,18 @@ export const series = asyncHandler(async (req, res) => {
 
   const [revenueRows, expenseRows, purchaseRows] = await Promise.all([
     Invoice.aggregate([
-      { $match: { issuedAt: range, status: { $nin: ['cancelled', 'returned'] } } },
+      { $match: { issuedAt: range, status: { $nin: ['cancelled', 'returned'] }, ...PKR_ONLY } },
       { $unwind: '$items' },
       { $addFields: { __amount: '$items.lineTotal' } },
       ...bucket('issuedAt'),
     ]),
     Expense.aggregate([
-      { $match: { status: 'posted', date: range } },
+      { $match: { status: 'posted', date: range, ...PKR_ONLY } },
       { $addFields: { __amount: '$amount' } },
       ...bucket('date'),
     ]),
     PurchaseOrder.aggregate([
-      { $match: { orderedAt: range, status: { $nin: ['cancelled', 'draft'] } } },
+      { $match: { orderedAt: range, status: { $nin: ['cancelled', 'draft'] }, ...PKR_ONLY } },
       { $addFields: { __amount: '$total' } },
       ...bucket('orderedAt'),
     ]),

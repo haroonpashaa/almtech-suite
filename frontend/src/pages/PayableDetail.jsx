@@ -1,12 +1,11 @@
 import { useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { useSubmit } from '../hooks/useSubmit.js';
 import { newIdempotencyKey } from '../lib/idempotency.js';
 import { api } from '../api/client.js';
 import { money, date as fmtDate, errorMessage } from '../lib/format.js';
-import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
 import Money from '../components/Money.jsx';
@@ -18,6 +17,8 @@ const statusTone = { received: 'success', partial: 'warning', ordered: 'info', c
 
 export default function PayableDetail() {
   const { id } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const currency = ['GBP', 'PKR'].includes(searchParams.get('currency')) ? searchParams.get('currency') : 'PKR';
   const qc = useQueryClient();
   const [payTarget, setPayTarget] = useState(null);
   const [amount, setAmount] = useState('');
@@ -33,16 +34,21 @@ export default function PayableDetail() {
   const [adjustAmount, setAdjustAmount] = useState('');
   const [adjustNote, setAdjustNote] = useState('');
   const [savingAdjust, setSavingAdjust] = useState(false);
+  const [adjustKey, setAdjustKey] = useState(newIdempotencyKey);
 
   const { data, isLoading, isError, refetch } = useQuery({
-    queryKey: ['payable', id],
-    queryFn: async () => (await api.get(`/finance/payables/${id}`)).data,
+    queryKey: ['payable', id, currency],
+    queryFn: async () => (await api.get(`/finance/payables/${id}`, { params: { currency } })).data,
   });
   const { data: accounts } = useQuery({
     queryKey: ['accounts'],
     queryFn: async () => (await api.get('/accounts')).data,
   });
-  const currency = useCurrency();
+  const fxQuote = useQuery({
+    enabled: false,
+    queryKey: ['payable-current-fx', currency],
+    queryFn: async () => (await api.get('/finance/exchange-rate', { params: { from: currency, to: currency === 'GBP' ? 'PKR' : 'GBP' } })).data,
+  });
 
   function openPay(po) {
     setPayTarget(po);
@@ -56,6 +62,7 @@ export default function PayableDetail() {
   function openAdjust() {
     setAdjustAmount(String(data.storedPayable));
     setAdjustNote('');
+    setAdjustKey(newIdempotencyKey());
     setAdjusting(true);
   }
 
@@ -66,7 +73,10 @@ export default function PayableDetail() {
     try {
       await api.post(`/finance/payables/${id}/adjust`, {
         amount: Number(adjustAmount),
+        currency,
         note: adjustNote,
+        expectedUpdatedAt: data.supplier.updatedAt,
+        idempotencyKey: adjustKey,
       });
       toast.success('Payable updated');
       setAdjusting(false);
@@ -118,7 +128,7 @@ export default function PayableDetail() {
           action={
             <span className="inline-flex gap-2">
               <button className="btn-secondary" onClick={() => refetch()}>Try again</button>
-              <Link to="/payables" className="btn-primary">Back to payables</Link>
+              <Link to={`/payables?currency=${currency}`} className="btn-primary">Back to payables</Link>
             </span>
           }
         />
@@ -129,15 +139,17 @@ export default function PayableDetail() {
   return (
     <div>
       <PageHeader
-        breadcrumb={[{ label: `Payables (${currency})`, to: '/payables' }, { label: data.supplier.name }]}
+        breadcrumb={[{ label: `Payables (${currency})`, to: `/payables?currency=${currency}` }, { label: data.supplier.name }]}
         title={data.supplier.name}
         subtitle={data.supplier.contactPerson ? `Contact: ${data.supplier.contactPerson}` : 'Outstanding purchase orders'}
         actions={
           <>
+            <label className="sr-only" htmlFor="payable-detail-currency">Payable currency</label>
+            <select id="payable-detail-currency" className="select w-auto" value={currency} onChange={(e) => setSearchParams({ currency: e.target.value })}><option value="PKR">PKR payable</option><option value="GBP">GBP payable</option></select>
             {data.oldestAgeDays > 0 && <Badge tone={data.oldestAgeDays > 60 ? 'danger' : 'warning'} dot>{data.oldestAgeDays} days old</Badge>}
             {/* This screen is admin-only, so supplier access is guaranteed. */}
-            <Link to={`/suppliers/${data.supplier._id}`} className="btn-secondary">Supplier profile</Link>
-            <button className="btn-secondary" onClick={openAdjust}>Edit Payable</button>
+            <Link to={`/suppliers/${data.supplier._id}?currency=${currency}`} className="btn-secondary">Supplier profile</Link>
+            <button className="btn-secondary" onClick={openAdjust}>Edit Supplier Payable</button>
           </>
         }
       />
@@ -163,6 +175,12 @@ export default function PayableDetail() {
             )}
           </div>
         </div>
+        <div className="card p-4 flex flex-wrap items-center gap-3 text-sm">
+          <span className="font-medium text-ink-700">Converted display equivalent</span>
+          <button type="button" className="btn-sm btn-secondary" onClick={() => fxQuote.refetch()} disabled={fxQuote.isFetching}>Refresh rate</button>
+          {fxQuote.data && <span>{money(Math.round(data.outstanding * fxQuote.data.rate * 100) / 100, fxQuote.data.toCurrency)} at {fxQuote.data.rate} · effective {new Date(fxQuote.data.effectiveAt).toLocaleString()} · display only</span>}
+          {fxQuote.isError && <span role="alert" className="text-red-700">Current equivalent unavailable; saved payable amounts and historical snapshots remain unchanged.</span>}
+        </div>
 
         <div className="space-y-2">
           <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
@@ -184,9 +202,10 @@ export default function PayableDetail() {
             { key: 'expectedAt', label: 'Expected', render: (r) => r.expectedAt ? <span className="text-ink-500 whitespace-nowrap">{fmtDate(r.expectedAt)}</span> : <span className="text-ink-300">—</span> },
             { key: 'status', label: 'Status', render: (r) => <Badge tone={statusTone[r.status]} dot>{r.status}</Badge> },
             { key: 'overdueDays', label: 'Age', render: (r) => <OverdueBadge days={r.overdueDays} /> },
-            { key: 'total', label: `Total (${currency})`, className: 'text-right num text-ink-600', render: (r) => <Money value={r.total} /> },
-            { key: 'paid', label: `Paid (${currency})`, className: 'text-right num text-emerald-600', render: (r) => <Money value={r.paid} /> },
-            { key: 'balance', label: `Balance (${currency})`, className: 'text-right num font-semibold text-amber-600', render: (r) => <Money value={r.balance} /> },
+            { key: 'total', label: `Total (${currency})`, className: 'text-right num text-ink-600', render: (r) => <Money value={r.total} currency={currency} /> },
+            { key: 'paid', label: `Paid (${currency})`, className: 'text-right num text-emerald-600', render: (r) => <Money value={r.paid} currency={currency} /> },
+            { key: 'balance', label: `Balance (${currency})`, className: 'text-right num font-semibold text-amber-600', render: (r) => <Money value={r.balance} currency={currency} /> },
+            { key: 'savedEquivalent', label: 'Saved equivalent', render: (r) => r.fxSnapshot ? <span className="text-xs text-ink-500">{money(Math.round(r.balance * r.fxSnapshot.rate * 100) / 100, r.fxSnapshot.toCurrency)} · {new Date(r.fxSnapshot.effectiveAt).toLocaleString()}</span> : <span className="text-xs text-ink-400">No historical rate</span> },
             {
               key: 'action',
               label: '',
@@ -219,7 +238,7 @@ export default function PayableDetail() {
         {payTarget && (
           <div className="space-y-3">
             <div>
-              <label htmlFor="payabledetail-amount-33" className="label">Amount <span className="text-red-500">*</span></label>
+            <label htmlFor="payabledetail-amount-33" className="label">Amount ({currency}) <span className="text-red-500">*</span></label>
               <input id="payabledetail-amount-33" className="input num input-money" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="Enter amount" />
               <p className="text-xs text-ink-400 mt-1">Amounts above the outstanding balance are capped automatically.</p>
             </div>
@@ -227,7 +246,7 @@ export default function PayableDetail() {
               <label htmlFor="payabledetail-pay-from-34" className="label">Pay From <span className="text-red-500">*</span></label>
               <select id="payabledetail-pay-from-34" className="select" value={account} onChange={(e) => setAccount(e.target.value)}>
                 <option value="">— select account —</option>
-                {(accounts || []).map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
+            {(accounts || []).filter((a) => (a.currency || 'PKR') === currency).map((a) => <option key={a._id} value={a._id}>{a.name} · {a.currency || 'PKR'}</option>)}
               </select>
             </div>
             <div>
@@ -256,8 +275,8 @@ export default function PayableDetail() {
       <Modal
         open={adjusting}
         onClose={() => setAdjusting(false)}
-        title="Edit Payable"
-        subtitle={data.supplier.name}
+        title="Edit Supplier Payable"
+        subtitle={`${data.supplier.name} · ${currency}`}
         size="md"
       >
         <div className="space-y-3">
@@ -267,7 +286,7 @@ export default function PayableDetail() {
             the Opening Balances import relies on. Use it to fix a wrong balance, not to record a payment.
           </p>
           <div>
-            <label htmlFor="payabledetail-adjust-amount" className="label">Total payable <span className="text-red-500">*</span></label>
+            <label htmlFor="payabledetail-adjust-amount" className="label">Supplier total payable ({currency}) <span className="text-red-500">*</span></label>
             <input id="payabledetail-adjust-amount" className="input num input-money" type="number" step="0.01" value={adjustAmount} onChange={(e) => setAdjustAmount(e.target.value)} placeholder="Enter amount" />
           </div>
           <div>

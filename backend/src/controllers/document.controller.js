@@ -183,14 +183,15 @@ export const customerStatementPDF = asyncHandler(async (req, res) => {
     },
     entries,
     settings,
+    currency: 'PKR',
     periodLabel: asOfLabel(from, to),
     debitLabel: 'Paid',
     creditLabel: 'Invoiced',
     summary: [
-      { label: 'Total invoiced', value: money(totalCredit, settings.currency) },
-      { label: 'Total paid', value: money(totalDebit, settings.currency) },
+      { label: 'Total invoiced', value: money(totalCredit, 'PKR') },
+      { label: 'Total paid', value: money(totalDebit, 'PKR') },
       { divider: true },
-      { label: 'BALANCE OUTSTANDING', value: money(Number(customer.balance || 0), settings.currency), grand: true },
+      { label: 'BALANCE OUTSTANDING', value: money(Number(customer.balance || 0), 'PKR'), grand: true },
     ],
     footerNote: `Statement · ${customer.name}`,
     res,
@@ -213,10 +214,13 @@ export const supplierStatementPDF = asyncHandler(async (req, res) => {
     throw new Error('Supplier not found');
   }
   const { from, to } = req.query;
+  const currency = req.query.currency === 'GBP' ? 'GBP' : 'PKR';
+  const payableField = currency === 'GBP' ? 'payableGBP' : 'payable';
+  const currencyMatch = { $expr: { $eq: [{ $ifNull: ['$currency', 'PKR'] }, currency] } };
 
   const [pos, openings] = await Promise.all([
-    PurchaseOrder.find({ supplier: supplier._id, status: { $nin: ['cancelled', 'draft'] } }).sort('orderedAt'),
-    OpeningBalance.find({ entityType: 'supplier', entity: supplier._id }).sort('asOf'),
+    PurchaseOrder.find({ supplier: supplier._id, status: { $nin: ['cancelled', 'draft'] }, ...currencyMatch }).sort('orderedAt'),
+    OpeningBalance.find({ entityType: 'supplier', entity: supplier._id, ...currencyMatch }).sort('asOf'),
   ]);
 
   const events = [];
@@ -258,7 +262,7 @@ export const supplierStatementPDF = asyncHandler(async (req, res) => {
   const entries = all.filter((e) => inRange(e.date, from, to));
 
   const settings = await loadSettings();
-  const cur = settings.currency || 'PKR';
+  const cur = currency;
   const totalCredit = entries.reduce((t, e) => t + (e.credit || 0), 0);
   const totalDebit = entries.reduce((t, e) => t + (e.debit || 0), 0);
 
@@ -272,6 +276,7 @@ export const supplierStatementPDF = asyncHandler(async (req, res) => {
     },
     entries,
     settings,
+    currency: cur,
     periodLabel: asOfLabel(from, to),
     debitLabel: 'Paid',
     creditLabel: 'Purchased',
@@ -279,7 +284,7 @@ export const supplierStatementPDF = asyncHandler(async (req, res) => {
       { label: 'Total purchased', value: money(totalCredit, cur) },
       { label: 'Total paid', value: money(totalDebit, cur) },
       { divider: true },
-      { label: 'BALANCE PAYABLE', value: money(Number(supplier.payable || 0), cur), grand: true },
+      { label: 'BALANCE PAYABLE', value: money(Number(supplier[payableField] || 0), cur), grand: true },
     ],
     footerNote: `Statement · ${supplier.name}`,
     res,
@@ -322,7 +327,7 @@ export const accountStatementPDF = asyncHandler(async (req, res) => {
   });
 
   const settings = await loadSettings();
-  const cur = settings.currency || 'PKR';
+  const cur = account.currency || 'PKR';
 
   buildStatement({
     title: 'Account Statement',
@@ -334,6 +339,7 @@ export const accountStatementPDF = asyncHandler(async (req, res) => {
     },
     entries,
     settings,
+    currency: cur,
     periodLabel: asOfLabel(from, to),
     debitLabel: 'Money in',
     creditLabel: 'Money out',

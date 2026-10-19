@@ -2,7 +2,10 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import Product from '../models/Product.js';
-import { stripCostInput, stripCommentsInput, listProducts, getProduct, createProduct, updateProduct } from './product.controller.js';
+import { stripCostInput, stripCommentsInput, listProducts, getProduct, productSummary, createProduct, updateProduct } from './product.controller.js';
+import Invoice from '../models/Invoice.js';
+import StockMovement from '../models/StockMovement.js';
+import Customer from '../models/Customer.js';
 
 describe('stripCostInput', () => {
   it('strips purchasePrice for a sales user', () => {
@@ -249,5 +252,24 @@ describe('listProducts pagination', () => {
     ]);
     const body = await call({ category: 'Laptops' });
     expect(body.items.map((p) => p.sku)).toEqual(['CAT-1']);
+  });
+});
+
+describe('product summary data', () => {
+  let memory;
+  beforeAll(async () => { memory = await MongoMemoryServer.create(); await mongoose.connect(memory.getUri()); });
+  afterEach(async () => { await Promise.all([Product.deleteMany({}), Invoice.deleteMany({}), StockMovement.deleteMany({}), Customer.deleteMany({})]); });
+  afterAll(async () => { await mongoose.disconnect(); await memory.stop(); });
+  const response = () => ({ statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } });
+
+  it('combines current inventory with historical invoice sales without exposing sales cost', async () => {
+    const product = await Product.create({ sku: 'SUMMARY-1', name: 'Summary laptop', stock: 3, purchasePrice: 50, sellingPrice: 100 });
+    const customer = await Customer.create({ name: 'Summary customer' });
+    await Invoice.create({ number: 'SUMMARY-INV', customer: customer._id, status: 'open', items: [{ product: product._id, name: product.name, quantity: 2, unitPrice: 90, unitCost: 50, lineTotal: 180 }], subtotal: 180, total: 180, balance: 180 });
+    const res = response();
+    await productSummary({ params: { id: String(product._id) }, user: { role: 'sales' } }, res);
+    expect(res.body.product.stock).toBe(3);
+    expect(res.body.product.purchasePrice).toBeUndefined();
+    expect(res.body.sales).toMatchObject({ quantitySold: 2, revenue: 180, invoiceCount: 1 });
   });
 });

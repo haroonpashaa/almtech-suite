@@ -1,9 +1,8 @@
 import { useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
-import { useCurrency } from '../hooks/useSettings.js';
 import { money, date as fmtDate, errorMessage } from '../lib/format.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import PageHeader from '../components/PageHeader.jsx';
@@ -24,9 +23,10 @@ const LEDGER_LABELS = {
 
 export default function SupplierDetail() {
   const { id } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const currency = searchParams.get('currency') === 'GBP' ? 'GBP' : 'PKR';
   const { has } = useAuth();
   const qc = useQueryClient();
-  const currency = useCurrency();
   const canManage = has('admin', 'stock');
   const canSeeLedger = has('admin');
 
@@ -37,15 +37,15 @@ export default function SupplierDetail() {
   const [error, setError] = useState(null);
 
   const { data, isLoading, isError, refetch } = useQuery({
-    queryKey: ['supplier', id],
-    queryFn: async () => (await api.get(`/suppliers/${id}`)).data,
+    queryKey: ['supplier', id, currency],
+    queryFn: async () => (await api.get(`/suppliers/${id}`, { params: { currency } })).data,
   });
 
   // The ledger is a separate admin-only statement; stock users simply never request it.
   const ledger = useQuery({
     enabled: canSeeLedger && tab === 'ledger',
-    queryKey: ['supplier-ledger', id],
-    queryFn: async () => (await api.get(`/suppliers/${id}/ledger`)).data,
+    queryKey: ['supplier-ledger', id, currency],
+    queryFn: async () => (await api.get(`/suppliers/${id}/ledger`, { params: { currency } })).data,
   });
 
   function openEdit() {
@@ -111,8 +111,9 @@ export default function SupplierDetail() {
           <>
             {s.active === false && <Badge tone="neutral" dot>inactive</Badge>}
             {canSeeLedger && (
-              <DocumentActions path={`/suppliers/${id}/statement/pdf`} filename={`statement-${s.name}`} label="Statement" />
+              <DocumentActions path={`/suppliers/${id}/statement/pdf?currency=${currency}`} filename={`statement-${s.name}`} label="Statement" />
             )}
+            <select aria-label="Supplier payable currency" className="select w-auto" value={currency} onChange={(e) => setSearchParams(e.target.value === 'GBP' ? { currency: 'GBP' } : {})}><option value="PKR">PKR payable</option><option value="GBP">GBP payable</option></select>
             {canManage && <button className="btn-secondary" onClick={openEdit}>Edit</button>}
             {canManage && s.active !== false && (
               <Link to="/purchase-orders/new" className="btn-primary">New Purchase Order</Link>
@@ -217,9 +218,9 @@ export default function SupplierDetail() {
               { key: 'orderedAt', label: 'Ordered', render: (p) => <span className="text-ink-500 whitespace-nowrap">{fmtDate(p.orderedAt)}</span> },
               { key: 'expectedAt', label: 'Expected', render: (p) => p.expectedAt ? <span className="text-ink-500 whitespace-nowrap">{fmtDate(p.expectedAt)}</span> : <span className="text-ink-300">—</span> },
               { key: 'status', label: 'Status', render: (p) => <Badge tone={poTone[p.status]} dot>{p.status}</Badge> },
-              { key: 'total', label: `Total (${currency})`, align: 'right', render: (p) => <Money value={p.total} /> },
-              { key: 'paid', label: `Paid (${currency})`, align: 'right', render: (p) => <Money value={p.paid} tone="positive" /> },
-              { key: 'balance', label: `Outstanding (${currency})`, align: 'right', priority: 'primary', render: (p) => <Money value={p.balance} tone="due" /> },
+              { key: 'total', label: `Total (${currency})`, align: 'right', render: (p) => <Money value={p.total} currency={currency} /> },
+              { key: 'paid', label: `Paid (${currency})`, align: 'right', render: (p) => <Money value={p.paid} currency={currency} tone="positive" /> },
+              { key: 'balance', label: `Outstanding (${currency})`, align: 'right', priority: 'primary', render: (p) => <Money value={p.balance} currency={currency} tone="due" /> },
             ]}
           />
         )}
@@ -263,9 +264,9 @@ export default function SupplierDetail() {
                     ? <Link to={`/purchase-orders/${e.purchaseOrder}`} className="font-mono text-[12px] text-brand-700 hover:underline">{e.reference}</Link>
                     : e.reference ? <span className="font-mono text-[12px] text-ink-500">{e.reference}</span> : <span className="text-ink-300">—</span>,
                 },
-                { key: 'debit', label: `Paid (${currency})`, align: 'right', render: (e) => e.debit ? <Money value={e.debit} tone="positive" /> : <span className="text-ink-300">—</span> },
-                { key: 'credit', label: `Owed (${currency})`, align: 'right', render: (e) => e.credit ? <Money value={e.credit} /> : <span className="text-ink-300">—</span> },
-                { key: 'balance', label: `Balance (${currency})`, align: 'right', priority: 'primary', render: (e) => <Money value={e.balance} tone="auto" className="font-medium" /> },
+                { key: 'debit', label: `Paid (${currency})`, align: 'right', render: (e) => e.debit ? <Money value={e.debit} currency={currency} tone="positive" /> : <span className="text-ink-300">—</span> },
+                { key: 'credit', label: `Owed (${currency})`, align: 'right', render: (e) => e.credit ? <Money value={e.credit} currency={currency} /> : <span className="text-ink-300">—</span> },
+                { key: 'balance', label: `Balance (${currency})`, align: 'right', priority: 'primary', render: (e) => <Money value={e.balance} currency={currency} tone="auto" className="font-medium" /> },
               ]}
             />
             {ledger.data?.entries?.length > 0 && (

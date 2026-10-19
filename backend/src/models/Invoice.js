@@ -30,6 +30,7 @@ const paymentLineSchema = new mongoose.Schema(
     date: { type: Date, default: Date.now },
     method: { type: String, enum: ['cash', 'bank', 'cheque', 'other'], default: 'cash' },
     amount: { type: Number, required: true, min: 0 },
+    currency: { type: String, enum: ['GBP', 'PKR'], default: 'PKR', required: true },
     reference: String,
     recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     // Which financial account the money landed in, and the ledger row recording it.
@@ -50,8 +51,10 @@ const paymentLineSchema = new mongoose.Schema(
 
 const invoiceSchema = new mongoose.Schema(
   {
+    currency: { type: String, enum: ['GBP', 'PKR'], default: 'PKR', required: true },
     number: { type: String, required: true, unique: true },
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: true },
+    deal: { type: mongoose.Schema.Types.ObjectId, ref: 'Deal', index: true },
     items: [lineSchema],
     subtotal: { type: Number, required: true, min: 0 },
     discount: { type: Number, default: 0, min: 0 },

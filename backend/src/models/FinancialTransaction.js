@@ -12,8 +12,8 @@ import mongoose from 'mongoose';
 // Like expense_reversal, it is deliberately not other_income/expense — a reversing
 // entry is neither revenue nor a cost, and keeping it typed separately stops any
 // report mistaking it for one.
-export const IN_TYPES = ['customer_payment', 'sale_payment', 'other_income', 'transfer_in', 'expense_reversal', 'payment_reversal'];
-export const OUT_TYPES = ['expense', 'supplier_payment', 'purchase_payment', 'other_payment', 'transfer_out', 'payment_reversal'];
+export const IN_TYPES = ['customer_payment', 'sale_payment', 'other_income', 'ledger_adjustment', 'transfer_in', 'expense_reversal', 'payment_reversal'];
+export const OUT_TYPES = ['expense', 'supplier_payment', 'purchase_payment', 'other_payment', 'ledger_adjustment', 'transfer_out', 'payment_reversal'];
 
 // The single ledger of money movement.
 //
@@ -34,6 +34,7 @@ const financialTransactionSchema = new mongoose.Schema(
   {
     account: { type: mongoose.Schema.Types.ObjectId, ref: 'Account', required: true },
     amount: { type: Number, required: true, min: 0 },
+    currency: { type: String, enum: ['GBP', 'PKR'], default: 'PKR', required: true },
     direction: { type: String, enum: ['in', 'out'], required: true },
     type: { type: String, enum: [...IN_TYPES, ...OUT_TYPES], required: true },
     date: { type: Date, default: Date.now },

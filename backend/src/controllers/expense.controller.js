@@ -5,6 +5,9 @@ import FinancialTransaction from '../models/FinancialTransaction.js';
 import { logActivity } from '../utils/activity.js';
 import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting } from '../utils/ledger.js';
 import { safeFilterValue } from '../utils/safeFilterValue.js';
+import { validateDealId } from '../utils/dealLink.js';
+
+const PKR_ONLY = { $expr: { $eq: [{ $ifNull: ['$currency', 'PKR'] }, 'PKR'] } };
 
 export const listCategories = asyncHandler(async (_req, res) => {
   res.json(EXPENSE_CATEGORIES);
@@ -31,21 +34,23 @@ export const listExpenses = asyncHandler(async (req, res) => {
   const filter = buildFilter(req.query);
   const limit = Math.min(Number(req.query.limit) || 500, 1000);
 
-  const [items, totals, byCategory] = await Promise.all([
-    Expense.find(filter).populate('account', 'name type').populate('createdBy', 'name').sort('-date').limit(limit),
-    Expense.aggregate([{ $match: filter }, { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }]),
+  const [items, groupedTotals, byCategory] = await Promise.all([
+    Expense.find(filter).populate('account', 'name type currency').populate('createdBy', 'name').sort('-date').limit(limit),
+    Expense.aggregate([{ $match: filter }, { $group: { _id: { $ifNull: ['$currency', 'PKR'] }, total: { $sum: '$amount' }, count: { $sum: 1 } } }]),
     Expense.aggregate([
       { $match: filter },
-      { $group: { _id: '$category', total: { $sum: '$amount' }, count: { $sum: 1 } } },
+      { $group: { _id: { category: '$category', currency: { $ifNull: ['$currency', 'PKR'] } }, total: { $sum: '$amount' }, count: { $sum: 1 } } },
       { $sort: { total: -1 } },
     ]),
   ]);
+  const totalsByCurrency = Object.fromEntries(groupedTotals.map((row) => [row._id, { total: row.total, count: row.count }]));
 
   res.json({
     items,
-    total: totals[0]?.total || 0,
-    count: totals[0]?.count || 0,
-    byCategory: byCategory.map((c) => ({ category: c._id, total: c.total, count: c.count })),
+    total: totalsByCurrency.PKR?.total || 0,
+    count: groupedTotals.reduce((sum, row) => sum + row.count, 0),
+    totalsByCurrency,
+    byCategory: byCategory.map((c) => ({ category: c._id.category, currency: c._id.currency, total: c.total, count: c.count })),
   });
 });
 
@@ -65,7 +70,8 @@ export const getExpense = asyncHandler(async (req, res) => {
 });
 
 export const createExpense = asyncHandler(async (req, res) => {
-  const { amount, category, account: accountId, date, description, notes, reference, idempotencyKey } = req.body;
+  const { amount, category, account: accountId, date, description, notes, reference, idempotencyKey, dealId } = req.body;
+  const deal = await validateDealId(res, dealId);
 
   const numericAmount = Number(amount);
   if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
@@ -79,6 +85,10 @@ export const createExpense = asyncHandler(async (req, res) => {
   // Rejects missing, malformed, unknown and inactive accounts — the same validation
   // invoice and supplier payments use.
   const account = await resolveAccount(res, accountId);
+  if ((account.currency || 'PKR') !== 'PKR') {
+    res.status(400);
+    throw new Error('Expenses from GBP accounts are disabled until all expense and profit reports support separate currencies.');
+  }
 
   const when = date ? new Date(date) : new Date();
   if (Number.isNaN(when.getTime())) {
@@ -97,6 +107,7 @@ export const createExpense = asyncHandler(async (req, res) => {
       {
         account: account._id,
         amount: numericAmount,
+        currency: account.currency || 'PKR',
         direction: 'out',
         type: 'expense',
         method: account.type === 'cash' ? 'cash' : 'bank',
@@ -113,8 +124,10 @@ export const createExpense = asyncHandler(async (req, res) => {
             {
               _id: expenseId,
               amount: numericAmount,
+              currency: account.currency || 'PKR',
               category,
               account: account._id,
+              deal,
               date: when,
               description,
               notes,
@@ -138,7 +151,7 @@ export const createExpense = asyncHandler(async (req, res) => {
     entityId: expense._id,
     meta: { amount: numericAmount, category, account: account.name },
   });
-  res.status(201).json(await expense.populate('account', 'name type'));
+  res.status(201).json(await expense.populate('account', 'name type currency'));
 });
 
 // Posted expenses are financially immutable: amount, account and date can never be
@@ -190,7 +203,7 @@ export const updateExpense = asyncHandler(async (req, res) => {
   );
 
   await logActivity(req, 'expense_updated', { entity: 'Expense', entityId: expense._id });
-  res.json(await expense.populate('account', 'name type'));
+  res.json(await expense.populate('account', 'name type currency'));
 });
 
 // The only way to undo a posted expense. Nothing is deleted: the original ledger row
@@ -198,7 +211,7 @@ export const updateExpense = asyncHandler(async (req, res) => {
 // trail shows both movements and the account balance ends up where it started.
 export const voidExpense = asyncHandler(async (req, res) => {
   const { reason, idempotencyKey } = req.body;
-  const expense = await Expense.findById(req.params.id).populate('account', 'name type active');
+  const expense = await Expense.findById(req.params.id).populate('account', 'name type currency active');
   if (!expense) {
     res.status(404);
     throw new Error('Expense not found');
@@ -213,6 +226,7 @@ export const voidExpense = asyncHandler(async (req, res) => {
       {
         account: expense.account._id,
         amount: expense.amount,
+        currency: expense.currency || expense.account.currency || 'PKR',
         direction: 'in',
         type: 'expense_reversal',
         reference: expense.reference,
@@ -255,7 +269,7 @@ export const dailyExpenses = asyncHandler(async (req, res) => {
   }
   const start = new Date(day.getFullYear(), day.getMonth(), day.getDate());
   const end = new Date(start.getTime() + 86400000);
-  const match = { status: 'posted', date: { $gte: start, $lt: end } };
+  const match = { status: 'posted', date: { $gte: start, $lt: end }, ...PKR_ONLY };
 
   const [byCategory, items] = await Promise.all([
     Expense.aggregate([
@@ -285,7 +299,7 @@ export const monthlyExpenses = asyncHandler(async (req, res) => {
   }
   const start = new Date(base.getFullYear(), base.getMonth(), 1);
   const end = new Date(base.getFullYear(), base.getMonth() + 1, 1);
-  const match = { status: 'posted', date: { $gte: start, $lt: end } };
+  const match = { status: 'posted', date: { $gte: start, $lt: end }, ...PKR_ONLY };
 
   const [byCategory, byDay, byAccount] = await Promise.all([
     Expense.aggregate([

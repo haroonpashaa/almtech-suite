@@ -18,6 +18,9 @@ const openingBalanceSchema = new mongoose.Schema(
     entity: { type: mongoose.Schema.Types.ObjectId, required: true },
     entityName: String,
     amount: { type: Number, required: true },
+    currency: { type: String, enum: ['GBP', 'PKR'], default: 'PKR', required: true },
+    fxSnapshot: { type: mongoose.Schema.Types.Mixed },
+    idempotencyKey: { type: String, trim: true },
     asOf: { type: Date, default: Date.now },
     reference: { type: String, trim: true },
     note: String,
@@ -34,5 +37,6 @@ openingBalanceSchema.index(
   { unique: true, name: 'opening_balance_identity' }
 );
 openingBalanceSchema.index({ entityType: 1, createdAt: -1 });
+openingBalanceSchema.index({ idempotencyKey: 1 }, { unique: true, partialFilterExpression: { idempotencyKey: { $gt: '' } }, name: 'opening_balance_idempotency_unique' });
 
 export default mongoose.model('OpeningBalance', openingBalanceSchema);

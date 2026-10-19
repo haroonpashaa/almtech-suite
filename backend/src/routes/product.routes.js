@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { protect, requireRole } from '../middleware/auth.js';
 import {
   listProducts,
+  productSummary,
   getProduct,
   createProduct,
   updateProduct,
@@ -15,6 +16,7 @@ import {
 const r = Router();
 r.use(protect);
 r.get('/', listProducts);
+r.get('/:id/summary', productSummary);
 // Must be declared before '/:id', otherwise "barcode" is swallowed as an id.
 r.get('/barcode', lookupByBarcode);
 r.get('/:id', getProduct);

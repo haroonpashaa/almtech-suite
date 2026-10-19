@@ -9,6 +9,7 @@ import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Combobox from '../components/Combobox.jsx';
 import { Spinner, LoadingBlock } from '../components/ui.jsx';
+import DealSelector from '../components/DealSelector.jsx';
 
 // A line with anything already received keeps that as its floor instead of the
 // usual minimum of 1 — Rule 2: ordered quantity may never drop below what's
@@ -26,6 +27,8 @@ export default function PurchaseOrderForm() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [supplier, setSupplier] = useState('');
+  const [currency, setCurrency] = useState('PKR');
+  const [dealId, setDealId] = useState('');
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState([]);
   const [taxRate, setTaxRate] = useState(0);
@@ -42,6 +45,8 @@ export default function PurchaseOrderForm() {
   useEffect(() => {
     if (!po) return;
     setSupplier(po.supplier?._id || po.supplier || '');
+    setCurrency(po.currency || 'PKR');
+    setDealId(po.deal?._id || po.deal || '');
     setCart(po.items.map((l) => ({
       product: l.product?._id || l.product, name: l.name, sku: l.sku,
       quantity: l.quantity, unitCost: l.unitCost, received: l.received || 0,
@@ -55,8 +60,6 @@ export default function PurchaseOrderForm() {
     queryKey: ['products-po', search],
     queryFn: async () => (await api.get('/products', { params: { q: search } })).data,
   });
-  const currency = useCurrency();
-
   // Financial fields (supplier/items/tax) are editable only while nothing has
   // been paid and the order isn't fully received (Rules 3 & 4) — this system
   // keeps no per-receipt cost history, so a partially-received line's cost can't
@@ -107,6 +110,7 @@ export default function PurchaseOrderForm() {
         const payload = { expectedUpdatedAt: po.updatedAt, notes, expectedAt: expectedAt || undefined };
         if (canEditFinancials) {
           payload.supplier = supplier;
+          payload.currency = currency;
           payload.items = cart.map(({ product, quantity, unitCost }) => ({ product, quantity: Number(quantity), unitCost: Number(unitCost) }));
           payload.taxRate = Number(taxRate || 0);
         }
@@ -116,6 +120,8 @@ export default function PurchaseOrderForm() {
       } else {
         const r = await api.post('/purchase-orders', {
           supplier,
+          currency,
+          dealId: dealId || undefined,
           items: cart.map(({ product, quantity, unitCost }) => ({ product, quantity: Number(quantity), unitCost: Number(unitCost) })),
           taxRate: Number(taxRate || 0),
           expectedAt: expectedAt || undefined,
@@ -297,6 +303,11 @@ export default function PurchaseOrderForm() {
                   </div>
                 )}
               </div>
+              {canEditFinancials ? (
+                <div><label htmlFor="purchaseorderform-currency" className="label">Payable currency</label><select id="purchaseorderform-currency" className="select" value={currency} disabled={anyReceivedAnywhere} onChange={(e) => setCurrency(e.target.value)}><option value="PKR">PKR</option><option value="GBP">GBP</option></select>{anyReceivedAnywhere && <p className="text-xs text-ink-400 mt-1">Currency cannot change after receipt.</p>}</div>
+              ) : (
+                <div><label className="label">Payable currency</label><div className="input bg-ink-25 text-ink-700">{po?.currency || 'PKR'}</div></div>
+              )}
               <div><label htmlFor="purchaseorderform-expected-delivery-207" className="label">Expected Delivery</label><input id="purchaseorderform-expected-delivery-207" className="input" type="date" value={expectedAt} onChange={(e) => setExpectedAt(e.target.value)} /></div>
               {canEditFinancials ? (
                 <div><label htmlFor="purchaseorderform-tax-208" className="label">Tax %</label><input id="purchaseorderform-tax-208" className="input num" type="number" value={taxRate} onChange={(e) => setTaxRate(e.target.value)} /></div>
@@ -304,6 +315,7 @@ export default function PurchaseOrderForm() {
                 <div><label className="label">Tax %</label><div className="input bg-ink-25 text-ink-700 num">{taxRate}</div></div>
               )}
               <div><label htmlFor="purchaseorderform-notes-209" className="label">Notes</label><textarea id="purchaseorderform-notes-209" className="input" rows="2" value={notes} onChange={(e) => setNotes(e.target.value)} /></div>
+              {!isEdit && <DealSelector value={dealId} onChange={setDealId} id="purchaseorderform-deal" />}
             </div>
             <div className="card p-5">
               <div className="space-y-1.5">

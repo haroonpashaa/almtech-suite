@@ -16,6 +16,9 @@ export const EXPENSE_CATEGORIES = [
   'Office Supplies',
   'Marketing',
   'Taxes',
+  'Customs',
+  'Duty',
+  'Shipping',
   'Bank Charges',
   'Miscellaneous',
 ];
@@ -30,8 +33,10 @@ export const EXPENSE_CATEGORIES = [
 const expenseSchema = new mongoose.Schema(
   {
     amount: { type: Number, required: true, min: 0 },
+    currency: { type: String, enum: ['GBP', 'PKR'], default: 'PKR', required: true },
     category: { type: String, required: true, enum: EXPENSE_CATEGORIES },
     account: { type: mongoose.Schema.Types.ObjectId, ref: 'Account', required: true },
+    deal: { type: mongoose.Schema.Types.ObjectId, ref: 'Deal', index: true },
     date: { type: Date, required: true, default: Date.now },
     description: { type: String, trim: true },
     notes: { type: String, trim: true },
