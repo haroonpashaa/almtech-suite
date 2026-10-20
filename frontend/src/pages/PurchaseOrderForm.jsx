@@ -6,6 +6,12 @@ import { api } from '../api/client.js';
 import { money, errorMessage } from '../lib/format.js';
 import { clampQuantity, isValidQuantity } from '../lib/quantity.js';
 import { useCurrency } from '../hooks/useSettings.js';
+import {
+  addProductToPurchaseOrder,
+  hasEligibleDisplayedSelection,
+  toggleDisplayedProductsInPurchaseOrder,
+  toggleProductInPurchaseOrder,
+} from '../lib/purchaseOrderProductSelection.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Combobox from '../components/Combobox.jsx';
 import { Spinner, LoadingBlock } from '../components/ui.jsx';
@@ -60,6 +66,14 @@ export default function PurchaseOrderForm() {
     queryKey: ['products-po', search],
     queryFn: async () => (await api.get('/products', { params: { q: search } })).data,
   });
+  const displayedProducts = products?.items || [];
+  const selectedDisplayedCount = displayedProducts.filter((product) =>
+    cart.some((line) => line.product === product._id)
+  ).length;
+  const hasEligibleDisplayedSelectionInCart = hasEligibleDisplayedSelection(cart, displayedProducts);
+  const hasReceivedDisplayedSelection = displayedProducts.some((product) =>
+    cart.some((line) => line.product === product._id && Number(line.received) > 0)
+  );
   // Financial fields (supplier/items/tax) are editable only while nothing has
   // been paid and the order isn't fully received (Rules 3 & 4) — this system
   // keeps no per-receipt cost history, so a partially-received line's cost can't
@@ -76,13 +90,10 @@ export default function PurchaseOrderForm() {
     : null;
 
   function addToCart(p) {
-    setCart((c) => {
-      if (c.find((x) => x.product === p._id)) return c;
-      // A brand-new product's purchasePrice is 0 until a PO for it is actually
-      // received — pre-filling that would show a zero the user has to delete
-      // before typing the real cost, on exactly the item most likely to need one.
-      return [...c, { product: p._id, name: p.name, sku: p.sku, unitCost: p.purchasePrice || '', quantity: 1, received: 0 }];
-    });
+    setCart((current) => addProductToPurchaseOrder(current, p));
+  }
+  function toggleDisplayedProducts() {
+    setCart((current) => toggleDisplayedProductsInPurchaseOrder(current, displayedProducts));
   }
   function setLine(i, patch) {
     setCart((c) => c.map((l, j) => (j === i ? { ...l, ...patch } : l)));
@@ -163,16 +174,38 @@ export default function PurchaseOrderForm() {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
                 <input className="input" placeholder="Search product to add…" value={search} onChange={(e) => setSearch(e.target.value)} />
               </div>
+              <div className="mt-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                <span className="text-xs text-ink-500" aria-live="polite">
+                  {selectedDisplayedCount} of {displayedProducts.length} displayed products selected
+                </span>
+                <button type="button" className="btn-secondary self-start sm:self-auto" disabled={!displayedProducts.length} onClick={toggleDisplayedProducts}>
+                  {hasEligibleDisplayedSelectionInCart
+                    ? `Deselect All${hasReceivedDisplayedSelection ? ' (received items stay selected)' : ''}`
+                    : 'Select All'} displayed products
+                </button>
+              </div>
               <div className="mt-3 max-h-64 overflow-y-auto grid sm:grid-cols-2 gap-2">
-                {(products?.items || []).map((p) => (
-                  <button key={p._id} className="text-left p-3 rounded-xl border border-ink-100 hover:border-brand-300 hover:bg-brand-50/40 transition active:scale-[0.99]" onClick={() => addToCart(p)}>
+                {displayedProducts.map((p) => {
+                  const cartIndex = cart.findIndex((line) => line.product === p._id);
+                  const selectedLine = cartIndex >= 0 ? cart[cartIndex] : null;
+                  const selected = !!selectedLine;
+                  const locked = selected && Number(selectedLine.received) > 0;
+                  return (
+                  <button key={p._id} type="button" aria-pressed={selected} disabled={locked}
+                    aria-label={locked ? `${p.name} is already received on this purchase order` : `${selected ? 'Remove' : 'Add'} ${p.name} ${selected ? 'from' : 'to'} purchase order`}
+                    className={`text-left p-3 rounded-xl border transition active:scale-[0.99] ${selected ? 'border-brand-300 bg-brand-50/60' : 'border-ink-100 hover:border-brand-300 hover:bg-brand-50/40'}`}
+                    onClick={() => selected ? setCart((current) => toggleProductInPurchaseOrder(current, p)) : addToCart(p)}>
                     <div className="font-medium text-ink-900 text-sm truncate">{p.name}</div>
                     <div className="flex items-center justify-between mt-1">
                       <span className="t-meta font-mono">{p.sku}</span>
-                      <span className="num text-ink-500 text-xs">cost {money(p.purchasePrice, currency)}</span>
+                      <span className="flex items-center gap-2">
+                        <span className="num text-ink-500 text-xs">cost {money(p.purchasePrice, currency)}</span>
+                        {selected && <span className="text-[10px] font-semibold text-brand-700">{locked ? 'Received' : 'Selected'}</span>}
+                      </span>
                     </div>
                   </button>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
