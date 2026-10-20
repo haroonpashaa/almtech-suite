@@ -111,6 +111,21 @@ export const listProducts = asyncHandler(async (req, res) => {
   const { q, category, lowStock } = req.query;
   const filter = {};
   if (category) filter.category = safeFilterValue(category);
+  if (req.query.models !== undefined && req.query.models !== '') {
+    let models;
+    try {
+      models = typeof req.query.models === 'string' ? JSON.parse(req.query.models) : req.query.models;
+    } catch {
+      res.status(400);
+      throw new Error('Model filter must be a list of model names');
+    }
+    if (!Array.isArray(models) || models.length > 100 || models.some((model) => typeof model !== 'string')) {
+      res.status(400);
+      throw new Error('Model filter must contain up to 100 model names');
+    }
+    const selectedModels = [...new Set(models.map((model) => model.trim()).filter(Boolean))];
+    if (selectedModels.length) filter.model = { $in: selectedModels };
+  }
   if (q) {
     // Specifications are part of the search because "16GB" or "i7" is how staff
     // actually look for a machine at the counter.
@@ -137,6 +152,15 @@ export const listProducts = asyncHandler(async (req, res) => {
   const items = await runPaged(res, Product, filter, { sort: '-createdAt', paging });
   const total = Number(res.get('X-Total-Count'));
   res.json({ items: items.map((p) => sanitizeProduct(req, p)), total, page: paging.page, limit: paging.limit });
+});
+
+// Inventory's model picker uses distinct values from the existing catalogue;
+// this endpoint does not create or persist a second copy of product data.
+export const listProductModels = asyncHandler(async (_req, res) => {
+  const values = await Product.distinct('model', { model: { $type: 'string', $ne: '' } });
+  const models = [...new Set(values.map((value) => value.trim()).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  res.json(models);
 });
 
 export const getProduct = asyncHandler(async (req, res) => {

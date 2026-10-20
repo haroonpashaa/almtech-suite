@@ -11,11 +11,16 @@ import {
   stockLedger,
   importProducts,
   lookupByBarcode,
+  listProductModels,
 } from '../controllers/product.controller.js';
+import { listPosModels, listPosProducts } from '../controllers/posProduct.controller.js';
 
 const r = Router();
 r.use(protect);
 r.get('/', listProducts);
+r.get('/models', listProductModels);
+r.get('/pos/models', listPosModels);
+r.get('/pos', listPosProducts);
 r.get('/:id/summary', productSummary);
 // Must be declared before '/:id', otherwise "barcode" is swallowed as an id.
 r.get('/barcode', lookupByBarcode);
