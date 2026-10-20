@@ -4,6 +4,16 @@ import { navigationSections, visibleNavigationSections } from './navigation.js';
 const visibleItems = (role) => visibleNavigationSections(role).flatMap((section) => section.items);
 
 describe('sidebar navigation', () => {
+  it('shows Purchase Summary under Purchasing to admin and stock, but not Sales', () => {
+    const purchasing = navigationSections.find((section) => section.title === 'Purchasing');
+    expect(purchasing?.items).toContainEqual(expect.objectContaining({
+      to: '/purchase-summary', label: 'Purchase Summary', roles: ['admin', 'stock'],
+    }));
+    expect(visibleItems('admin').some((item) => item.to === '/purchase-summary')).toBe(true);
+    expect(visibleItems('stock').some((item) => item.to === '/purchase-summary')).toBe(true);
+    expect(visibleItems('sales').some((item) => item.to === '/purchase-summary')).toBe(false);
+  });
+
   it('adds Deal Accounts as a separate Admin-only top-level item and preserves Transactions', () => {
     const dealAccounts = navigationSections.find((section) => section.items.some((item) => item.to === '/deal-accounts'));
     expect(dealAccounts?.title).toBeNull();

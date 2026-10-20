@@ -21,6 +21,7 @@ const POS = lazy(() => import('./pages/POS.jsx'));
 const Quotations = lazy(() => import('./pages/Quotations.jsx'));
 const QuotationForm = lazy(() => import('./pages/QuotationForm.jsx'));
 const PurchaseOrders = lazy(() => import('./pages/PurchaseOrders.jsx'));
+const PurchaseSummary = lazy(() => import('./pages/PurchaseSummary.jsx'));
 const PurchaseOrderDetail = lazy(() => import('./pages/PurchaseOrderDetail.jsx'));
 const PurchaseOrderForm = lazy(() => import('./pages/PurchaseOrderForm.jsx'));
 const Suppliers = lazy(() => import('./pages/Suppliers.jsx'));
@@ -80,6 +81,7 @@ export default function App() {
         <Route path="quotations" element={<Quotations />} />
         <Route path="quotations/new" element={<Protected roles={['admin', 'sales']}><QuotationForm /></Protected>} />
         <Route path="purchase-orders" element={<PurchaseOrders />} />
+        <Route path="purchase-summary" element={<Protected roles={['admin', 'stock']}><PurchaseSummary /></Protected>} />
         <Route path="purchase-orders/new" element={<Protected roles={['admin', 'stock']}><PurchaseOrderForm /></Protected>} />
         <Route path="purchase-orders/:id/edit" element={<Protected roles={['admin', 'stock']}><PurchaseOrderForm /></Protected>} />
         <Route path="purchase-orders/:id" element={<PurchaseOrderDetail />} />
