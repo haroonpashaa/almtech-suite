@@ -20,4 +20,17 @@ describe('account ledger adjustment route permissions', () => {
     expect(result('sales')).toMatchObject({ blocked: true, statusCode: 403 });
     expect(result('stock')).toMatchObject({ blocked: true, statusCode: 403 });
   });
+
+  it('keeps account edits, including deactivation, Admin-only', () => {
+    const middleware = middlewareFor('/:id', 'patch');
+    const result = (role) => {
+      const res = { statusCode: 200, status(code) { this.statusCode = code; return this; } };
+      let error;
+      middleware({ user: role ? { role } : undefined }, res, (nextError) => { error = nextError; });
+      return { blocked: !!error, statusCode: res.statusCode };
+    };
+    expect(result('admin').blocked).toBe(false);
+    expect(result('sales')).toMatchObject({ blocked: true, statusCode: 403 });
+    expect(result('stock')).toMatchObject({ blocked: true, statusCode: 403 });
+  });
 });

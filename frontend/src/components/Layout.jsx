@@ -4,68 +4,8 @@ import { useAuth } from '../context/AuthContext.jsx';
 import CommandPalette from './CommandPalette.jsx';
 import ErrorBoundary from './ErrorBoundary.jsx';
 import { documentTitleFor } from '../lib/pageTitle.js';
+import { visibleNavigationSections } from '../lib/navigation.js';
 import clsx from 'clsx';
-
-// Navigation mirrors how the business actually operates rather than how the code is
-// organised: what you sell, what you buy, who you deal with, what you hold, and the
-// money behind all of it. Role filtering is unchanged — items simply moved groups.
-const sections = [
-  {
-    title: null,
-    items: [{ to: '/', label: 'Dashboard', exact: true, icon: 'home' }],
-  },
-  {
-    title: 'Sales',
-    items: [
-      { to: '/pos', label: 'New Sale', roles: ['admin', 'sales'], icon: 'cart' },
-      { to: '/invoices', label: 'Invoices', icon: 'invoice' },
-      { to: '/quotations', label: 'Quotations', icon: 'quote' },
-    ],
-  },
-  {
-    title: 'Purchasing',
-    items: [
-      { to: '/purchase-orders', label: 'Purchase Orders', icon: 'truck' },
-      // Sales never raises a purchase order, so it has no reason to browse suppliers.
-      { to: '/suppliers', label: 'Suppliers', roles: ['admin', 'stock'], icon: 'warehouse' },
-    ],
-  },
-  {
-    title: 'Customers',
-    items: [{ to: '/customers', label: 'Customers', icon: 'users' }],
-  },
-  {
-    title: 'Inventory',
-    items: [{ to: '/products', label: 'Products', icon: 'box' }],
-  },
-  {
-    title: 'Finance',
-    items: [
-      { to: '/accounts', label: 'Accounts', roles: ['admin'], icon: 'wallet' },
-      { to: '/deals', label: 'Transactions', roles: ['admin'], icon: 'ledgerList' },
-      { to: '/expenses', label: 'Expenses', roles: ['admin', 'sales'], icon: 'receipt' },
-      { to: '/receivables', label: 'Receivables', roles: ['admin', 'sales'], icon: 'receivable' },
-      { to: '/payables', label: 'Payables', roles: ['admin'], icon: 'payable' },
-    ],
-  },
-  {
-    title: 'Reports',
-    items: [
-      { to: '/reports', label: 'Ledger Reports', icon: 'chart' },
-      { to: '/expense-reports', label: 'Expense Reports', roles: ['admin', 'sales'], icon: 'chartBar' },
-    ],
-  },
-  {
-    title: 'Administration',
-    items: [
-      { to: '/data', label: 'Import / Export', roles: ['admin', 'sales'], icon: 'exchange' },
-      { to: '/users', label: 'Users', roles: ['admin'], icon: 'shield' },
-      { to: '/activity', label: 'Activity', roles: ['admin'], icon: 'clock' },
-      { to: '/system-health', label: 'System Health', roles: ['admin'], icon: 'pulse' },
-      { to: '/settings', label: 'Settings', roles: ['admin'], icon: 'cog' },
-    ],
-  },
-];
 
 const paths = {
   home: 'M3 11.5 12 4l9 7.5V20a1 1 0 0 1-1 1h-4v-7h-8v7H4a1 1 0 0 1-1-1z',
@@ -100,6 +40,7 @@ function Icon({ name, className = 'w-4 h-4' }) {
 }
 
 function SidebarContent({ user, onNavigate, collapsed = false }) {
+  const sections = visibleNavigationSections(user?.role);
   return (
     <>
       {/* The brand mark is the one place the gradient survives — it is identity,
@@ -124,14 +65,12 @@ function SidebarContent({ user, onNavigate, collapsed = false }) {
       </div>
       <nav aria-label="Main" className={`flex-1 overflow-y-auto py-3 space-y-4 ${collapsed ? 'px-2' : 'px-2.5'}`}>
         {sections.map((section, si) => {
-          const visible = section.items.filter((i) => !i.roles || i.roles.includes(user?.role));
-          if (!visible.length) return null;
           return (
             <div key={si}>
               {section.title && !collapsed && <div className="nav-group">{section.title}</div>}
               {section.title && collapsed && <div className="mx-2 my-2 divider" />}
               <div className="space-y-0.5">
-                {visible.map((i) => (
+                {section.items.map((i) => (
                   <NavLink
                     key={i.to}
                     to={i.to}
@@ -256,16 +195,14 @@ export default function Layout() {
     };
   }, [drawerOpen]);
 
-  const commands = sections.flatMap((s) =>
-    s.items
-      .filter((i) => !i.roles || i.roles.includes(user?.role))
-      .map((i) => ({
-        to: i.to,
-        label: i.label,
-        section: s.title || 'General',
-        icon: <Icon name={i.icon} className="w-4 h-4" />,
-        keywords: [i.label.toLowerCase()],
-      }))
+  const commands = visibleNavigationSections(user?.role).flatMap((s) =>
+    s.items.map((i) => ({
+      to: i.to,
+      label: i.label,
+      section: s.title || 'General',
+      icon: <Icon name={i.icon} className="w-4 h-4" />,
+      keywords: [i.label.toLowerCase()],
+    }))
   );
 
   function signOut() {
