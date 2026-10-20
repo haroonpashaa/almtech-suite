@@ -1,42 +1,25 @@
 # QA Report — ALMTech ERP feature branch
 
-## Requirement status and evidence
+## Release reference
 
-| Requirement | Status | Evidence / remaining limitation |
-|---|---|---|
-| Product Summary | Implemented; authenticated browser workflow unverified | Product summary API combines inventory with historical invoice sales, and controller tests cover its figures and role-based cost redaction. |
-| Accounts and ledger | Implemented; authenticated browser workflow unverified | Other Bank account type, account currency, soft deactivation and admin-only ledger adjustments are implemented. Tests verify credit/debit posting, reason/creator audit, duplicate protection and account balance reconciliation. |
-| Historical invoice product/model filtering | Implemented; authenticated browser workflow unverified | Controller test verifies the product and sale-time model snapshot filters match the same invoice item. |
-| POS spreadsheet pricing | Implemented; authenticated browser workflow unverified | Rectangular multi-cell paste is parsed row-major and fully validated before updates; frontend tests cover valid ranges, invalid/ragged input and overflow. Server-side price validation and total calculation remain authoritative. |
-| Payable original currency, conversion and editing | Partially implemented; provider setup required | PO and supplier payable corrections retain original currency and amount; the supplier’s legacy `payable` remains PKR and `payableGBP` holds GBP. FX snapshots record rate, source, effective/fetched/valid-until times and equivalents. Current quote refresh is display-only. PO payments require a same-currency account and are audited. Supplier corrections are separately authorized and audited. PO source-field edits recalculate the payable and retain restrictions (no financial edit after payment; received quantities/costs protected). There is no independent PO balance override because it could contradict purchases/payments; users can safely correct the supplier balance through its audited supplier-level workflow. GBP PO receiving is currently disabled pending currency-aware inventory cost storage. |
-| Editable account ledger | Implemented; authenticated browser workflow unverified | Adjustments post new ledger entries; history is not overwritten. Existing tests verify permissions, traceability, duplicate protection and reconciliation. GBP supplier payment test verifies the PO, GBP supplier bucket, account and transaction currency remain consistent. |
-| Deal accounting | Implemented for explicit associations; authenticated browser workflow unverified | Deal tests cover isolation, duplicate deal identifiers, `931x`, categories including customs/duty/shipping and other expenses. Totals are grouped by currency; historical records are never assigned automatically. Purchase costs remain separate from cost of goods sold to avoid double counting. |
-| Purchase Orders filters/selection | Implemented; authenticated browser workflow unverified | Backend tests cover filters and empty results; frontend tests cover visible filtered selection, empty results, deselection and stale hidden selection. No bulk PO mutation action exists in the current application. |
+- Feature branch: `codex/almtech-financial-features`
+- Latest feature commit: `88c3c8ec9b95a1d94dd118ed512f452dcef1fe38`
+- Browser evidence was recorded against `32fe88ae987d129d4c51e2a82c1c02d92bfc1deb`. The later `88c3c8e` commit changes tests only.
 
-## Currency provider and configuration
+## Verified automated tests
 
-Selected provider: ExchangeRate-API Standard latest endpoint. Set backend secret `EXCHANGE_RATE_API_KEY`; the server sends it in the provider-supported bearer authorization header (not in the URL), and no key is bundled in source or sent to the browser. The provider's free plan currently requires a key, is limited to 1,500 requests/month, and refreshes rates daily. The API response provides the effective and next-update timestamps. The app caches a quote only until the next update time and coalesces concurrent same-process quote requests; separate server instances have separate caches. It fails closed if configuration, provider response, currencies, or validity checks fail. Display equivalents are rounded to two decimal places. The quote is indicative display data; payments still settle only in the payable's original currency. No conversion transaction is supported.
+- Backend suite: **360 passed**.
+- Frontend suite: **43 passed**.
+- `git diff --check`: **passed**.
 
-Legacy records without a currency or rate snapshot remain PKR and are not migrated. Older PKR amounts are never interpreted as GBP. Provider outage does not invalidate already saved snapshots, which remain identifiable by their historical effective time. A provider outage prevents creating or editing payable records that require a new snapshot; legacy entries without a current quote show an unavailable state.
+## Browser workflow evidence
 
-## Test and build results
+Saved evidence: `/tmp/almtech-release-ui-evidence-20261020/results.json`. It records all seven feature groups and Admin, Sales, and Stock permission checks as **PASS**, using synthetic records and an ephemeral MongoDB Memory Server. It reports no browser errors or workflow failures. This evidence is outside the repository and is not a repeatable test script.
 
-- Backend full suite: **29 files / 358 tests passed** in the latest recorded run. The full suite includes GBP/PKR supplier corrections, both conversion directions and rounding, provider failure/expiry, immutable PO snapshots, duplicate/stale correction protection, GBP payment/account currency reconciliation, and legacy global-setting behavior. A focused post-change rerun of rate-provider and settings tests passed (2 files / 14 tests), including bearer-key URL exclusion.
-- Frontend suite: **7 files / 43 tests passed**.
-- Frontend production build: **passed**; Vite transformed 1,004 modules. In the latest verification it was written to a fresh temporary output directory; the normal `frontend/dist` directory was not rebuilt.
-- Backend build: **not run** because its script removes `backend/public` before copying the frontend build. No safe preservation/restore procedure was established for that output during this verification.
-- `git diff --check`: passed.
-- Database-backed tests use isolated MongoDB Memory Server instances. Tests confirmed the standalone compensating-write path where transactions are unavailable.
+The live ExchangeRate-API provider check is **BLOCKED / NOT TESTED** because no API key was configured. The browser run verified that the missing-rate state blocks a payable correction with HTTP 503 and leaves the original PKR payable unchanged. It did not verify a real GBP/PKR quote or successful provider-backed conversion.
 
-Automated test results above are distinct from browser evidence. The frontend unit suite is not an authenticated UI workflow test.
+## Known limitations and unverified deployment behavior
 
-## Unverified areas and known limitations
-
-- Earlier QA notes reported an authenticated local Playwright run across all seven feature groups, role-denial checks, and responsive spot checks. This repository contains no Playwright spec, runnable browser-test script, log, or saved result artifact to substantiate or reproduce those claims. Treat all authenticated browser workflows and responsive checks as **unverified** until replayed against staging. The current verification did not rerun them.
-- The current checkout had no local backend/frontend listener on the expected ports and no backend `.env`. Starting the backend with its default configuration was not considered safe: its development database setup uses persistent storage under `backend/data` and performs demo seeding. No reproducible isolated authenticated browser harness was available, so no UI server was started and no browser workflow is claimed as passed.
-- A real ExchangeRate-API request is **blocked** in this environment: no backend `.env` or process `EXCHANGE_RATE_API_KEY` is configured. Provider behavior is covered by mocked tests only. Configure a valid key in the local backend environment and verify provider account limits before staging. The live provider and production app were not contacted.
-- Previous notes also described isolated UI/API servers and role/API results, but the current repository contains no run script or logs that allow those results to be independently verified. Retain those as historical reported results only, not as evidence from this verification. Backend permission, validation, duplicate, and currency tests are covered by the automated suite above.
-- No PO payable balance-only editor exists. Existing allowed PO financial editing and separately audited supplier-level corrections remain the supported changes.
-- Cross-currency payment settlement is intentionally blocked. If business later needs settlement in another currency, it requires a separate audited conversion transaction and explicit allocation/rate policy.
-- Customer receivables, product purchase cost, and legacy general reports remain PKR-only. The backend now rejects GBP sales invoices, GBP-account expenses, global currency settings other than PKR, and GBP PO receiving. Dashboard and Reports screens are explicitly labeled/formatted PKR; accounts, supplier payables, and deal totals keep currency-separated views. Extending GBP into customer, expense, or inventory workflows requires currency fields and updates across balances, reports, documents and exports.
-- No production records were migrated or changed. No commit, push, merge or deployment was performed; live deployment behavior remains unverified.
+- GBP sales invoices, GBP expenses, GBP purchase receiving, and cross-currency payment settlement are unsupported. Payments must use the payable's original currency. Historical records without a currency remain PKR. Customer balances and general reports remain PKR-only.
+- Backend `npm run build` removes and recreates `backend/public` from the frontend build. It was not run for this review. Confirm the deployment path contains no required manually added files before relying on this build behavior.
+- No production data was accessed or changed. No merge, push, or deployment was performed. Live provider behavior and deployment behavior remain unverified.
