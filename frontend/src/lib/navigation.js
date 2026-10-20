@@ -15,6 +15,7 @@ export const navigationSections = [
     title: 'Purchasing',
     items: [
       { to: '/purchase-orders', label: 'Purchase Orders', icon: 'truck' },
+      { to: '/purchase-summary', label: 'Purchase Summary', roles: ['admin', 'stock'], icon: 'chart' },
       // Sales never raises a purchase order, so it has no reason to browse suppliers.
       { to: '/suppliers', label: 'Suppliers', roles: ['admin', 'stock'], icon: 'warehouse' },
     ],

@@ -2,9 +2,11 @@ import { Router } from 'express';
 import { protect, requireRole } from '../middleware/auth.js';
 import { purchaseOrderPDF, purchaseOrderReceiptPDF } from '../controllers/document.controller.js';
 import { listPOs, getPO, createPO, updatePO, receiveItems, recordSupplierPayment, reverseSupplierPayment } from '../controllers/purchaseOrder.controller.js';
+import { purchaseSummary } from '../controllers/purchaseSummary.controller.js';
 
 const r = Router();
 r.use(protect);
+r.get('/summary', requireRole('admin', 'stock'), purchaseSummary);
 r.get('/', listPOs);
 r.get('/:id', getPO);
 // Mirrors GET /:id. The payment receipt follows the payment permission instead:
