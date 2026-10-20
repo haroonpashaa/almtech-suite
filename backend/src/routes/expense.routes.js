@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import { protect, requireRole } from '../middleware/auth.js';
-import { reserveDealForRecordCreation } from '../utils/dealLink.js';
 import {
   listExpenses,
   getExpense,
@@ -33,7 +32,7 @@ r.get('/categories', staffOrAdmin, listCategories);
 
 r.get('/', staffOrAdmin, listExpenses);
 r.get('/:id', staffOrAdmin, getExpense);
-r.post('/', staffOrAdmin, reserveDealForRecordCreation, createExpense);
+r.post('/', staffOrAdmin, createExpense);
 r.patch('/:id', staffOrAdmin, updateExpense);
 r.post('/:id/void', requireRole('admin'), voidExpense);
 export default r;

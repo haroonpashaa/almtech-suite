@@ -10,7 +10,7 @@ import { resolvePayment, requireReason, assertReversible, postReversal } from '.
 import { resolvePaging, runPaged } from '../utils/pagination.js';
 import { requirePositiveWholeQuantity } from '../utils/quantity.js';
 import { safeFilterValue } from '../utils/safeFilterValue.js';
-import { validateDealId } from '../utils/dealLink.js';
+import { claimDealForLink, requireDealTransactionSupport, validateDealId } from '../utils/dealLink.js';
 import { createRateSnapshot, roundCurrency } from '../services/exchangeRate.service.js';
 
 // Notes are free-text metadata on the order (see updatePO's comment on "pure
@@ -72,6 +72,7 @@ export const createPO = asyncHandler(async (req, res) => {
   const { supplier: supplierId, items, taxRate = 0, expectedAt, notes, dealId, currency = 'PKR' } = req.body;
   if (!['GBP', 'PKR'].includes(currency)) { res.status(400); throw new Error('Payable currency must be GBP or PKR'); }
   const deal = await validateDealId(res, dealId);
+  await requireDealTransactionSupport(res, deal);
   const supplier = await Supplier.findById(supplierId);
   if (!supplier) {
     res.status(404);
@@ -119,6 +120,7 @@ export const createPO = asyncHandler(async (req, res) => {
   // upper bound to enforce here, unlike stock, so no conditional claim is
   // needed — just no read-modify-write).
   const po = await runAtomically(async (session) => {
+    if (deal) await claimDealForLink(session, deal);
     const opts = session ? { session } : {};
     const [created] = await PurchaseOrder.create(
       [{

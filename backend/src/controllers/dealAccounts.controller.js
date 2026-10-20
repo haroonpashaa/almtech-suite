@@ -4,7 +4,9 @@ import Deal from '../models/Deal.js';
 import Invoice from '../models/Invoice.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 import Expense from '../models/Expense.js';
+import Activity from '../models/Activity.js';
 import { logActivity } from '../utils/activity.js';
+import { claimDealForLink, withDealTransaction } from '../utils/dealLink.js';
 
 const MODELS = { invoice: Invoice, purchase: PurchaseOrder, expense: Expense };
 
@@ -87,83 +89,70 @@ export const linkDealRecord = asyncHandler(async (req, res) => {
   const { type, recordId } = req.body || {};
   const Model = MODELS[type];
   if (!Model || !mongoose.isValidObjectId(recordId)) { res.status(400); throw new Error('Select a valid invoice, purchase order, or expense'); }
-  // Acquire a small lease on the deal before linking. Deletion can only lock a
-  // deal with no active link operations, which closes the check-then-delete race.
-  const deal = await Deal.findOneAndUpdate(
-    { _id: req.params.id, deleting: { $ne: true } },
-    { $inc: { linkOperations: 1 } },
-    { new: true }
-  );
-  if (!deal) {
-    const exists = await Deal.exists({ _id: req.params.id });
-    res.status(exists ? 409 : 404);
-    throw new Error(exists ? 'This deal is being deleted; try again shortly' : 'Deal not found');
-  }
-  try {
-    const document = await Model.findById(recordId);
+  if (!mongoose.isValidObjectId(req.params.id)) { res.status(400); throw new Error('Invalid deal id'); }
+  const result = await withDealTransaction(res, async (session) => {
+    const deal = await claimDealForLink(session, req.params.id, { requireOpen: false });
+    const document = await Model.findById(recordId).session(session);
     if (!document) { res.status(404); throw new Error(`${type} record not found`); }
     if (type === 'expense' && document.status !== 'posted') { res.status(400); throw new Error('Only posted expenses can be linked to a deal'); }
     if (['invoice', 'purchase'].includes(type) && ['draft', 'cancelled', 'returned'].includes(document.status)) { res.status(400); throw new Error('Draft, cancelled, or returned documents cannot be linked to a deal'); }
     if (document.deal && String(document.deal) !== String(deal._id)) { res.status(409); throw new Error('This record already belongs to another deal'); }
     const updated = await Model.findOneAndUpdate(
       { _id: document._id, $or: [{ deal: { $exists: false } }, { deal: null }, { deal: deal._id }] },
-      { $set: { deal: deal._id } }, { new: true }
+      { $set: { deal: deal._id } }, { new: true, session }
     );
     if (!updated) { res.status(409); throw new Error('This record was linked to another deal while you were editing'); }
-    await logActivity(req, 'deal_record_linked', { entity: type, entityId: updated._id, meta: { deal: deal.identifier } });
-    res.json({ ok: true, type, recordId: updated._id, deal: deal.identifier });
-  } finally {
-    await Deal.updateOne({ _id: deal._id, linkOperations: { $gt: 0 } }, { $inc: { linkOperations: -1 } });
-  }
+    await Activity.create([{
+      user: req.user?._id,
+      userName: req.user?.name,
+      action: 'deal_record_linked',
+      entity: type,
+      entityId: updated._id.toString(),
+      meta: { deal: deal.identifier },
+    }], { session });
+    return { ok: true, type, recordId: updated._id, deal: deal.identifier };
+  });
+  res.json(result);
 });
 
 export const deleteDealAccount = asyncHandler(async (req, res) => {
   if (!mongoose.isValidObjectId(req.params.id)) { res.status(400); throw new Error('Invalid deal id'); }
 
-  // Atomically prevent new links and refuse to start while an existing link is in
-  // flight. Missing internal fields on old documents are treated as zero/false.
-  const deal = await Deal.findOneAndUpdate(
-    {
-      _id: req.params.id,
-      deleting: { $ne: true },
-      $or: [{ linkOperations: 0 }, { linkOperations: { $exists: false } }],
-    },
-    { $set: { deleting: true, linkOperations: 0 } },
-    { new: true }
-  );
-  if (!deal) {
-    const exists = await Deal.exists({ _id: req.params.id });
-    res.status(exists ? 409 : 404);
-    throw new Error(exists ? 'This deal is being linked or deleted; try again shortly' : 'Deal not found');
-  }
-
-  let deleted = false;
-  try {
-    const [invoices, purchases, expenses] = await Promise.all([
-      Invoice.countDocuments({ deal: deal._id }),
-      PurchaseOrder.countDocuments({ deal: deal._id }),
-      Expense.countDocuments({ deal: deal._id }),
-    ]);
+  const result = await withDealTransaction(res, async (session) => {
+    // This competing write serializes deletion against every transaction that
+    // creates or attaches a record to the same deal.
+    const deal = await Deal.findOneAndUpdate(
+      { _id: req.params.id },
+      { $inc: { linkRevision: 1 } },
+      { new: true, session, timestamps: false }
+    );
+    if (!deal) { res.status(404); throw new Error('Deal not found'); }
+    // The MongoDB driver does not support parallel operations on one session.
+    // Keep these reads sequential inside the transaction snapshot.
+    const invoices = await Invoice.countDocuments({ deal: deal._id }).session(session);
+    const purchases = await PurchaseOrder.countDocuments({ deal: deal._id }).session(session);
+    const expenses = await Expense.countDocuments({ deal: deal._id }).session(session);
     if (invoices || purchases || expenses) {
       res.status(409);
       throw new Error(`Deal ${deal.identifier} still has ${invoices} linked sales invoice${invoices === 1 ? '' : 's'}, ${purchases} purchase order${purchases === 1 ? '' : 's'}, and ${expenses} expense${expenses === 1 ? '' : 's'}. Unlink all records before deleting this deal.`);
     }
 
-    const result = await Deal.deleteOne({ _id: deal._id, deleting: true, linkOperations: 0 });
-    if (result.deletedCount !== 1) {
+    const deletion = await Deal.deleteOne({ _id: deal._id }, { session });
+    if (deletion.deletedCount !== 1) {
       res.status(409);
       throw new Error('This deal changed while deletion was in progress; reload and try again');
     }
-    deleted = true;
-    await logActivity(req, 'deal_deleted', { entity: 'Deal', entityId: deal._id, meta: { identifier: deal.identifier } });
-    res.json({ ok: true, identifier: deal.identifier });
-  } finally {
-    // Release the lock after any refusal or server error. Successful deletion has
-    // no document left to unlock.
-    if (!deleted) {
-      await Deal.updateOne({ _id: deal._id, deleting: true }, { $set: { deleting: false }, $unset: { linkOperations: 1 } });
-    }
-  }
+    await Activity.create([{
+      user: req.user?._id,
+      userName: req.user?.name,
+      action: 'deal_deleted',
+      entity: 'Deal',
+      entityId: deal._id.toString(),
+      meta: { identifier: deal.identifier },
+    }], { session });
+    return { ok: true, identifier: deal.identifier };
+  });
+  res.json(result);
 });
 
 export const unlinkDealRecord = asyncHandler(async (req, res) => {

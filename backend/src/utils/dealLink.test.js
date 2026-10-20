@@ -1,43 +1,50 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { EventEmitter } from 'node:events';
 import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import Deal from '../models/Deal.js';
-import { reserveDealForRecordCreation } from './dealLink.js';
+import Invoice from '../models/Invoice.js';
+import { claimDealForLink, withDealTransaction } from './dealLink.js';
 
-describe('deal record creation guard', () => {
+describe('deal transaction safety', () => {
   let memory;
-  beforeAll(async () => { memory = await MongoMemoryServer.create(); await mongoose.connect(memory.getUri()); });
-  afterEach(async () => { await Deal.deleteMany({}); });
+  beforeAll(async () => { memory = await MongoMemoryReplSet.create({ replSet: { count: 1 } }); await mongoose.connect(memory.getUri()); });
+  afterEach(async () => { await Promise.all([Deal.deleteMany({}), Invoice.deleteMany({})]); });
   afterAll(async () => { await mongoose.disconnect(); await memory.stop(); });
 
-  it('holds a deletion lock until the create response finishes', async () => {
-    const deal = await Deal.create({ identifier: 'CREATE-LOCK' });
-    const res = new EventEmitter();
-    res.status = () => res;
-    let continued = false;
+  it('rolls back a deal claim and linked record when a transaction is interrupted', async () => {
+    const deal = await Deal.create({ identifier: 'INTERRUPTED-LINK' });
+    const customer = new mongoose.Types.ObjectId();
+    const product = new mongoose.Types.ObjectId();
 
-    await reserveDealForRecordCreation({ body: { dealId: String(deal._id) } }, res, () => { continued = true; });
+    await expect(withDealTransaction({}, async (session) => {
+      await claimDealForLink(session, deal._id);
+      await Invoice.create([{
+        number: 'INV-INTERRUPTED', customer, deal: deal._id,
+        items: [{ product, name: 'Test', quantity: 1, unitPrice: 10, unitCost: 5, lineTotal: 10 }],
+        subtotal: 10, total: 10, balance: 10,
+      }], { session });
+      throw new Error('simulated process interruption before commit');
+    })).rejects.toThrow(/simulated process interruption/i);
 
-    expect(continued).toBe(true);
-    expect((await Deal.findById(deal._id).select('+linkOperations')).linkOperations).toBe(1);
-    res.emit('finish');
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect((await Deal.findById(deal._id).select('+linkOperations')).linkOperations).toBe(0);
+    expect(await Invoice.countDocuments({ deal: deal._id })).toBe(0);
+    expect((await Deal.findById(deal._id).select('+linkRevision')).linkRevision).toBe(0);
   });
 
-  it('refuses to reserve a deal already being deleted', async () => {
-    const deal = await Deal.create({ identifier: 'DELETE-LOCK' });
-    await Deal.updateOne({ _id: deal._id }, { $set: { deleting: true } });
-    const res = new EventEmitter();
-    res.statusCode = 200;
-    res.status = (code) => { res.statusCode = code; return res; };
-    let error;
+  it('commits the deal revision and linked record together', async () => {
+    const deal = await Deal.create({ identifier: 'COMMITTED-LINK' });
+    const customer = new mongoose.Types.ObjectId();
+    const product = new mongoose.Types.ObjectId();
 
-    await reserveDealForRecordCreation({ body: { dealId: String(deal._id) } }, res, (nextError) => { error = nextError; });
+    await withDealTransaction({}, async (session) => {
+      const claimed = await claimDealForLink(session, deal._id);
+      await Invoice.create([{
+        number: 'INV-COMMITTED', customer, deal: claimed._id,
+        items: [{ product, name: 'Test', quantity: 1, unitPrice: 10, unitCost: 5, lineTotal: 10 }],
+        subtotal: 10, total: 10, balance: 10,
+      }], { session });
+    });
 
-    expect(res.statusCode).toBe(409);
-    expect(error.message).toMatch(/being deleted/i);
-    expect((await Deal.findById(deal._id).select('+linkOperations')).linkOperations).toBe(0);
+    expect((await Deal.findById(deal._id).select('+linkRevision')).linkRevision).toBe(1);
+    expect(await Invoice.countDocuments({ deal: deal._id })).toBe(1);
   });
 });

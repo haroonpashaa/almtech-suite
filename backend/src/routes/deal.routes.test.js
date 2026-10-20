@@ -3,15 +3,11 @@ import express from 'express';
 import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import { createServer } from 'node:http';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import routes from './deal.routes.js';
 import Deal from '../models/Deal.js';
 import User from '../models/User.js';
 import { errorHandler } from '../middleware/error.js';
-import invoiceRoutes from './invoice.routes.js';
-import purchaseOrderRoutes from './purchaseOrder.routes.js';
-import expenseRoutes from './expense.routes.js';
-import { reserveDealForRecordCreation } from '../utils/dealLink.js';
 
 function routeIndex(path, method) {
   const index = routes.stack.findIndex((layer) => layer.route?.path === path && layer.route.methods[method]);
@@ -20,16 +16,6 @@ function routeIndex(path, method) {
 }
 
 describe('deal-account route permissions', () => {
-  it('reserves linked deals on all create routes before their controllers run', () => {
-    for (const router of [invoiceRoutes, purchaseOrderRoutes, expenseRoutes]) {
-      const createRoute = router.stack.find((layer) => layer.route?.path === '/' && layer.route.methods.post)?.route;
-      expect(createRoute).toBeDefined();
-      const guardIndex = createRoute.stack.findIndex((layer) => layer.handle === reserveDealForRecordCreation);
-      expect(guardIndex).toBeGreaterThan(-1);
-      expect(guardIndex).toBeLessThan(createRoute.stack.length - 1);
-    }
-  });
-
   it('keeps the deal selector before the Admin-only financial routes', () => {
     const selectorIndex = routeIndex('/records/options', 'get');
     const adminGuardIndex = routes.stack.findIndex((layer, index) => index > selectorIndex && !layer.route);
@@ -62,7 +48,7 @@ describe('deal-account route permissions', () => {
   });
 
   it('enforces Admin-only deletion through direct authenticated API requests', async () => {
-    const memory = await MongoMemoryServer.create();
+    const memory = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
     const previousSecret = process.env.JWT_SECRET;
     process.env.JWT_SECRET = 'isolated-route-test-secret';
     await mongoose.connect(memory.getUri());
@@ -96,5 +82,5 @@ describe('deal-account route permissions', () => {
       if (previousSecret === undefined) delete process.env.JWT_SECRET;
       else process.env.JWT_SECRET = previousSecret;
     }
-  });
+  }, 20000);
 });

@@ -1,6 +1,6 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import Deal from '../models/Deal.js';
 import Invoice from '../models/Invoice.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
@@ -10,11 +10,12 @@ import FinancialTransaction from '../models/FinancialTransaction.js';
 import Activity from '../models/Activity.js';
 import '../models/User.js';
 import { createDealAccount, deleteDealAccount, getDealAccount, linkDealRecord, unlinkDealRecord } from './dealAccounts.controller.js';
+import { claimDealForLink, withDealTransaction } from '../utils/dealLink.js';
 
 describe('deal accounts', () => {
   let memory;
   const user = { _id: new mongoose.Types.ObjectId(), name: 'Admin' };
-  beforeAll(async () => { memory = await MongoMemoryServer.create(); await mongoose.connect(memory.getUri()); });
+  beforeAll(async () => { memory = await MongoMemoryReplSet.create({ replSet: { count: 1 } }); await mongoose.connect(memory.getUri()); });
   afterEach(async () => { await Promise.all([Deal.deleteMany({}), Invoice.deleteMany({}), PurchaseOrder.deleteMany({}), Expense.deleteMany({}), Account.deleteMany({}), FinancialTransaction.deleteMany({}), Activity.deleteMany({})]); });
   afterAll(async () => { await mongoose.disconnect(); await memory.stop(); });
   const response = () => ({ statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } });
@@ -81,6 +82,22 @@ describe('deal accounts', () => {
     });
   });
 
+  it('rolls back deal deletion when writing its activity event fails', async () => {
+    const created = response();
+    await createDealAccount({ body: { identifier: 'AUDIT-ROLLBACK-931' }, user }, created);
+    const createActivity = vi.spyOn(Activity, 'create').mockRejectedValueOnce(new Error('simulated activity write failure'));
+
+    try {
+      await expect(deleteDealAccount({ params: { id: String(created.body._id) }, user }, response()))
+        .rejects.toThrow(/simulated activity write failure/i);
+
+      expect(await Deal.findById(created.body._id)).not.toBeNull();
+      expect(await Activity.countDocuments({ action: 'deal_deleted', entityId: String(created.body._id) })).toBe(0);
+    } finally {
+      createActivity.mockRestore();
+    }
+  });
+
   it('blocks deletion while invoices, purchase orders, or expenses are linked and preserves them', async () => {
     const created = response();
     await createDealAccount({ body: { identifier: 'LINKED-931' }, user }, created);
@@ -103,18 +120,50 @@ describe('deal accounts', () => {
     expect(await Invoice.findById(invoice._id)).toMatchObject({ deal: dealId, total: 100 });
     expect(await PurchaseOrder.findById(purchase._id)).toMatchObject({ deal: dealId, total: 50 });
     expect(await Expense.findById(expense._id)).toMatchObject({ deal: dealId, amount: 10 });
-    expect((await Deal.findById(dealId).select('+deleting +linkOperations')).deleting).toBe(false);
+    expect((await Deal.findById(dealId).select('+linkRevision')).linkRevision).toBe(0);
   });
 
-  it('does not delete a deal while another link operation is active', async () => {
+  it('rolls back the deal revision when a source-record link fails', async () => {
     const created = response();
-    await createDealAccount({ body: { identifier: 'BUSY-931' }, user }, created);
-    await Deal.updateOne({ _id: created.body._id }, { $set: { linkOperations: 1 } });
+    await createDealAccount({ body: { identifier: 'FAILED-LINK-931' }, user }, created);
     const res = response();
 
-    await expect(deleteDealAccount({ params: { id: String(created.body._id) }, user }, res)).rejects.toThrow(/being linked or deleted/i);
+    await expect(linkDealRecord({ params: { id: String(created.body._id) }, body: { type: 'invoice', recordId: new mongoose.Types.ObjectId().toString() }, user }, res)).rejects.toThrow(/not found/i);
 
-    expect(res.statusCode).toBe(409);
+    expect(res.statusCode).toBe(404);
     expect(await Deal.findById(created.body._id)).not.toBeNull();
+    expect((await Deal.findById(created.body._id).select('+linkRevision')).linkRevision).toBe(0);
   });
+
+  it('does not delete a deal while a concurrent record-creation transaction is committing', async () => {
+    const created = response();
+    await createDealAccount({ body: { identifier: 'CONCURRENT-931' }, user }, created);
+    const dealId = created.body._id;
+    const customer = new mongoose.Types.ObjectId();
+    const product = new mongoose.Types.ObjectId();
+    let linkStarted;
+    let finishLink;
+    const started = new Promise((resolve) => { linkStarted = resolve; });
+    const release = new Promise((resolve) => { finishLink = resolve; });
+    const linkOperation = withDealTransaction({}, async (session) => {
+      await claimDealForLink(session, dealId);
+      linkStarted();
+      await release;
+      await Invoice.create([{
+        number: 'INV-CONCURRENT', customer, deal: dealId,
+        items: [{ product, name: 'Test', quantity: 1, unitPrice: 10, unitCost: 5, lineTotal: 10 }],
+        subtotal: 10, total: 10, balance: 10,
+      }], { session });
+    });
+    await started;
+    const deleteOperation = deleteDealAccount({ params: { id: String(dealId) }, user }, response());
+    const deletionRejected = expect(deleteOperation).rejects.toThrow(/Unlink all records before deleting/i);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    finishLink();
+    await linkOperation;
+    await deletionRejected;
+
+    expect(await Deal.findById(dealId)).not.toBeNull();
+    expect(await Invoice.countDocuments({ deal: dealId })).toBe(1);
+  }, 20000);
 });

@@ -6,10 +6,9 @@ const dealSchema = new mongoose.Schema({
   description: { type: String, trim: true, default: '' },
   status: { type: String, enum: ['open', 'closed'], default: 'open' },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  // Internal coordination fields: they prevent a deal deletion racing with a new
-  // record link. `select: false` keeps them out of normal API responses.
-  deleting: { type: Boolean, default: false, select: false },
-  linkOperations: { type: Number, default: 0, min: 0, select: false },
+  // Incremented inside the same transaction that attaches a source record or deletes
+  // this deal. The write serializes those transactions without a persistent lock.
+  linkRevision: { type: Number, default: 0, min: 0, select: false },
 }, { timestamps: true });
 
 dealSchema.pre('validate', function () {

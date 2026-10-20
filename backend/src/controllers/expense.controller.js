@@ -5,7 +5,7 @@ import FinancialTransaction from '../models/FinancialTransaction.js';
 import { logActivity } from '../utils/activity.js';
 import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting } from '../utils/ledger.js';
 import { safeFilterValue } from '../utils/safeFilterValue.js';
-import { validateDealId } from '../utils/dealLink.js';
+import { claimDealForLink, requireDealTransactionSupport, validateDealId } from '../utils/dealLink.js';
 
 const PKR_ONLY = { $expr: { $eq: [{ $ifNull: ['$currency', 'PKR'] }, 'PKR'] } };
 
@@ -72,6 +72,7 @@ export const getExpense = asyncHandler(async (req, res) => {
 export const createExpense = asyncHandler(async (req, res) => {
   const { amount, category, account: accountId, date, description, notes, reference, idempotencyKey, dealId } = req.body;
   const deal = await validateDealId(res, dealId);
+  await requireDealTransactionSupport(res, deal);
 
   const numericAmount = Number(amount);
   if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
@@ -119,6 +120,7 @@ export const createExpense = asyncHandler(async (req, res) => {
         idempotencyKey,
       },
       async (session, posted) => {
+        if (deal) await claimDealForLink(session, deal);
         const [created] = await Expense.create(
           [
             {
