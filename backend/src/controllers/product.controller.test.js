@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import Product from '../models/Product.js';
-import { stripCostInput, stripCommentsInput, listProducts, getProduct, productSummary, createProduct, updateProduct } from './product.controller.js';
+import { stripCostInput, stripCommentsInput, listProducts, listProductModels, getProduct, productSummary, createProduct, updateProduct } from './product.controller.js';
 import Invoice from '../models/Invoice.js';
 import StockMovement from '../models/StockMovement.js';
 import Customer from '../models/Customer.js';
@@ -252,6 +252,82 @@ describe('listProducts pagination', () => {
     ]);
     const body = await call({ category: 'Laptops' });
     expect(body.items.map((p) => p.sku)).toEqual(['CAT-1']);
+  });
+});
+
+describe('Inventory model filtering', () => {
+  let mem;
+  beforeAll(async () => {
+    mem = await MongoMemoryServer.create();
+    await mongoose.connect(mem.getUri());
+  });
+  afterEach(async () => { await Product.deleteMany({}); });
+  afterAll(async () => {
+    await mongoose.disconnect();
+    await mem.stop();
+  });
+
+  function mockRes() {
+    const headers = {};
+    return {
+      statusCode: 200,
+      status(code) { this.statusCode = code; return this; },
+      set(key, value) { headers[String(key).toLowerCase()] = String(value); return this; },
+      get(key) { return headers[String(key).toLowerCase()]; },
+      json(body) { this.body = body; return this; },
+    };
+  }
+
+  async function list(query = {}) {
+    const res = mockRes();
+    await listProducts({ query, user: { role: 'admin' } }, res);
+    return res.body;
+  }
+
+  it('filters exact selected models together with text/brand search and low stock', async () => {
+    await Product.insertMany([
+      { sku: 'INV-LEN-X1', name: 'Lenovo ThinkPad X1', brand: 'Lenovo', model: 'ThinkPad X1', stock: 2, lowStockThreshold: 5 },
+      { sku: 'INV-LEN-X1C', name: 'Lenovo ThinkPad X1 Carbon', brand: 'Lenovo', model: 'ThinkPad X1 Carbon', stock: 1, lowStockThreshold: 5 },
+      { sku: 'INV-DELL-X1', name: 'Dell ThinkPad X1', brand: 'Dell', model: 'ThinkPad X1', stock: 9, lowStockThreshold: 5 },
+    ]);
+
+    const filtered = await list({ q: 'Lenovo', lowStock: 'true', models: JSON.stringify(['ThinkPad X1']) });
+    expect(filtered.items.map((product) => product.sku)).toEqual(['INV-LEN-X1']);
+
+    const unfilteredByModel = await list({ q: 'Lenovo', lowStock: 'true' });
+    expect(unfilteredByModel.items.map((product) => product.sku).sort()).toEqual(['INV-LEN-X1', 'INV-LEN-X1C']);
+
+    const serialSearch = await list({ q: 'INV-LEN-X1', models: JSON.stringify(['ThinkPad X1']) });
+    expect(serialSearch.items.map((product) => product.sku)).toEqual(['INV-LEN-X1']);
+
+    const all = await list({});
+    expect(all.total).toBe(3);
+  });
+
+  it('provides distinct searchable model options from existing products', async () => {
+    await Product.insertMany([
+      { sku: 'OPT-X1', name: 'X1', model: 'ThinkPad X1' },
+      { sku: 'OPT-X1-2', name: 'X1 duplicate', model: 'ThinkPad X1' },
+      { sku: 'OPT-X1C', name: 'X1 Carbon', model: 'ThinkPad X1 Carbon' },
+    ]);
+    const res = mockRes();
+
+    await listProductModels({}, res);
+
+    expect(res.body).toEqual(['ThinkPad X1', 'ThinkPad X1 Carbon']);
+  });
+
+  it('rejects malformed model-filter input instead of broadening the result silently', async () => {
+    const res = mockRes();
+    await expect(listProducts({ query: { models: '{bad' }, user: { role: 'admin' } }, res)).rejects.toThrow(/list of model names/i);
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects more than 100 selected models', async () => {
+    const res = mockRes();
+    const models = Array.from({ length: 101 }, (_, index) => `Model ${index + 1}`);
+    await expect(listProducts({ query: { models: JSON.stringify(models) }, user: { role: 'admin' } }, res)).rejects.toThrow(/up to 100 model names/i);
+    expect(res.statusCode).toBe(400);
   });
 });
 

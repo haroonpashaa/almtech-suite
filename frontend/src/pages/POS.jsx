@@ -9,16 +9,25 @@ import { money, errorMessage } from '../lib/format.js';
 import { clampQuantity, isValidQuantity } from '../lib/quantity.js';
 import { resizeSerials, compactSerials, serialsAreSubmittable } from '../lib/cartSerials.js';
 import { parsePricingPaste } from '../lib/pricingPaste.js';
+import { usePagedList } from '../hooks/usePagedList.js';
 import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Combobox from '../components/Combobox.jsx';
-import { specLine } from './Products.jsx';
+import POSProductPicker from '../components/POSProductPicker.jsx';
 import { Spinner } from '../components/ui.jsx';
 import DealSelector from '../components/DealSelector.jsx';
+import {
+  addPosCartItem,
+  buildPosProductParams,
+  calculatePosTotals,
+  emptyPosProductFilters,
+  removePosCartItem,
+} from '../lib/posProductSelection.js';
 
 export default function POS() {
   const navigate = useNavigate();
-  const [search, setSearch] = useState('');
+  const [productFilters, setProductFilters] = useState(emptyPosProductFilters);
+  const [selectedSerials, setSelectedSerials] = useState({});
   const [customer, setCustomer] = useState('');
   const [dealId, setDealId] = useState('');
   const [cart, setCart] = useState([]);
@@ -37,9 +46,16 @@ export default function POS() {
   const [scanning, setScanning] = useState(false);
   const barcodeRef = useRef(null);
 
-  const { data: products, isLoading: loadingProducts } = useQuery({
-    queryKey: ['products-pos', search],
-    queryFn: async () => (await api.get('/products', { params: { q: search, limit: 30 } })).data,
+  const modelOptions = useQuery({
+    queryKey: ['products-pos-models'],
+    queryFn: async () => (await api.get('/products/pos/models')).data,
+    staleTime: 5 * 60 * 1000,
+  });
+  const productList = usePagedList({
+    key: ['products-pos', productFilters],
+    path: '/products/pos',
+    params: buildPosProductParams(productFilters),
+    limit: 30,
   });
   const { data: accounts } = useQuery({
     queryKey: ['accounts'],
@@ -47,45 +63,11 @@ export default function POS() {
   });
   const currency = useCurrency();
 
-  function addToCart(p) {
-    setCart((c) => {
-      const existing = c.find((x) => x.product === p._id);
-      if (existing) {
-        return c.map((x) => {
-          if (x.product !== p._id) return x;
-          const quantity = clampQuantity(Number(x.quantity || 0) + 1, p.stock);
-          return { ...x, quantity, serials: x.tracksSerials ? resizeSerials(x.serials, quantity) : x.serials };
-        });
-      }
-      const tracksSerials = !!p.tracksSerials;
-      return [
-        ...c,
-        {
-          // The catalog comment (often auto-composed grading/inspection text from
-          // import) is internal/product-level information, not a sale-time note —
-          // the salesperson starts blank and types whatever this specific sale needs,
-          // rather than having to delete boilerplate first.
-          // A product with no selling price set yet (or never priced) has
-          // sellingPrice 0 in the database — pre-filling that literally would
-          // put the exact "starts with a zero you have to delete" problem
-          // right back into the one field this whole fix was about. A real,
-          // already-set price is still a helpful default and stays pre-filled.
-          product: p._id, name: p.name, sku: p.sku, unitPrice: p.sellingPrice || '',
-          // Specification snapshot: starts as a copy of the product's own values, but
-          // from here on belongs to this sale line — editing it corrects what this
-          // sale says was sold, and never writes back to the product record.
-          model: p.model || '', ram: p.ram || '', processor: p.processor || '', storage: p.storage || '',
-          quantity: 1, discount: '', stock: p.stock, comments: '',
-          tracksSerials,
-          // Snapshot of what's sellable right now. Taken once, at add-to-cart time —
-          // the backend re-validates against the live product record at submit time
-          // regardless, so a stale snapshot here can only under-offer a choice, never
-          // let an invalid one through.
-          availableSerials: tracksSerials ? (p.serials || []).filter((s) => s.status === 'in_stock').map((s) => s.serial) : [],
-          serials: tracksSerials ? resizeSerials([], 1) : [],
-        },
-      ];
-    });
+  function addToCart(p, serial = '') {
+    const attempt = addPosCartItem(cart, p, serial);
+    if (attempt.error) return toast.error(attempt.error);
+    setCart((current) => addPosCartItem(current, p, serial).cart);
+    if (serial) setSelectedSerials((current) => ({ ...current, [p._id]: '' }));
   }
 
   // Handles both a physical scanner (keyboard input terminated by Enter) and a manual
@@ -148,19 +130,10 @@ export default function POS() {
     }));
   }
   function removeLine(idx) {
-    setCart((c) => c.filter((_, i) => i !== idx));
+    setCart((c) => removePosCartItem(c, idx));
   }
 
-  const totals = useMemo(() => {
-    const subtotal = cart.reduce(
-      (s, l) => s + Math.max(0, (Number(l.quantity) || 0) * (Number(l.unitPrice) || 0) - (Number(l.discount) || 0)),
-      0
-    );
-    const afterDisc = Math.max(0, subtotal - Number(discount || 0));
-    const tax = Math.round(afterDisc * (Number(taxRate || 0) / 100) * 100) / 100;
-    const total = Math.round((afterDisc + tax) * 100) / 100;
-    return { subtotal, tax, total };
-  }, [cart, discount, taxRate]);
+  const totals = useMemo(() => calculatePosTotals(cart, discount, taxRate), [cart, discount, taxRate]);
 
   const itemCount = cart.reduce((s, l) => s + Number(l.quantity || 0), 0);
 
@@ -263,66 +236,26 @@ export default function POS() {
             </p>
           </div>
 
-          {/* Product search */}
-          <div className="card p-4">
-            <div className="field-search">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
-              <input
-                className="input"
-                placeholder="Search product by name, SKU, brand…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-            </div>
-            <div className="mt-3 max-h-72 overflow-y-auto -mx-1 px-1">
-              {loadingProducts ? (
-                <div className="space-y-2 py-1">{Array.from({ length: 4 }).map((_, i) => <div key={i} className="skeleton h-12 rounded-lg" />)}</div>
-              ) : (products?.items || []).length === 0 ? (
-                <div className="text-center text-sm text-ink-400 py-8">No products found</div>
-              ) : (
-                <div className="grid sm:grid-cols-2 gap-2">
-                  {(products?.items || []).map((p) => {
-                    const out = p.stock === 0;
-                    return (
-                      <button
-                        key={p._id}
-                        type="button"
-                        onClick={() => !out && addToCart(p)}
-                        disabled={out}
-                        className={`group text-left p-3 rounded-xl border transition-all ${
-                          out
-                            ? 'border-ink-100 opacity-50 cursor-not-allowed'
-                            : 'border-ink-100 hover:border-brand-300 hover:bg-brand-50/40 hover:shadow-soft active:scale-[0.99]'
-                        }`}
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="font-medium text-ink-900 text-sm truncate">{p.name}</div>
-                            <div className="text-[11px] text-ink-400 font-mono mt-0.5">{p.sku}</div>
-                            {/* Two machines often differ only by memory and storage, so
-                                the specification belongs on the card the salesperson picks. */}
-                            {specLine(p) && <div className="text-[11px] text-ink-500 mt-0.5 truncate">{specLine(p)}</div>}
-                          </div>
-                          <span className={`badge shrink-0 ${out ? 'badge-danger' : p.stock <= (p.reorderLevel ?? 5) ? 'badge-warning' : 'badge-neutral'}`}>
-                            {out ? 'Out' : `${p.stock} in stock`}
-                          </span>
-                        </div>
-                        <div className="mt-2 flex items-center justify-between">
-                          <span className="num font-semibold text-ink-900">{money(p.sellingPrice, currency)}</span>
-                          {!out && (
-                            <span className="text-[11px] font-medium text-brand-600 opacity-0 group-hover:opacity-100 transition flex items-center gap-1">
-                              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
-                              Add
-                            </span>
-                          )}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
+          <POSProductPicker
+            filters={productFilters}
+            models={modelOptions.data || []}
+            modelsLoading={modelOptions.isLoading}
+            modelsError={modelOptions.isError}
+            onFiltersChange={setProductFilters}
+            products={productList.rows}
+            loading={productList.isLoading}
+            error={productList.isError}
+            total={productList.total}
+            page={productList.page}
+            limit={productList.limit}
+            onPageChange={productList.setPage}
+            cart={cart}
+            selectedSerials={selectedSerials}
+            onSerialChange={(productId, serial) => setSelectedSerials((current) => ({ ...current, [productId]: serial }))}
+            onAdd={addToCart}
+            currency={currency}
+            formatMoney={money}
+          />
 
           {/* Cart */}
           <div className="card overflow-hidden">
@@ -343,7 +276,8 @@ export default function POS() {
                 <table className="min-w-full text-sm">
                   <thead>
                     <tr>
-                      <th scope="col" className="th">Item</th>
+                      <th scope="col" className="th">Product / model</th>
+                      <th scope="col" className="th min-w-40">Serial number</th>
                       <th scope="col" className="th">Comments</th>
                       <th scope="col" className="th text-center w-28">Qty</th>
                       <th scope="col" className="th text-right">Price</th>
@@ -371,27 +305,18 @@ export default function POS() {
                             <input className="input input-sm" placeholder="Processor" aria-label="Processor" value={line.processor || ''} onChange={(e) => updateLine(i, { processor: e.target.value })} />
                             <input className="input input-sm" placeholder="Storage" aria-label="Storage" value={line.storage || ''} onChange={(e) => updateLine(i, { storage: e.target.value })} />
                           </div>
-                          {line.tracksSerials && (
-                            <div className="mt-1.5">
-                              <div className="t-meta mb-1">Serial number{line.serials.length === 1 ? '' : 's'}</div>
-                              <div className="flex flex-wrap gap-1">
-                                {line.serials.map((chosen, slot) => (
-                                  <select
-                                    key={slot}
-                                    className="select input-sm"
-                                    aria-label={`Serial number ${slot + 1}`}
-                                    value={chosen}
-                                    onChange={(e) => updateSerialSlot(i, slot, e.target.value)}
-                                  >
-                                    <option value="">— select —</option>
-                                    {line.availableSerials
-                                      .filter((sn) => sn === chosen || !line.serials.includes(sn))
-                                      .map((sn) => <option key={sn} value={sn}>{sn}</option>)}
-                                  </select>
-                                ))}
-                              </div>
+                        </td>
+                        <td className="td">
+                          {line.tracksSerials ? (
+                            <div className="space-y-1">
+                              {line.serials.map((chosen, slot) => (
+                                <select key={slot} className="select input-sm" aria-label={`Serial number ${slot + 1}`} value={chosen} onChange={(e) => updateSerialSlot(i, slot, e.target.value)}>
+                                  <option value="">— select —</option>
+                                  {line.availableSerials.filter((sn) => sn === chosen || !line.serials.includes(sn)).map((sn) => <option key={sn} value={sn}>{sn}</option>)}
+                                </select>
+                              ))}
                             </div>
-                          )}
+                          ) : '—'}
                         </td>
                         <td className="td">
                           <input
