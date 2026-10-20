@@ -4,6 +4,7 @@ import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-quer
 import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
 import { money, datetime, errorMessage } from '../lib/format.js';
+import { newIdempotencyKey } from '../lib/idempotency.js';
 import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
 import DocumentActions from '../components/DocumentActions.jsx';
@@ -16,6 +17,7 @@ const TYPE_LABELS = {
   customer_payment: 'Customer payment',
   sale_payment: 'Sale payment',
   other_income: 'Other income',
+  ledger_adjustment: 'Manual adjustment',
   transfer_in: 'Transfer in',
   expense_reversal: 'Expense reversal',
   payment_reversal: 'Payment reversal',
@@ -36,6 +38,8 @@ export default function AccountLedger() {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [adjustment, setAdjustment] = useState(null);
+  const [savingAdjustment, setSavingAdjustment] = useState(false);
 
   // `page: 0` means "the newest page" — resolved below once the total is known.
   // A ledger that silently showed the OLDEST 500 rows while presenting them
@@ -55,7 +59,8 @@ export default function AccountLedger() {
       return (await api.get(`/accounts/${id}/ledger`, { params: { ...params, page } })).data;
     },
   });
-  const currency = useCurrency();
+  const defaultCurrency = useCurrency();
+  const currency = data?.account?.currency || defaultCurrency;
 
   function openEdit() {
     setForm({
@@ -73,6 +78,20 @@ export default function AccountLedger() {
 
   function set(k, v) {
     setForm((f) => ({ ...f, [k]: v }));
+  }
+
+  async function saveAdjustment() {
+    if (!adjustment || savingAdjustment) return;
+    setSavingAdjustment(true);
+    try {
+      await api.post(`/accounts/${id}/adjustments`, adjustment);
+      toast.success('Ledger adjustment recorded');
+      setAdjustment(null);
+      qc.invalidateQueries({ queryKey: ['account-ledger', id] });
+      qc.invalidateQueries({ queryKey: ['accounts-summary'] });
+      qc.invalidateQueries({ queryKey: ['dashboard'] });
+    } catch (e) { toast.error(errorMessage(e)); }
+    finally { setSavingAdjustment(false); }
   }
 
   // currentBalance is never sent — the backend shifts it by the opening-balance
@@ -121,11 +140,12 @@ export default function AccountLedger() {
       <PageHeader
         breadcrumb={[{ label: 'Accounts', to: '/accounts' }, { label: data.account.name }]}
         title={data.account.name}
-        subtitle={`${data.account.type} account · ledger`}
+        subtitle={`${data.account.type === 'other_bank' ? 'Other Bank' : data.account.type} account · ledger`}
         actions={
           <>
             <Badge tone={data.reconciled ? 'success' : 'danger'} dot>{data.reconciled ? 'reconciled' : 'balance drift'}</Badge>
             <button className="btn-secondary" onClick={openEdit}>Edit</button>
+            <button className="btn-primary" onClick={() => setAdjustment({ direction: 'in', amount: '', reason: '', idempotencyKey: newIdempotencyKey() })}>Add / deduct</button>
             <DocumentActions path={`/accounts/${id}/statement/pdf`} filename={`statement-${data.account?.name || 'account'}`} label="Statement" />
           </>
         }
@@ -195,6 +215,8 @@ export default function AccountLedger() {
                   <Link to={`/invoices/${e.invoiceId}`} className="font-mono text-[12px] text-brand-700 hover:underline">{e.invoice}</Link>
                 ) : e.purchaseOrder ? (
                   <Link to={`/purchase-orders/${e.purchaseOrderId}`} className="font-mono text-[12px] text-brand-700 hover:underline">{e.purchaseOrder}</Link>
+                ) : e.description ? (
+                  <span className="text-ink-500">{e.description}</span>
                 ) : e.reference ? (
                   <span className="font-mono text-[12px] text-ink-500">{e.reference}</span>
                 ) : (
@@ -236,6 +258,7 @@ export default function AccountLedger() {
                   <option value="cash">Cash</option>
                   <option value="bank">Bank</option>
                   <option value="wallet">Wallet</option>
+                  <option value="other_bank">Other Bank</option>
                   <option value="other">Other</option>
                 </select>
               </div>
@@ -277,6 +300,29 @@ export default function AccountLedger() {
             </div>
           </div>
         )}
+      </Modal>
+      <Modal open={!!adjustment} onClose={() => !savingAdjustment && setAdjustment(null)} title="Record ledger adjustment">
+        {adjustment && <div className="space-y-3">
+          <p className="text-sm text-ink-500">This posts a new transaction and updates the account balance. Existing entries remain unchanged.</p>
+          <div>
+            <label htmlFor="ledger-adjust-direction" className="label">Adjustment</label>
+            <select id="ledger-adjust-direction" className="select" value={adjustment.direction} onChange={(e) => setAdjustment((a) => ({ ...a, direction: e.target.value }))}>
+              <option value="in">Add funds</option><option value="out">Deduct funds</option>
+            </select>
+          </div>
+          <div>
+            <label htmlFor="ledger-adjust-amount" className="label">Amount ({currency})</label>
+            <input id="ledger-adjust-amount" className="input num input-money" type="number" min="0.01" step="0.01" value={adjustment.amount} onChange={(e) => setAdjustment((a) => ({ ...a, amount: e.target.value }))} />
+          </div>
+          <div>
+            <label htmlFor="ledger-adjust-reason" className="label">Reason <span className="text-red-500">*</span></label>
+            <textarea id="ledger-adjust-reason" className="input" rows={3} maxLength={500} value={adjustment.reason} onChange={(e) => setAdjustment((a) => ({ ...a, reason: e.target.value }))} />
+          </div>
+          <div className="flex gap-2 pt-2">
+            <button className="btn-primary" disabled={savingAdjustment || !(Number(adjustment.amount) > 0) || !adjustment.reason.trim()} onClick={saveAdjustment}>{savingAdjustment ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Post adjustment'}</button>
+            <button className="btn-secondary" disabled={savingAdjustment} onClick={() => setAdjustment(null)}>Cancel</button>
+          </div>
+        </div>}
       </Modal>
     </div>
   );

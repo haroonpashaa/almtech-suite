@@ -7,7 +7,10 @@ import mongoose from 'mongoose';
 const accountSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, unique: true, trim: true },
-    type: { type: String, enum: ['cash', 'bank', 'wallet', 'other'], required: true },
+    type: { type: String, enum: ['cash', 'bank', 'other_bank', 'wallet', 'other'], required: true },
+    // Legacy accounts and balances are PKR. New foreign-currency accounts must
+    // explicitly carry their denomination; account balances are never converted.
+    currency: { type: String, enum: ['GBP', 'PKR'], default: 'PKR', required: true },
 
     // Optional descriptive metadata — meaningful for bank/wallet accounts,
     // simply left blank for cash. No behaviour branches on these.

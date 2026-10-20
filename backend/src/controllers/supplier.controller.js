@@ -80,6 +80,9 @@ export const listSuppliers = asyncHandler(async (req, res) => {
 // returned alongside so any divergence is visible rather than hidden.
 export const getSupplier = asyncHandler(async (req, res) => {
   const supplier = await findSupplier(res, req.params.id);
+  const currency = req.query.currency === 'GBP' ? 'GBP' : 'PKR';
+  const payableField = currency === 'GBP' ? 'payableGBP' : 'payable';
+  const currencyMatch = { $expr: { $eq: [{ $ifNull: ['$currency', 'PKR'] }, currency] } };
 
   // The purchase-order history is windowed. It previously took .limit(100) with no
   // total, so a supplier with more than 100 orders silently lost the rest — the
@@ -90,7 +93,7 @@ export const getSupplier = asyncHandler(async (req, res) => {
 
   const [rollup, openingAgg, recent, purchaseOrderTotal] = await Promise.all([
     PurchaseOrder.aggregate([
-      { $match: { supplier: supplier._id, status: COUNTED_PO } },
+      { $match: { supplier: supplier._id, status: COUNTED_PO, ...currencyMatch } },
       {
         $group: {
           _id: null,
@@ -103,15 +106,15 @@ export const getSupplier = asyncHandler(async (req, res) => {
       },
     ]),
     OpeningBalance.aggregate([
-      { $match: { entityType: 'supplier', entity: supplier._id } },
+      { $match: { entityType: 'supplier', entity: supplier._id, ...currencyMatch } },
       { $group: { _id: null, total: { $sum: '$amount' } } },
     ]),
-    PurchaseOrder.find({ supplier: supplier._id })
-      .select('number orderedAt total paid balance status expectedAt')
+    PurchaseOrder.find({ supplier: supplier._id, ...currencyMatch })
+      .select('number orderedAt total paid balance status expectedAt currency fxSnapshots')
       .sort('-orderedAt')
       .skip((poPage - 1) * poLimit)
       .limit(poLimit),
-    PurchaseOrder.countDocuments({ supplier: supplier._id }),
+    PurchaseOrder.countDocuments({ supplier: supplier._id, ...currencyMatch }),
   ]);
 
   const r = rollup[0] || {};
@@ -127,8 +130,9 @@ export const getSupplier = asyncHandler(async (req, res) => {
       openingBalance,
       outstanding: derivedOutstanding,
       // The authoritative figure, plus whether the derivation agrees with it.
-      storedPayable: supplier.payable,
-      reconciled: Math.abs(derivedOutstanding - supplier.payable) < 0.005,
+      currency,
+      storedPayable: supplier[payableField] || 0,
+      reconciled: Math.abs(derivedOutstanding - (supplier[payableField] || 0)) < 0.005,
       lastOrderedAt: r.lastOrderedAt || null,
     },
     purchaseOrders: recent,
@@ -199,10 +203,13 @@ export const updateSupplier = asyncHandler(async (req, res) => {
 // ---------------------------------------------------------------------------
 export const supplierLedger = asyncHandler(async (req, res) => {
   const supplier = await findSupplier(res, req.params.id);
+  const currency = req.query.currency === 'GBP' ? 'GBP' : 'PKR';
+  const payableField = currency === 'GBP' ? 'payableGBP' : 'payable';
+  const currencyMatch = { $expr: { $eq: [{ $ifNull: ['$currency', 'PKR'] }, currency] } };
 
   const [pos, openings] = await Promise.all([
-    PurchaseOrder.find({ supplier: supplier._id, status: COUNTED_PO }).sort('orderedAt'),
-    OpeningBalance.find({ entityType: 'supplier', entity: supplier._id }).sort('asOf'),
+    PurchaseOrder.find({ supplier: supplier._id, status: COUNTED_PO, ...currencyMatch }).sort('orderedAt'),
+    OpeningBalance.find({ entityType: 'supplier', entity: supplier._id, ...currencyMatch }).sort('asOf'),
   ]);
 
   const events = [];
@@ -211,6 +218,7 @@ export const supplierLedger = asyncHandler(async (req, res) => {
     events.push({
       date: ob.asOf,
       type: 'opening_balance',
+      currency,
       description: 'Opening balance carried forward',
       reference: ob.reference || null,
       credit: ob.amount,
@@ -222,6 +230,7 @@ export const supplierLedger = asyncHandler(async (req, res) => {
     events.push({
       date: po.orderedAt,
       type: 'purchase',
+      currency,
       description: `Purchase order ${po.number}`,
       reference: po.number,
       purchaseOrder: po._id,
@@ -232,6 +241,7 @@ export const supplierLedger = asyncHandler(async (req, res) => {
       events.push({
         date: p.date,
         type: 'payment',
+        currency: p.currency || po.currency || 'PKR',
         description: `Payment on ${po.number}${p.method ? ` (${p.method})` : ''}`,
         reference: p.reference || po.number,
         purchaseOrder: po._id,
@@ -245,6 +255,7 @@ export const supplierLedger = asyncHandler(async (req, res) => {
         events.push({
           date: p.reversedAt || p.date,
           type: 'payment_reversal',
+          currency: p.currency || po.currency || 'PKR',
           description: `Payment reversed${p.reversalReason ? ` — ${p.reversalReason}` : ''}`,
           reference: p.reference || po.number,
           purchaseOrder: po._id,
@@ -269,11 +280,12 @@ export const supplierLedger = asyncHandler(async (req, res) => {
 
   res.json({
     supplier,
-    payable: supplier.payable,
+    currency,
+    payable: supplier[payableField] || 0,
     closingBalance: closing,
     totalCredit,
     totalDebit,
-    reconciled: Math.abs(closing - supplier.payable) < 0.005,
+    reconciled: Math.abs(closing - (supplier[payableField] || 0)) < 0.005,
     entries: entries.reverse(), // newest first for display
   });
 });

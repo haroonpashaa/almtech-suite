@@ -71,6 +71,7 @@ export default function Settings() {
             <div className="mb-4">
               <h3 className="text-sm font-semibold text-ink-900">{group.title}</h3>
               <p className="text-xs text-ink-400 mt-0.5">{group.description}</p>
+              {group.title === 'Numbering & Tax' && <p className="text-xs text-amber-700 mt-2">Keep application currency as PKR while customer balances and legacy reports use one currency. GBP is supported for payable records and matching accounts only.</p>}
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {group.fields.map(([k, label, type = 'text']) => (

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import Settings from '../models/Settings.js';
-import { pickWritableSettingsFields, updateSettings } from './settings.controller.js';
+import { getSettings, pickWritableSettingsFields, updateSettings } from './settings.controller.js';
 
 describe('pickWritableSettingsFields', () => {
   it('keeps every legitimate settings field the frontend actually exposes', () => {
@@ -57,7 +57,7 @@ describe('updateSettings (DB-backed)', () => {
   });
 
   function mockRes() {
-    const res = { json: (body) => { res.body = body; return res; } };
+    const res = { statusCode: 200, status(code) { res.statusCode = code; return res; }, json: (body) => { res.body = body; return res; } };
     return res;
   }
 
@@ -71,18 +71,33 @@ describe('updateSettings (DB-backed)', () => {
     expect(reloaded.businessName).toBe('New Name');
   });
 
+  it('prevents changing the global reporting currency away from PKR', async () => {
+    await Settings.create({ currency: 'PKR' });
+    const res = mockRes();
+    await expect(updateSettings({ body: { currency: 'GBP' } }, res)).rejects.toThrow(/must remain PKR/i);
+    expect((await Settings.findOne()).currency).toBe('PKR');
+  });
+
+  it('presents legacy global currency as PKR without mutating the stored setting', async () => {
+    await Settings.create({ currency: 'GBP' });
+    const res = mockRes();
+    await getSettings({}, res);
+    expect(res.body.currency).toBe('PKR');
+    expect((await Settings.findOne()).currency).toBe('GBP');
+  });
+
   it('every field the frontend Settings page actually edits still persists', async () => {
     await Settings.create({});
     const res = mockRes();
     await updateSettings({
       body: {
         businessName: 'Acme Traders', email: 'ops@acme.test', phone: '0300', taxNumber: 'NTN-1',
-        address: 'Lahore', logoUrl: 'https://x/logo.png', currency: 'USD', defaultTaxRate: 17,
+        address: 'Lahore', logoUrl: 'https://x/logo.png', currency: 'PKR', defaultTaxRate: 17,
         invoicePrefix: 'AC-INV-', quotationPrefix: 'AC-QT-', poPrefix: 'AC-PO-', showTaxOnInvoices: false,
       },
     }, res);
     expect(res.body.businessName).toBe('Acme Traders');
-    expect(res.body.currency).toBe('USD');
+    expect(res.body.currency).toBe('PKR');
     expect(res.body.defaultTaxRate).toBe(17);
     expect(res.body.showTaxOnInvoices).toBe(false);
     const reloaded = await Settings.findOne();

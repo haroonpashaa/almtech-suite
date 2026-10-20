@@ -11,6 +11,7 @@ import Money from '../components/Money.jsx';
 import Modal from '../components/Modal.jsx';
 import { Badge, Spinner } from '../components/ui.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
+import DealSelector from '../components/DealSelector.jsx';
 
 const today = () => new Date().toISOString().slice(0, 10);
 const emptyForm = () => ({
@@ -21,6 +22,7 @@ const emptyForm = () => ({
   description: '',
   notes: '',
   reference: '',
+  dealId: '',
 });
 
 export default function Expenses() {
@@ -68,7 +70,8 @@ export default function Expenses() {
     queryKey: ['expense-categories'],
     queryFn: async () => (await api.get('/expenses/categories')).data,
   });
-  const currency = useCurrency();
+  const defaultCurrency = useCurrency();
+  const selectedAccount = (accounts || []).find((a) => a._id === form.account);
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -83,7 +86,7 @@ export default function Expenses() {
   async function save() {
     setSaving(true);
     try {
-      await api.post('/expenses', { ...form, amount: Number(form.amount) });
+      await api.post('/expenses', { ...form, amount: Number(form.amount), dealId: form.dealId || undefined });
       toast.success('Expense recorded');
       setForm(emptyForm());
       setShowAdd(false);
@@ -201,7 +204,7 @@ export default function Expenses() {
           )}
           <div className="ml-auto text-right">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Filtered Total</div>
-            <div className="text-2xl font-semibold num text-ink-900 tracking-tight">{money(data?.total || 0, currency)}</div>
+            <div className="text-2xl font-semibold num text-ink-900 tracking-tight flex flex-wrap justify-end gap-x-3">{Object.entries(data?.totalsByCurrency || { [defaultCurrency]: { total: data?.total || 0 } }).map(([code, totals]) => <span key={code}>{money(totals.total, code)}</span>)}</div>
             <div className="text-xs text-ink-400">{data?.count ?? 0} expense{data?.count === 1 ? '' : 's'}</div>
           </div>
         </div>
@@ -212,9 +215,9 @@ export default function Expenses() {
             <div className="section-title mb-3">Category breakdown</div>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
               {data.byCategory.map((c) => (
-                <div key={c.category} className="flex items-baseline justify-between gap-2 border-b border-ink-100 pb-1.5">
+                <div key={`${c.category}-${c.currency}`} className="flex items-baseline justify-between gap-2 border-b border-ink-100 pb-1.5">
                   <span className="text-sm text-ink-600 truncate">{c.category}</span>
-                  <span className="num text-sm font-medium text-ink-900 whitespace-nowrap">{money(c.total, currency)}</span>
+                  <span className="num text-sm font-medium text-ink-900 whitespace-nowrap">{money(c.total, c.currency)}</span>
                 </div>
               ))}
             </div>
@@ -236,11 +239,11 @@ export default function Expenses() {
             { key: 'status', label: '', render: (e) => (e.status === 'voided' ? <Badge tone="danger" dot>voided</Badge> : null) },
             {
               key: 'amount',
-              label: `Amount (${currency})`,
+              label: 'Amount',
               className: 'text-right num font-medium',
               render: (e) => (
                 <span className={e.status === 'voided' ? 'text-ink-300 line-through' : 'text-red-600'}>
-                  {money(e.amount, currency)}
+                  {money(e.amount, e.currency || 'PKR')}
                 </span>
               ),
             },
@@ -258,7 +261,7 @@ export default function Expenses() {
               <input id="expenses-date-16" className="input" type="date" value={form.date} onChange={(e) => set('date', e.target.value)} />
             </div>
             <div>
-              <label htmlFor="expenses-amount-17" className="label">Amount <span className="text-red-500">*</span></label>
+              <label htmlFor="expenses-amount-17" className="label">Amount ({selectedAccount?.currency || 'Select account'}) <span className="text-red-500">*</span></label>
               <input id="expenses-amount-17" className="input num input-money" type="number" step="0.01" min="0" value={form.amount} onChange={(e) => set('amount', e.target.value)} placeholder="Enter amount" />
             </div>
           </div>
@@ -274,7 +277,7 @@ export default function Expenses() {
               <label htmlFor="expenses-payment-account-19" className="label">Payment Account <span className="text-red-500">*</span></label>
               <select id="expenses-payment-account-19" className="select" value={form.account} onChange={(e) => set('account', e.target.value)}>
                 <option value="">— select account —</option>
-                {(accounts || []).map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
+                {(accounts || []).map((a) => <option key={a._id} value={a._id}>{a.name} · {a.currency || 'PKR'}</option>)}
               </select>
             </div>
           </div>
@@ -282,6 +285,7 @@ export default function Expenses() {
             <label htmlFor="expenses-description-20" className="label">Description</label>
             <input id="expenses-description-20" className="input" value={form.description} onChange={(e) => set('description', e.target.value)} placeholder="e.g. Monthly electricity bill" />
           </div>
+          <DealSelector value={form.dealId} onChange={(value) => set('dealId', value)} id="expenses-deal" />
           <div>
             <label htmlFor="expenses-reference-21" className="label">Reference</label>
             <input id="expenses-reference-21" className="input font-mono" value={form.reference} onChange={(e) => set('reference', e.target.value)} placeholder="Bill / receipt / voucher number (optional)" />
@@ -303,7 +307,7 @@ export default function Expenses() {
       <Modal
         open={!!detail}
         onClose={() => { setDetail(null); setEditingExpense(false); setEditForm(null); setEditError(null); }}
-        title={detail ? `${detail.category} · ${money(detail.amount, currency)}` : ''}
+        title={detail ? `${detail.category} · ${money(detail.amount, detail.currency || 'PKR')}` : ''}
         size="md"
       >
         {detail && editingExpense && (
@@ -357,7 +361,7 @@ export default function Expenses() {
                   <Badge tone="danger" dot>voided</Badge>
                 </div>
                 <p className="text-xs text-red-700 mt-1.5">
-                  A reversing entry returned {money(detail.amount, currency)} to {detail.account?.name}.
+                  A reversing entry returned {money(detail.amount, detail.currency || detail.account?.currency || 'PKR')} to {detail.account?.name}.
                   {detail.voidReason ? ` Reason: ${detail.voidReason}` : ''}
                 </p>
               </div>
@@ -392,7 +396,7 @@ export default function Expenses() {
         title="Void this expense?"
         description="Nothing is deleted. The expense stays on record marked voided, and a reversing entry puts the money back."
         consequences={detail ? [
-          `${money(detail.amount, currency)} returns to ${detail.account?.name || 'the paying account'}`,
+          `${money(detail.amount, detail.currency || detail.account?.currency || 'PKR')} returns to ${detail.account?.name || 'the paying account'}`,
           `The ${detail.category} expense is marked VOIDED and drops out of expense totals and P&L`,
           'Both the original and the reversing entry remain in the account ledger',
           'A voided expense cannot be edited or voided again',

@@ -2,29 +2,35 @@ import asyncHandler from 'express-async-handler';
 import Account from '../models/Account.js';
 import FinancialTransaction from '../models/FinancialTransaction.js';
 import { logActivity } from '../utils/activity.js';
+import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting } from '../utils/ledger.js';
 
 // Selector feed. Deliberately excludes balances: every role that can record a
 // payment needs the list of accounts to choose from, but only admins should see how
 // much money sits in each. Balances come from /accounts/summary (admin-only).
 export const listAccounts = asyncHandler(async (req, res) => {
   const filter = req.query.includeInactive === 'true' ? {} : { active: true };
-  const accounts = await Account.find(filter).select('name type active sortOrder').sort('sortOrder name');
+  const accounts = await Account.find(filter).select('name type currency active sortOrder').sort('sortOrder name');
   res.json(accounts);
 });
 
 // Admin-only: full records including balances, plus a company-wide total.
 export const accountsSummary = asyncHandler(async (_req, res) => {
   const accounts = await Account.find().sort('sortOrder name');
-  const total = accounts.filter((a) => a.active).reduce((s, a) => s + a.currentBalance, 0);
-  res.json({ accounts, total });
+  const totalsByCurrency = accounts.filter((a) => a.active).reduce((totals, a) => {
+    const currency = a.currency || 'PKR';
+    totals[currency] = (totals[currency] || 0) + a.currentBalance;
+    return totals;
+  }, {});
+  res.json({ accounts, total: totalsByCurrency.PKR || 0, totalsByCurrency });
 });
 
 export const createAccount = asyncHandler(async (req, res) => {
-  const { name, type, openingBalance = 0, bankName, accountNumber, accountTitle, sortOrder, notes } = req.body;
+  const { name, type, currency = 'PKR', openingBalance = 0, bankName, accountNumber, accountTitle, sortOrder, notes } = req.body;
   if (!name?.trim()) {
     res.status(400);
     throw new Error('Account name is required');
   }
+  if (!['GBP', 'PKR'].includes(currency)) { res.status(400); throw new Error('Account currency must be GBP or PKR'); }
   const existing = await Account.findOne({ name: name.trim() });
   if (existing) {
     res.status(409);
@@ -34,6 +40,7 @@ export const createAccount = asyncHandler(async (req, res) => {
   const account = await Account.create({
     name: name.trim(),
     type,
+    currency,
     openingBalance: Number(openingBalance) || 0,
     currentBalance: Number(openingBalance) || 0,
     bankName,
@@ -49,11 +56,17 @@ export const createAccount = asyncHandler(async (req, res) => {
 export const updateAccount = asyncHandler(async (req, res) => {
   // currentBalance is never client-writable — it only moves through ledger postings,
   // so a payment can't be bypassed by editing a balance directly.
-  const { name, type, bankName, accountNumber, accountTitle, active, sortOrder, notes, openingBalance } = req.body;
+  const { name, type, currency, bankName, accountNumber, accountTitle, active, sortOrder, notes, openingBalance } = req.body;
   const account = await Account.findById(req.params.id);
   if (!account) {
     res.status(404);
     throw new Error('Account not found');
+  }
+  if (currency !== undefined && currency !== account.currency) {
+    const hasLedger = await FinancialTransaction.exists({ account: account._id });
+    if (hasLedger || account.openingBalance !== 0) { res.status(409); throw new Error('Account currency cannot change after a balance or ledger history exists'); }
+    if (!['GBP', 'PKR'].includes(currency)) { res.status(400); throw new Error('Account currency must be GBP or PKR'); }
+    account.currency = currency;
   }
   if (name !== undefined) account.name = name.trim();
   if (type !== undefined) account.type = type;
@@ -99,6 +112,28 @@ export const updateAccount = asyncHandler(async (req, res) => {
   }
   await logActivity(req, 'account_updated', { entity: 'Account', entityId: account._id });
   res.json(result);
+});
+
+export const adjustAccountLedger = asyncHandler(async (req, res) => {
+  const { amount, direction, reason, idempotencyKey } = req.body || {};
+  const note = typeof reason === 'string' ? reason.trim() : '';
+  if (!note) { res.status(400); throw new Error('A reason is required for a ledger adjustment'); }
+  if (note.length > 500) { res.status(400); throw new Error('Reason must be 500 characters or fewer'); }
+  const numericAmount = Number(amount);
+  if (!Number.isFinite(numericAmount) || numericAmount <= 0) { res.status(400); throw new Error('Adjustment amount must be greater than zero'); }
+  if (!['in', 'out'].includes(direction)) { res.status(400); throw new Error('Direction must be in or out'); }
+  const account = await resolveAccount(res, req.params.id);
+  const key = typeof idempotencyKey === 'string' ? idempotencyKey.trim() : '';
+  if (key && await FinancialTransaction.exists({ idempotencyKey: key })) { res.status(409); throw new Error('This adjustment has already been recorded'); }
+  let transaction;
+  try {
+    transaction = await postPaymentAtomically({
+      account: account._id, amount: numericAmount, direction, type: 'ledger_adjustment',
+      currency: account.currency || 'PKR', description: note, reference: 'Manual ledger adjustment', createdBy: req.user._id, idempotencyKey: key || undefined,
+    }, async () => {});
+  } catch (error) { rethrowDuplicatePosting(error, res); }
+  await logActivity(req, 'account_ledger_adjusted', { entity: 'Account', entityId: account._id, meta: { direction, amount: numericAmount, reason: note, transactionId: transaction._id } });
+  res.status(201).json(transaction);
 });
 
 // Ledger for one account: opening balance, every movement oldest-first with a

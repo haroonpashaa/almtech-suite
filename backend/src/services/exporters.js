@@ -324,6 +324,7 @@ export const EXPORTERS = {
           columns: [
             { header: 'Account', key: 'name', width: 24 },
             { header: 'Type', key: 'type' },
+            { header: 'Currency', key: 'currency' },
             { header: 'Opening Balance', type: 'money', key: 'openingBalance' },
             { header: 'Current Balance', type: 'money', key: 'currentBalance' },
             { header: 'Active', value: (r) => (r.active ? 'Yes' : 'No') },

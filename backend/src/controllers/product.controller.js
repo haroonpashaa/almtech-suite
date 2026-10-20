@@ -5,6 +5,7 @@ import { logActivity, diffFields } from '../utils/activity.js';
 import { requireNonZeroWholeQuantity } from '../utils/quantity.js';
 import { resolvePaging, runPaged } from '../utils/pagination.js';
 import { safeFilterValue } from '../utils/safeFilterValue.js';
+import Invoice from '../models/Invoice.js';
 
 // Barcodes are optional. Treat blank/whitespace-only input as "no barcode" so the
 // partial unique index never sees an empty string, and so clearing the field in the
@@ -145,6 +146,23 @@ export const getProduct = asyncHandler(async (req, res) => {
     throw new Error('Product not found');
   }
   res.json(sanitizeProduct(req, product));
+});
+
+// Read-only summary composed from the catalogue, stock ledger and invoice snapshots.
+// Historical line snapshots keep this useful even after a product is deactivated.
+export const productSummary = asyncHandler(async (req, res) => {
+  const product = await Product.findById(req.params.id);
+  if (!product) { res.status(404); throw new Error('Product not found'); }
+  const [sales, movements] = await Promise.all([
+    Invoice.aggregate([
+      { $match: { status: { $nin: ['cancelled', 'returned', 'draft'] }, 'items.product': product._id } },
+      { $unwind: '$items' },
+      { $match: { 'items.product': product._id } },
+      { $group: { _id: null, quantitySold: { $sum: '$items.quantity' }, revenue: { $sum: '$items.lineTotal' }, invoiceCount: { $sum: 1 }, lastSold: { $max: '$issuedAt' } } },
+    ]),
+    StockMovement.find({ product: product._id }).sort({ createdAt: -1, _id: -1 }).limit(20).populate('createdBy', 'name'),
+  ]);
+  res.json({ product: sanitizeProduct(req, product), sales: sales[0] || { quantitySold: 0, revenue: 0, invoiceCount: 0, lastSold: null }, movements });
 });
 
 export const createProduct = asyncHandler(async (req, res) => {

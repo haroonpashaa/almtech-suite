@@ -11,9 +11,9 @@ import Money from '../components/Money.jsx';
 import Modal from '../components/Modal.jsx';
 import { Badge, Spinner } from '../components/ui.jsx';
 
-const empty = { name: '', type: 'bank', openingBalance: '', bankName: '', accountNumber: '', accountTitle: '' };
+const empty = { name: '', type: 'bank', currency: 'PKR', openingBalance: '', bankName: '', accountNumber: '', accountTitle: '' };
 
-const typeTone = { cash: 'success', bank: 'neutral', wallet: 'warning', other: 'neutral' };
+const typeTone = { cash: 'success', bank: 'neutral', other_bank: 'info', wallet: 'warning', other: 'neutral' };
 
 export default function Accounts() {
   const qc = useQueryClient();
@@ -67,7 +67,7 @@ export default function Accounts() {
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Total Funds</div>
             <div className="text-xs text-ink-400 mt-0.5">Across all active accounts</div>
           </div>
-          <div className="text-2xl font-semibold num text-ink-900 tracking-tight">{money(data?.total || 0, currency)}</div>
+            <div className="text-2xl font-semibold num text-ink-900 tracking-tight flex flex-wrap justify-end gap-x-4">{Object.entries(data?.totalsByCurrency || { [currency]: data?.total || 0 }).map(([code, total]) => <span key={code}>{money(total, code)}</span>)}</div>
         </div>
 
         <Table
@@ -83,16 +83,17 @@ export default function Accounts() {
                 <Link to={`/accounts/${a._id}`} className="text-ink-900 hover:text-brand-700 font-medium">{a.name}</Link>
               ),
             },
-            { key: 'type', label: 'Type', render: (a) => <Badge tone={typeTone[a.type]} dot>{a.type}</Badge> },
+            { key: 'type', label: 'Type', render: (a) => <Badge tone={typeTone[a.type]} dot>{a.type === 'other_bank' ? 'Other Bank' : a.type}</Badge> },
             { key: 'bankName', label: 'Bank', render: (a) => a.bankName || <span className="text-ink-300">—</span> },
             { key: 'accountNumber', label: 'Number', render: (a) => a.accountNumber ? <span className="font-mono text-[12px] text-ink-500">{a.accountNumber}</span> : <span className="text-ink-300">—</span> },
-            { key: 'openingBalance', label: `Opening (${currency})`, className: 'text-right num text-ink-500', render: (a) => <Money value={a.openingBalance} /> },
+            { key: 'currency', label: 'Currency', render: (a) => a.currency || 'PKR' },
+            { key: 'openingBalance', label: 'Opening', className: 'text-right num text-ink-500', render: (a) => <Money value={a.openingBalance} currency={a.currency || 'PKR'} showCurrency /> },
             {
               key: 'currentBalance',
-              label: `Current Balance (${currency})`,
+              label: 'Current Balance',
               className: 'text-right num font-medium',
               render: (a) => (
-                <span className={a.currentBalance < 0 ? 'text-red-600' : 'text-ink-900'}>{money(a.currentBalance, currency)}</span>
+                <span className={a.currentBalance < 0 ? 'text-red-600' : 'text-ink-900'}>{money(a.currentBalance, a.currency || 'PKR')}</span>
               ),
             },
             { key: 'active', label: '', render: (a) => (a.active ? null : <Badge tone="neutral">inactive</Badge>) },
@@ -114,11 +115,16 @@ export default function Accounts() {
                 <option value="cash">Cash</option>
                 <option value="bank">Bank</option>
                 <option value="wallet">Wallet</option>
+                <option value="other_bank">Other Bank</option>
                 <option value="other">Other</option>
               </select>
             </div>
             <div>
-              <label htmlFor="accounts-opening-balance-6" className="label">Opening Balance</label>
+              <label htmlFor="accounts-currency-5a" className="label">Currency</label>
+              <select id="accounts-currency-5a" className="select" value={form.currency} onChange={(e) => set('currency', e.target.value)}><option value="PKR">PKR</option><option value="GBP">GBP</option></select>
+            </div>
+            <div>
+              <label htmlFor="accounts-opening-balance-6" className="label">Opening Balance ({form.currency})</label>
               <input id="accounts-opening-balance-6" className="input num input-money" type="number" step="0.01" value={form.openingBalance} onChange={(e) => set('openingBalance', e.target.value)} placeholder="Enter amount" />
             </div>
           </div>

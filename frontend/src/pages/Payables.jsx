@@ -20,19 +20,20 @@ export default function Payables() {
   const [to, setTo] = useState('');
   const [bucket, setBucket] = useState('');
   const [status, setStatus] = useState('');
+  const [currency, setCurrency] = useState('PKR');
 
   const { data, isLoading, isError, refetch } = useQuery({
-    queryKey: ['payables', q, from, to, bucket, status],
+    queryKey: ['payables', q, from, to, bucket, status, currency],
     queryFn: async () =>
       (await api.get('/finance/payables', {
-        params: { q: q || undefined, from: from || undefined, to: to || undefined, bucket: bucket || undefined, status: status || undefined },
+        params: { q: q || undefined, from: from || undefined, to: to || undefined, bucket: bucket || undefined, status: status || undefined, currency },
       })).data,
   });
   const { data: position } = useQuery({
     queryKey: ['finance-position'],
     queryFn: async () => (await api.get('/finance/position')).data,
   });
-  const currency = useCurrency();
+  const configuredCurrency = useCurrency();
   const filtered = q || from || to || bucket || status;
 
   return (
@@ -46,20 +47,20 @@ export default function Payables() {
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="card p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Total Payables</div>
-            <div className="mt-2 fig-lg font-semibold num text-ink-900 tracking-tight">{money(position?.payables || 0, currency)}</div>
-            <div className="text-xs text-ink-400 mt-1">Owed by us</div>
+            <div className="mt-2 fig-lg font-semibold num text-ink-900 tracking-tight flex flex-wrap gap-x-3">{Object.entries(position?.payablesByCurrency || { PKR: position?.payables || 0 }).map(([code, amount]) => <span key={code}>{money(amount, code)}</span>)}</div>
+            <div className="text-xs text-ink-400 mt-1">Owed by us, grouped by original currency</div>
           </div>
           <div className="card p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Total Receivables</div>
-            <div className="mt-2 fig-lg font-semibold num text-ink-900 tracking-tight">{money(position?.receivables || 0, currency)}</div>
+            <div className="mt-2 fig-lg font-semibold num text-ink-900 tracking-tight">{money(position?.receivables || 0, configuredCurrency)}</div>
             <div className="text-xs text-ink-400 mt-1">Owed to us</div>
           </div>
           <div className="card p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Net Outstanding Position</div>
             <div className={`mt-2 fig-lg font-semibold num tracking-tight ${(position?.netPosition || 0) < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
-              {money(position?.netPosition || 0, currency)}
+              {money(position?.netPosition || 0, 'PKR')}
             </div>
-            <div className="text-xs text-ink-400 mt-1">Receivables − Payables · not profit</div>
+            <div className="text-xs text-ink-400 mt-1">PKR receivables − PKR payables · not profit</div>
           </div>
         </div>
 
@@ -79,6 +80,7 @@ export default function Payables() {
         </div>
 
         <div className="flex flex-wrap items-end gap-3">
+          <div><label htmlFor="payables-currency" className="label">Currency</label><select id="payables-currency" className="select" value={currency} onChange={(e) => { setCurrency(e.target.value); setBucket(''); }}><option value="PKR">PKR</option><option value="GBP">GBP</option></select></div>
           <div className="field-search max-w-xs w-full">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
             <input className="input" placeholder="Search supplier, contact, phone…" value={q} onChange={(e) => setQ(e.target.value)} />
@@ -120,7 +122,7 @@ export default function Payables() {
               key: 'name',
               label: 'Supplier',
               render: (r) => (
-                <Link to={`/payables/${r.supplierId}`} className="text-ink-900 hover:text-brand-700 font-medium">
+                <Link to={`/payables/${r.supplierId}?currency=${currency}`} className="text-ink-900 hover:text-brand-700 font-medium">
                   {r.name}
                   {r.contactPerson && <span className="text-ink-400 font-normal"> · {r.contactPerson}</span>}
                 </Link>
@@ -129,9 +131,9 @@ export default function Payables() {
             { key: 'poCount', label: 'POs', className: 'text-right num text-ink-500', render: (r) => r.poCount },
             { key: 'oldestDate', label: 'Oldest', render: (r) => <span className="text-ink-500 whitespace-nowrap">{fmtDate(r.oldestDate)}</span> },
             { key: 'oldestAgeDays', label: 'Age', render: (r) => <OverdueBadge days={r.oldestAgeDays} /> },
-            { key: 'total', label: `Purchase Total (${currency})`, className: 'text-right num text-ink-600', render: (r) => <Money value={r.total} /> },
-            { key: 'paid', label: `Paid (${currency})`, className: 'text-right num text-emerald-600', render: (r) => <Money value={r.paid} /> },
-            { key: 'outstanding', label: `Outstanding (${currency})`, className: 'text-right num font-semibold', render: (r) => <Money value={r.outstanding} tone="due" /> },
+            { key: 'total', label: `Purchase Total (${currency})`, className: 'text-right num text-ink-600', render: (r) => <Money value={r.total} currency={currency} /> },
+            { key: 'paid', label: `Paid (${currency})`, className: 'text-right num text-emerald-600', render: (r) => <Money value={r.paid} currency={currency} /> },
+            { key: 'outstanding', label: `Outstanding (${currency})`, className: 'text-right num font-semibold', render: (r) => <Money value={r.outstanding} currency={currency} tone="due" /> },
             {
               key: 'drift',
               label: '',

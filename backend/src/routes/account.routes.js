@@ -5,6 +5,7 @@ import {
   accountsSummary,
   createAccount,
   updateAccount,
+  adjustAccountLedger,
   accountLedger,
   reconcileAccounts,
 } from '../controllers/account.controller.js';
@@ -24,4 +25,5 @@ r.get('/:id/ledger', requireRole('admin'), accountLedger);
 r.get('/:id/statement/pdf', requireRole('admin'), accountStatementPDF);
 r.post('/', requireRole('admin'), createAccount);
 r.patch('/:id', requireRole('admin'), updateAccount);
+r.post('/:id/adjustments', requireRole('admin'), adjustAccountLedger);
 export default r;

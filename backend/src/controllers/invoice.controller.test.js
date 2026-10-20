@@ -5,9 +5,10 @@ import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
 import Invoice from '../models/Invoice.js';
 import Activity from '../models/Activity.js';
+import Settings from '../models/Settings.js';
 import {
   resolveLineComments, normalizeSaleQuantity, buildLineFromProduct, validateLineSerials, createInvoice,
-  updateInvoice, returnInvoice,
+  updateInvoice, returnInvoice, listInvoices,
 } from './invoice.controller.js';
 
 describe('resolveLineComments', () => {
@@ -209,6 +210,7 @@ describe('createInvoice cart editing (DB-backed)', () => {
     await Invoice.deleteMany({});
     await Product.deleteMany({});
     await Customer.deleteMany({});
+    await Settings.deleteMany({});
   });
 
   afterAll(async () => {
@@ -258,6 +260,17 @@ describe('createInvoice cart editing (DB-backed)', () => {
     expect(line.processor).toBe('i9');
     expect(line.storage).toBe('1TB SSD');
     expect(line.comments).toBe('Sold as-is, buyer aware of the scratch');
+  });
+
+  it('blocks GBP sales invoices while Customer.balance and legacy reporting are single-currency', async () => {
+    await Settings.create({ currency: 'GBP' });
+    const customer = await makeCustomer();
+    const product = await makeProduct();
+    await expect(callCreateInvoice({
+      customer: customer._id.toString(), items: [{ product: product._id.toString(), quantity: 1, unitPrice: 900 }],
+    })).rejects.toThrow(/GBP sales invoices are disabled/i);
+    expect(await Invoice.countDocuments()).toBe(0);
+    expect((await Customer.findById(customer._id)).balance).toBe(0);
   });
 
   it('uses the edited cart price for the invoice and does not change the Product master price', async () => {
@@ -466,5 +479,30 @@ describe('invoice correction actions (DB-backed)', () => {
     expect(activity).toBeTruthy();
     expect(activity.meta.reason).toBe('Customer changed their mind before pickup');
     expect(activity.user.toString()).toBe(userId.toString());
+  });
+});
+
+describe('historical invoice product/model filtering', () => {
+  let memory;
+  beforeAll(async () => { memory = await MongoMemoryServer.create(); await mongoose.connect(memory.getUri()); });
+  afterEach(async () => { await Promise.all([Invoice.deleteMany({}), Product.deleteMany({}), Customer.deleteMany({})]); });
+  afterAll(async () => { await mongoose.disconnect(); await memory.stop(); });
+  const response = () => ({ statusCode: 200, status(code) { this.statusCode = code; return this; }, set() { return this; }, json(body) { this.body = body; return this; } });
+
+  it('filters by selected product and the model snapshot on the same invoice line', async () => {
+    const customer = await Customer.create({ name: 'Filter customer' });
+    const one = await Product.create({ sku: 'FILTER-1', name: 'Model One', model: 'X100' });
+    const two = await Product.create({ sku: 'FILTER-2', name: 'Model Two', model: 'X200' });
+    const line = (product, model) => ({ product, name: 'Laptop', model, quantity: 1, unitPrice: 100, lineTotal: 100 });
+    await Invoice.create([
+      { number: 'FILTER-INV-1', customer: customer._id, items: [line(one._id, 'X100 Pro')], subtotal: 100, total: 100 },
+      { number: 'FILTER-INV-2', customer: customer._id, items: [line(two._id, 'X200')], subtotal: 100, total: 100 },
+    ]);
+    const byModel = response();
+    await listInvoices({ query: { model: 'X100' } }, byModel);
+    expect(byModel.body.map((invoice) => invoice.number)).toEqual(['FILTER-INV-1']);
+    const byProductAndModel = response();
+    await listInvoices({ query: { product: String(one._id), model: 'X200' } }, byProductAndModel);
+    expect(byProductAndModel.body).toHaveLength(0);
   });
 });

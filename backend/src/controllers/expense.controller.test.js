@@ -64,6 +64,16 @@ describe('expense edit contract (DB-backed)', () => {
     expect(res.body.reference).toBe('REF-2');
   });
 
+  it('rejects posting an expense from a GBP account while reports remain PKR-only', async () => {
+    const account = await Account.create({ name: 'GBP Bank', type: 'bank', currency: 'GBP' });
+    const req = {
+      user: { _id: userId },
+      body: { amount: 10, category: 'Rent', account: account._id.toString(), description: 'Blocked until reporting support' },
+    };
+    await expect(createExpense(req, mockRes())).rejects.toThrow(/Expenses from GBP accounts are disabled/i);
+    expect(await Expense.countDocuments()).toBe(0);
+  });
+
   it('amount cannot be changed', async () => {
     const account = await makeAccount();
     const expense = await makeExpense(account);

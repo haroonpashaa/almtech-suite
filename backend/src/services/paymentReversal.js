@@ -110,6 +110,7 @@ export async function postReversal(res, {
       {
         account: original.account,
         amount: original.amount,
+        currency: original.currency || payment.currency || 'PKR',
         direction,
         type: 'payment_reversal',
         method: original.method,

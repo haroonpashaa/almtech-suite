@@ -54,6 +54,7 @@ export function usePagedList({ key, path, params = {}, limit = 50, enabled = tru
     limit,
     setPage,
     isLoading: query.isLoading,
+    isFetching: query.isFetching,
     isError: query.isError,
     refetch: query.refetch,
     // Everything the shared Table needs to render an honest footer.

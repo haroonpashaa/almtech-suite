@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import Supplier from '../models/Supplier.js';
 import Product from '../models/Product.js';
 import Account from '../models/Account.js';
+import FinancialTransaction from '../models/FinancialTransaction.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 import '../models/User.js'; // registers the schema so .populate('createdBy') can resolve it
 import {
@@ -15,6 +16,12 @@ describe('Purchase Order editing (DB-backed)', () => {
   const userId = new mongoose.Types.ObjectId();
 
   beforeAll(async () => {
+    process.env.EXCHANGE_RATE_API_KEY = 'test-only-key';
+    vi.stubGlobal('fetch', async (url) => {
+      const base = String(url).split('/').at(-1);
+      const time = Math.floor(Date.now() / 1000);
+      return { ok: true, json: async () => ({ result: 'success', base_code: base, conversion_rates: base === 'GBP' ? { GBP: 1, PKR: 360 } : { GBP: 1 / 360, PKR: 1 }, time_last_update_unix: time - 60, time_next_update_unix: time + 86400 }) };
+    });
     mem = await MongoMemoryServer.create();
     await mongoose.connect(mem.getUri());
   });
@@ -29,6 +36,8 @@ describe('Purchase Order editing (DB-backed)', () => {
   afterAll(async () => {
     await mongoose.disconnect();
     await mem.stop();
+    vi.unstubAllGlobals();
+    delete process.env.EXCHANGE_RATE_API_KEY;
   });
 
   function mockRes() {
@@ -103,6 +112,62 @@ describe('Purchase Order editing (DB-backed)', () => {
     expect(body.taxAmount).toBe(100);
     expect(body.total).toBe(1100);
     expect(body.balance).toBe(1100);
+  });
+
+  it('stores a GBP payable snapshot and retains prior snapshots when an eligible edit changes its amount', async () => {
+    const supplier = await makeSupplier();
+    const p1 = await makeProduct('SKU-GBP');
+    const po = await callCreatePO(supplier, [{ product: p1._id.toString(), quantity: 2, unitCost: 10.25 }], { currency: 'GBP' });
+    expect(po.currency).toBe('GBP');
+    expect(po.fxSnapshots).toHaveLength(1);
+    expect(po.fxSnapshots[0]).toMatchObject({ fromCurrency: 'GBP', toCurrency: 'PKR', originalAmount: 20.5, source: 'ExchangeRate-API' });
+    const original = po.fxSnapshots[0];
+    const { status, body } = await callUpdatePO(po, { items: [{ product: p1._id.toString(), quantity: 2, unitCost: 12 }] });
+    expect(status).toBe(200);
+    expect(body.fxSnapshots).toHaveLength(2);
+    expect(body.fxSnapshots[0].rate).toBe(original.rate);
+    expect(body.fxSnapshots[0].originalAmount).toBe(20.5);
+    expect(body.fxSnapshots[1].originalAmount).toBe(24);
+    expect((await Supplier.findById(supplier._id)).payableGBP).toBe(24);
+  });
+
+  it('rejects a GBP payable payment from a PKR account without changing either balance', async () => {
+    const supplier = await makeSupplier();
+    const p1 = await makeProduct('SKU-GBP');
+    const po = await callCreatePO(supplier, [{ product: p1._id.toString(), quantity: 1, unitCost: 50 }], { currency: 'GBP' });
+    const account = await Account.create({ name: 'PKR Cash', type: 'cash', currency: 'PKR', openingBalance: 100, currentBalance: 100 });
+    const res = mockRes();
+    await expect(recordSupplierPayment(req({ params: { id: po._id.toString() }, body: { amount: 10, account: account._id.toString() } }), res)).rejects.toThrow(/must be denominated in GBP/i);
+    expect((await PurchaseOrder.findById(po._id)).balance).toBe(50);
+    expect((await Supplier.findById(supplier._id)).payableGBP).toBe(50);
+    expect((await Account.findById(account._id)).currentBalance).toBe(100);
+  });
+
+  it('posts a GBP payable payment only to a GBP account and reconciles the GBP balance', async () => {
+    const supplier = await makeSupplier();
+    const p1 = await makeProduct('SKU-GBP');
+    const po = await callCreatePO(supplier, [{ product: p1._id.toString(), quantity: 1, unitCost: 50 }], { currency: 'GBP' });
+    const account = await Account.create({ name: 'GBP Bank', type: 'bank', currency: 'GBP', openingBalance: 100, currentBalance: 100 });
+    const res = mockRes();
+    await recordSupplierPayment(req({ params: { id: po._id.toString() }, body: { amount: 10, account: account._id.toString(), idempotencyKey: 'gbp-payment-test' } }), res);
+    const savedPO = await PurchaseOrder.findById(po._id);
+    const savedSupplier = await Supplier.findById(supplier._id);
+    const savedAccount = await Account.findById(account._id);
+    expect(savedPO.payments[0].currency).toBe('GBP');
+    expect(savedPO.balance).toBe(40);
+    expect(savedSupplier.payableGBP).toBe(40);
+    expect(savedSupplier.payable).toBe(0);
+    expect(savedAccount.currentBalance).toBe(90);
+    expect(await FinancialTransaction.exists({ account: account._id, currency: 'GBP', amount: 10 })).toBeTruthy();
+  });
+
+  it('does not receive GBP POs into currency-less product inventory costs', async () => {
+    const supplier = await makeSupplier();
+    const product = await makeProduct('SKU-GBP');
+    const po = await callCreatePO(supplier, [{ product: product._id.toString(), quantity: 1, unitCost: 50 }], { currency: 'GBP' });
+    await expect(callReceive(po, [{ product: product._id.toString(), quantity: 1 }])).rejects.toThrow(/Receiving GBP purchase orders is disabled/i);
+    expect((await Product.findById(product._id)).stock).toBe(0);
+    expect((await PurchaseOrder.findById(po._id)).items[0].received).toBe(0);
   });
 
   it('3 & 12. Supplier payable changes by the correct delta on an allowed edit', async () => {
@@ -492,6 +557,12 @@ describe('Purchase order notes visibility (DB-backed)', () => {
   const userId = new mongoose.Types.ObjectId();
 
   beforeAll(async () => {
+    process.env.EXCHANGE_RATE_API_KEY = 'test-only-key';
+    vi.stubGlobal('fetch', async (url) => {
+      const base = String(url).split('/').at(-1);
+      const time = Math.floor(Date.now() / 1000);
+      return { ok: true, json: async () => ({ result: 'success', base_code: base, conversion_rates: base === 'GBP' ? { GBP: 1, PKR: 360 } : { GBP: 1 / 360, PKR: 1 }, time_last_update_unix: time - 60, time_next_update_unix: time + 86400 }) };
+    });
     mem = await MongoMemoryServer.create();
     await mongoose.connect(mem.getUri());
   });
@@ -505,6 +576,8 @@ describe('Purchase order notes visibility (DB-backed)', () => {
   afterAll(async () => {
     await mongoose.disconnect();
     await mem.stop();
+    vi.unstubAllGlobals();
+    delete process.env.EXCHANGE_RATE_API_KEY;
   });
 
   function mockRes() {
@@ -560,5 +633,26 @@ describe('Purchase order notes visibility (DB-backed)', () => {
     const adminRes = mockRes();
     await listPOs({ query: {}, user: { role: 'admin' } }, adminRes);
     expect(adminRes.body[0].notes).toBe('Call supplier before delivery');
+  });
+
+  it('filters the purchase order list by supplier, status, number and date window', async () => {
+    const supplier = await Supplier.create({ name: 'Filter supplier' });
+    const otherSupplier = await Supplier.create({ name: 'Other supplier' });
+    const product = await Product.create({ sku: 'FILTER-PO', name: 'Filter product', stock: 0 });
+    const makeFilteredPO = (number, supplierId) => PurchaseOrder.create({
+      number, supplier: supplierId, items: [{ product: product._id, name: product.name, sku: product.sku, quantity: 1, unitCost: 20, lineTotal: 20 }],
+      subtotal: 20, total: 20, balance: 20, status: 'ordered',
+    });
+    const match = await makeFilteredPO('PO-FILTER-1', supplier._id);
+    await makeFilteredPO('PO-OTHER-2', otherSupplier._id);
+
+    const res = mockRes();
+    await listPOs({ query: { supplier: supplier._id.toString(), status: 'ordered', search: match.number, from: '2020-01-01', to: '2035-12-31' }, user: { role: 'admin' } }, res);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].number).toBe(match.number);
+
+    const empty = mockRes();
+    await listPOs({ query: { search: 'no-such-order' }, user: { role: 'admin' } }, empty);
+    expect(empty.body).toEqual([]);
   });
 });
