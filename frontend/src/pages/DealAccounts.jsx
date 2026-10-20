@@ -29,6 +29,9 @@ export default function DealAccounts() {
   const [type, setType] = useState('invoice');
   const [recordId, setRecordId] = useState('');
   const [linking, setLinking] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteError, setDeleteError] = useState('');
+  const [deleting, setDeleting] = useState(false);
   const { data: deals, isLoading: listLoading } = useQuery({
     enabled: !id, queryKey: ['deal-accounts'], queryFn: async () => (await api.get('/deals/records')).data,
   });
@@ -82,6 +85,20 @@ export default function DealAccounts() {
     } catch (error) { toast.error(errorMessage(error)); }
   }
 
+  async function removeDeal() {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      await api.delete(`/deals/records/${deleteTarget.deal._id}`);
+      toast.success(`Deal ${deleteTarget.deal.identifier} deleted`);
+      setDeleteTarget(null);
+      qc.invalidateQueries({ queryKey: ['deal-accounts'] });
+    } catch (error) {
+      setDeleteError(errorMessage(error));
+    } finally { setDeleting(false); }
+  }
+
   if (!id) return <div>
     <PageHeader title="Deal accounts" subtitle="Group selected sales, purchases, and expenses under a unique deal identifier" actions={<button className="btn-primary" onClick={() => setCreating(true)}>New deal</button>} />
     <div className="page page-w"><Table loading={listLoading} rows={deals || []} empty="No deal accounts yet" columns={[
@@ -91,9 +108,21 @@ export default function DealAccounts() {
       { key: 'grossProfit', label: 'Gross profit by currency', className: 'text-right num', render: (deal) => dealMoney(deal.totals, 'grossProfit') },
       { key: 'netProfit', label: 'Net profit by currency', className: 'text-right num font-medium', render: (deal) => dealMoney(deal.totals, 'netProfit') },
       { key: 'status', label: 'Status', render: (deal) => deal.deal.status },
+      { key: 'actions', label: '', render: (deal) => <button className="btn-danger-soft" aria-label={`Delete deal ${deal.deal.identifier}`} onClick={() => { setDeleteError(''); setDeleteTarget(deal); }}>Delete</button> },
     ]} /></div>
     <Modal open={creating} onClose={() => !saving && setCreating(false)} title="Create deal account">
       <div className="space-y-3"><div><label className="label" htmlFor="deal-identifier">Deal identifier *</label><input id="deal-identifier" className="input" value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder="e.g. 931x" /></div><div><label className="label" htmlFor="deal-description">Description</label><input id="deal-description" className="input" value={description} onChange={(e) => setDescription(e.target.value)} /></div><div className="flex gap-2"><button className="btn-primary" disabled={saving || !identifier.trim()} onClick={create}>{saving ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Create deal'}</button><button className="btn-secondary" onClick={() => setCreating(false)}>Cancel</button></div></div>
+    </Modal>
+    <Modal open={!!deleteTarget} onClose={() => !deleting && setDeleteTarget(null)} title="Delete deal account" subtitle="This permanently removes the deal record; linked financial records are never deleted">
+      {deleteTarget && <div className="space-y-4">
+        <p className="text-sm text-ink-700">Permanently delete deal <strong className="font-mono">{deleteTarget.deal.identifier}</strong>? This is allowed only when it has no linked sales invoices, purchase orders, or expenses.</p>
+        <p className="text-sm text-ink-500">If records are linked, deletion will be blocked. Open the deal and unlink those records first; their original transactions and history will remain unchanged.</p>
+        {deleteError && <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{deleteError}</p>}
+        <div className="flex flex-wrap gap-2">
+          <button className="btn-danger" disabled={deleting} onClick={removeDeal}>{deleting ? <><Spinner className="w-4 h-4" /> Deleting…</> : 'Delete permanently'}</button>
+          <button className="btn-secondary" disabled={deleting} onClick={() => setDeleteTarget(null)}>Cancel</button>
+        </div>
+      </div>}
     </Modal>
   </div>;
 

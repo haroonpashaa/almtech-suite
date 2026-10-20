@@ -14,7 +14,7 @@ import { resolvePaging, runPaged } from '../utils/pagination.js';
 import { requirePositiveWholeQuantity } from '../utils/quantity.js';
 import { safeFilterValue } from '../utils/safeFilterValue.js';
 import mongoose from 'mongoose';
-import { validateDealId } from '../utils/dealLink.js';
+import { claimDealForLink, requireDealTransactionSupport, validateDealId } from '../utils/dealLink.js';
 
 // Single implementation of "money received against an invoice", shared by the POS
 // initial payment and by later payments on the invoice detail screen.
@@ -435,6 +435,7 @@ export async function commitInvoiceEffects({ session, invoiceFields, customerId,
 export const createInvoice = asyncHandler(async (req, res) => {
   const { customer: customerId, items, discount = 0, taxRate = 0, notes, initialPayment, dealId } = req.body;
   const deal = await validateDealId(res, dealId);
+  await requireDealTransactionSupport(res, deal);
   if (!items?.length) {
     res.status(400);
     throw new Error('At least one item is required');
@@ -529,8 +530,9 @@ export const createInvoice = asyncHandler(async (req, res) => {
   // point: it is what actually prevents two concurrent requests from both
   // believing they're selling the last unit.
   // ---------------------------------------------------------------------------
-  const invoice = await runAtomically((session) =>
-    commitInvoiceEffects({
+  const invoice = await runAtomically(async (session) => {
+    if (deal) await claimDealForLink(session, deal);
+    return commitInvoiceEffects({
       session,
       invoiceFields: {
         number,
@@ -553,8 +555,8 @@ export const createInvoice = asyncHandler(async (req, res) => {
       customerId: customer._id,
       balanceIncrease: balance,
       userId: req.user._id,
-    })
-  );
+    });
+  });
 
   // Apply the POS initial payment, if any, through the shared path above.
   if (initialAccount) {

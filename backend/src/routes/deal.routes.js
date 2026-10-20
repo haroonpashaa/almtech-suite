@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { protect, requireRole } from '../middleware/auth.js';
 import { listSaleDeals, saleDeal, listPurchaseDeals, purchaseDeal } from '../controllers/deal.controller.js';
-import { createDealAccount, dealOptions, getDealAccount, linkDealRecord, listDealAccounts, unlinkDealRecord } from '../controllers/dealAccounts.controller.js';
+import { createDealAccount, dealOptions, getDealAccount, linkDealRecord, listDealAccounts, unlinkDealRecord, deleteDealAccount } from '../controllers/dealAccounts.controller.js';
 
 // Company-wide transaction history is financial reporting, so it follows the policy
 // already applied to accounts, ledgers, expenses, receivables and payables: admin only.
@@ -20,6 +20,7 @@ r.use(requireRole('admin'));
 r.get('/records', listDealAccounts);
 r.post('/records', createDealAccount);
 r.get('/records/:id', getDealAccount);
+r.delete('/records/:id', deleteDealAccount);
 r.post('/records/:id/link', linkDealRecord);
 r.delete('/records/:id/links/:type/:recordId', unlinkDealRecord);
 
