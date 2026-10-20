@@ -12,6 +12,7 @@ import { LoadingBlock } from './components/ui.jsx';
 const Dashboard = lazy(() => import('./pages/Dashboard.jsx'));
 const Products = lazy(() => import('./pages/Products.jsx'));
 const ProductForm = lazy(() => import('./pages/ProductForm.jsx'));
+const ProductSummary = lazy(() => import('./pages/ProductSummary.jsx'));
 const Customers = lazy(() => import('./pages/Customers.jsx'));
 const CustomerDetail = lazy(() => import('./pages/CustomerDetail.jsx'));
 const Invoices = lazy(() => import('./pages/Invoices.jsx'));
@@ -29,6 +30,7 @@ const AccountLedger = lazy(() => import('./pages/AccountLedger.jsx'));
 const ImportExport = lazy(() => import('./pages/ImportExport.jsx'));
 const Deals = lazy(() => import('./pages/Deals.jsx'));
 const DealDetail = lazy(() => import('./pages/DealDetail.jsx'));
+const DealAccounts = lazy(() => import('./pages/DealAccounts.jsx'));
 const Receivables = lazy(() => import('./pages/Receivables.jsx'));
 const ReceivableDetail = lazy(() => import('./pages/ReceivableDetail.jsx'));
 const Payables = lazy(() => import('./pages/Payables.jsx'));
@@ -67,6 +69,7 @@ export default function App() {
       >
         <Route index element={<Dashboard />} />
         <Route path="products" element={<Products />} />
+        <Route path="products/:id" element={<ProductSummary />} />
         <Route path="products/new" element={<Protected roles={['admin', 'stock', 'sales']}><ProductForm /></Protected>} />
         <Route path="products/:id/edit" element={<Protected roles={['admin', 'stock', 'sales']}><ProductForm /></Protected>} />
         <Route path="customers" element={<Customers />} />
@@ -88,6 +91,8 @@ export default function App() {
         <Route path="data" element={<Protected roles={['admin', 'sales']}><ImportExport /></Protected>} />
         <Route path="deals" element={<Protected roles={['admin']}><Deals /></Protected>} />
         <Route path="deals/:kind/:id" element={<Protected roles={['admin']}><DealDetail /></Protected>} />
+        <Route path="deal-accounts" element={<Protected roles={['admin']}><DealAccounts /></Protected>} />
+        <Route path="deal-accounts/:id" element={<Protected roles={['admin']}><DealAccounts /></Protected>} />
         <Route path="receivables" element={<Protected roles={['admin', 'sales']}><Receivables /></Protected>} />
         <Route path="receivables/:id" element={<Protected roles={['admin', 'sales']}><ReceivableDetail /></Protected>} />
         <Route path="payables" element={<Protected roles={['admin']}><Payables /></Protected>} />

@@ -8,16 +8,19 @@ import { newIdempotencyKey } from '../lib/idempotency.js';
 import { money, errorMessage } from '../lib/format.js';
 import { clampQuantity, isValidQuantity } from '../lib/quantity.js';
 import { resizeSerials, compactSerials, serialsAreSubmittable } from '../lib/cartSerials.js';
+import { parsePricingPaste } from '../lib/pricingPaste.js';
 import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Combobox from '../components/Combobox.jsx';
 import { specLine } from './Products.jsx';
 import { Spinner } from '../components/ui.jsx';
+import DealSelector from '../components/DealSelector.jsx';
 
 export default function POS() {
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const [customer, setCustomer] = useState('');
+  const [dealId, setDealId] = useState('');
   const [cart, setCart] = useState([]);
   const [discount, setDiscount] = useState('');
   const [taxRate, setTaxRate] = useState(0);
@@ -118,6 +121,16 @@ export default function POS() {
   function updateLine(idx, patch) {
     setCart((c) => c.map((line, i) => (i === idx ? { ...line, ...patch } : line)));
   }
+  function pastePrices(startIndex, event) {
+    const pasted = event.clipboardData?.getData('text');
+    if (!pasted || !/[\t\r\n]/.test(pasted)) return;
+    event.preventDefault();
+    try {
+      const prices = parsePricingPaste(pasted, cart.length - startIndex);
+      setCart((current) => current.map((line, i) => (i >= startIndex && i < startIndex + prices.length ? { ...line, unitPrice: prices[i - startIndex] } : line)));
+      toast.success(`${prices.length} price${prices.length === 1 ? '' : 's'} pasted. Review the totals before saving.`);
+    } catch (error) { toast.error(error.message); }
+  }
   // Quantity changes go through here rather than updateLine directly, because a
   // tracksSerials line's serial slots must grow or shrink in step with it.
   function updateQuantity(idx, quantity) {
@@ -177,6 +190,7 @@ export default function POS() {
     try {
       const payload = {
         customer,
+        dealId: dealId || undefined,
         items: cart.map(({ product, quantity, unitPrice, discount, comments, name, model, ram, processor, storage, serials }) => ({
           product,
           name: name.trim(),
@@ -401,7 +415,7 @@ export default function POS() {
                           </div>
                         </td>
                         <td className="td text-right">
-                          <input type="number" step="0.01" className="input input-sm w-24 text-right num input-money" value={line.unitPrice} onChange={(e) => updateLine(i, { unitPrice: e.target.value })} />
+                          <input type="number" step="0.01" className="input input-sm w-24 text-right num input-money" value={line.unitPrice} onPaste={(e) => pastePrices(i, e)} onChange={(e) => updateLine(i, { unitPrice: e.target.value })} />
                         </td>
                         <td className="td text-right">
                           <input type="number" step="0.01" className="input input-sm w-20 text-right num input-money" value={line.discount} onChange={(e) => updateLine(i, { discount: e.target.value })} />
@@ -507,7 +521,7 @@ export default function POS() {
                         <label htmlFor={`pos-price-${i}`} className="t-meta block mb-1">Unit price</label>
                         <input id={`pos-price-${i}`} type="number" inputMode="decimal" step="0.01"
                                className="input input-sm text-right num input-money w-full" value={line.unitPrice}
-                               onChange={(e) => updateLine(i, { unitPrice: e.target.value })} />
+                               onPaste={(e) => pastePrices(i, e)} onChange={(e) => updateLine(i, { unitPrice: e.target.value })} />
                       </div>
                       <div>
                         <label htmlFor={`pos-disc-${i}`} className="t-meta block mb-1">Discount</label>
@@ -546,6 +560,7 @@ export default function POS() {
                   emptyHint="No customer found"
                 />
               </div>
+              <DealSelector value={dealId} onChange={setDealId} id="pos-deal" />
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label htmlFor="pos-discount-27" className="label">Discount</label>

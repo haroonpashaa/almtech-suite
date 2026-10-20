@@ -2,7 +2,6 @@ import { Suspense, lazy, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client.js';
-import { useCurrency } from '../hooks/useSettings.js';
 import { money, moneyPlain, dateShort, relativeTime } from '../lib/format.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import PageHeader from '../components/PageHeader.jsx';
@@ -92,7 +91,8 @@ function Trend({ value }) {
 
 export default function Dashboard() {
   const { has } = useAuth();
-  const currency = useCurrency();
+  // Dashboard totals are PKR-only; payable and account screens show separate buckets.
+  const currency = 'PKR';
   const isAdmin = has('admin');
   // Sales gets a stripped-down dashboard: Expenses and Receivables only. Admin's
   // and Stock's dashboards are unchanged — this flag only ever removes sections,
@@ -255,8 +255,8 @@ export default function Dashboard() {
                      hint={pl.data ? `${(pl.data.netMargin ?? 0).toFixed(1)}% margin` : ''} />
                 <Kpi loading={dash.isLoading} label="Expenses · period" value={totals?.expenses} currency={currency}
                      tone="negative" to="/expenses" change={delta(totals?.expenses, prevTotals?.expenses)} />
-                <Kpi loading={dash.isLoading} label="Cash & bank" value={d?.accountsTotal} currency={currency}
-                     tone="auto" to="/accounts" hint={`${d?.accounts?.length ?? 0} accounts`} />
+                <Kpi loading={dash.isLoading} label="Cash & bank (PKR)" value={d?.accountsTotal} currency="PKR"
+                     tone="auto" to="/accounts" hint={d?.accountsTotalByCurrency?.GBP ? `GBP accounts (${money(d.accountsTotalByCurrency.GBP, 'GBP')}) are shown separately on Accounts` : 'Active PKR accounts'} />
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 mt-3">
                 <Kpi loading={dash.isLoading} label="Receivables" value={d?.receivables} currency={currency}

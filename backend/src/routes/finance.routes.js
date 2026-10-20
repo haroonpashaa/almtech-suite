@@ -6,6 +6,7 @@ import {
   payables,
   supplierPayable,
   adjustSupplierPayable,
+  exchangeRate,
   position,
 } from '../controllers/finance.controller.js';
 
@@ -23,6 +24,7 @@ const r = Router();
 r.use(protect);
 
 r.get('/position', requireRole('admin'), position);
+r.get('/exchange-rate', requireRole('admin'), exchangeRate);
 r.get('/receivables', requireRole('admin', 'sales'), receivables);
 r.get('/receivables/:id', requireRole('admin', 'sales'), customerReceivable);
 r.get('/payables', requireRole('admin'), payables);

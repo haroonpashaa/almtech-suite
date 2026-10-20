@@ -2,7 +2,6 @@ import { Suspense, lazy, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client.js';
 import { money, datetime } from '../lib/format.js';
-import { useCurrency } from '../hooks/useSettings.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
@@ -43,7 +42,8 @@ export default function Reports() {
   const [payAccount, setPayAccount] = useState('');
   const [payType, setPayType] = useState('');
 
-  const currency = useCurrency();
+  // Legacy report endpoints aggregate single-currency PKR records only.
+  const currency = 'PKR';
 
   const params = { from, to };
 

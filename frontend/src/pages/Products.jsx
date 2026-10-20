@@ -104,7 +104,7 @@ export default function Products() {
             { key: 'name', label: 'Product Name', render: (p) => (
               <span className="block">
                 {has('admin', 'stock', 'sales') ? (
-                  <Link to={`/products/${p._id}/edit`} className="text-ink-900 hover:text-brand-700 font-medium">{p.name}</Link>
+                  <Link to={`/products/${p._id}`} className="text-ink-900 hover:text-brand-700 font-medium">{p.name}</Link>
                 ) : (
                   <span className="text-ink-900 font-medium">{p.name}</span>
                 )}

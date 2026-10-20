@@ -10,6 +10,8 @@ import { resolvePayment, requireReason, assertReversible, postReversal } from '.
 import { resolvePaging, runPaged } from '../utils/pagination.js';
 import { requirePositiveWholeQuantity } from '../utils/quantity.js';
 import { safeFilterValue } from '../utils/safeFilterValue.js';
+import { validateDealId } from '../utils/dealLink.js';
+import { createRateSnapshot, roundCurrency } from '../services/exchangeRate.service.js';
 
 // Notes are free-text metadata on the order (see updatePO's comment on "pure
 // metadata"), not something Sales is authorized to see. Sales cannot create, edit,
@@ -26,10 +28,28 @@ function withoutPONotes(req, doc) {
 }
 
 export const listPOs = asyncHandler(async (req, res) => {
-  const { supplier, status } = req.query;
+  const { supplier, status, search, from, to } = req.query;
   const filter = {};
   if (supplier) filter.supplier = supplier;
   if (status) filter.status = safeFilterValue(status);
+  if (search?.trim()) {
+    const literal = safeFilterValue(search.trim()).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    filter.number = { $regex: literal, $options: 'i' };
+  }
+  if (from || to) {
+    filter.orderedAt = {};
+    if (from) {
+      const start = new Date(from);
+      if (Number.isNaN(start.getTime())) { res.status(400); throw new Error('Invalid start date'); }
+      filter.orderedAt.$gte = start;
+    }
+    if (to) {
+      const end = new Date(to);
+      if (Number.isNaN(end.getTime())) { res.status(400); throw new Error('Invalid end date'); }
+      end.setDate(end.getDate() + 1);
+      filter.orderedAt.$lt = end;
+    }
+  }
   const paging = resolvePaging(req.query, 500);
   const items = await runPaged(res, PurchaseOrder, filter, {
     sort: '-orderedAt',
@@ -49,7 +69,9 @@ export const getPO = asyncHandler(async (req, res) => {
 });
 
 export const createPO = asyncHandler(async (req, res) => {
-  const { supplier: supplierId, items, taxRate = 0, expectedAt, notes } = req.body;
+  const { supplier: supplierId, items, taxRate = 0, expectedAt, notes, dealId, currency = 'PKR' } = req.body;
+  if (!['GBP', 'PKR'].includes(currency)) { res.status(400); throw new Error('Payable currency must be GBP or PKR'); }
+  const deal = await validateDealId(res, dealId);
   const supplier = await Supplier.findById(supplierId);
   if (!supplier) {
     res.status(404);
@@ -64,21 +86,26 @@ export const createPO = asyncHandler(async (req, res) => {
       throw new Error(`Product not found: ${it.product}`);
     }
     const quantity = requirePositiveWholeQuantity(it.quantity, product.name);
-    const lineTotal = quantity * it.unitCost;
+    const unitCost = Number(it.unitCost);
+    if (!Number.isFinite(unitCost) || unitCost < 0 || Math.abs(unitCost - roundCurrency(unitCost)) > 1e-8) {
+      res.status(400); throw new Error(`Enter a valid ${currency} unit cost for ${product.name} with at most 2 decimal places`);
+    }
+    const lineTotal = roundCurrency(quantity * unitCost);
     lines.push({
       product: product._id,
       name: product.name,
       sku: product.sku,
       quantity,
       received: 0,
-      unitCost: it.unitCost,
+      unitCost,
       serials: it.serials || [],
       lineTotal,
     });
     subtotal += lineTotal;
   }
   const taxAmount = Math.round(subtotal * (taxRate / 100) * 100) / 100;
-  const total = Math.round((subtotal + taxAmount) * 100) / 100;
+  const total = roundCurrency(subtotal + taxAmount);
+  const fxSnapshot = await createRateSnapshot(total, currency, currency === 'GBP' ? 'PKR' : 'GBP');
   const number = await nextNumber('po');
 
   // ALM-SEC-018 fix: PO creation and the supplier.payable increase are one
@@ -97,6 +124,9 @@ export const createPO = asyncHandler(async (req, res) => {
       [{
         number,
         supplier: supplier._id,
+        deal,
+        currency,
+        fxSnapshots: [fxSnapshot],
         items: lines,
         subtotal,
         taxRate,
@@ -110,7 +140,8 @@ export const createPO = asyncHandler(async (req, res) => {
       opts
     );
     try {
-      await Supplier.updateOne({ _id: supplier._id }, { $inc: { payable: total } }, opts);
+      const payableField = currency === 'GBP' ? 'payableGBP' : 'payable';
+      await Supplier.updateOne({ _id: supplier._id }, { $inc: { [payableField]: total } }, opts);
     } catch (e) {
       if (!session) await PurchaseOrder.deleteOne({ _id: created._id });
       throw e;
@@ -118,7 +149,7 @@ export const createPO = asyncHandler(async (req, res) => {
     return created;
   });
 
-  await logActivity(req, 'po_created', { entity: 'PurchaseOrder', entityId: po._id, meta: { number, total } });
+  await logActivity(req, 'po_created', { entity: 'PurchaseOrder', entityId: po._id, meta: { number, total, currency } });
   res.status(201).json(po);
 });
 
@@ -187,7 +218,7 @@ export const updatePO = asyncHandler(async (req, res) => {
   }
 
   const { notes, expectedAt } = req.body;
-  const wantsFinancialEdit = ['supplier', 'items', 'taxRate'].some((k) => req.body[k] !== undefined);
+  const wantsFinancialEdit = ['supplier', 'items', 'taxRate', 'currency'].some((k) => req.body[k] !== undefined);
 
   if (!wantsFinancialEdit) {
     // Metadata-only edit — safe at any receiving/payment state.
@@ -231,7 +262,14 @@ export const updatePO = asyncHandler(async (req, res) => {
     throw new Error('At least one item is required');
   }
 
+  const newCurrency = req.body.currency ?? po.currency ?? 'PKR';
+  if (!['GBP', 'PKR'].includes(newCurrency)) { res.status(400); throw new Error('Payable currency must be GBP or PKR'); }
+  const currencyChanged = newCurrency !== (po.currency || 'PKR');
   const anyReceivedAnywhere = po.items.some((l) => l.received > 0);
+  if (currencyChanged && anyReceivedAnywhere) {
+    res.status(409);
+    throw new Error('The payable currency cannot be changed after any items have been received.');
+  }
   const newSupplierId = req.body.supplier !== undefined ? String(req.body.supplier) : po.supplier.toString();
   const oldSupplierId = po.supplier.toString();
   const supplierChanged = newSupplierId !== oldSupplierId;
@@ -286,13 +324,13 @@ export const updatePO = asyncHandler(async (req, res) => {
       }
     } else {
       unitCost = Number(it.unitCost);
-      if (!Number.isFinite(unitCost) || unitCost < 0) {
+      if (!Number.isFinite(unitCost) || unitCost < 0 || Math.abs(unitCost - roundCurrency(unitCost)) > 1e-8) {
         res.status(400);
-        throw new Error(`Enter a valid unit cost for ${product.name}`);
+        throw new Error(`Enter a valid ${newCurrency} unit cost for ${product.name} with at most 2 decimal places`);
       }
     }
 
-    const lineTotal = quantity * unitCost;
+    const lineTotal = roundCurrency(quantity * unitCost);
     newLines.push({
       product: product._id,
       name: product.name,
@@ -320,9 +358,10 @@ export const updatePO = asyncHandler(async (req, res) => {
     res.status(400);
     throw new Error('Invalid tax rate');
   }
-  const taxAmount = Math.round(subtotal * (taxRate / 100) * 100) / 100;
-  const total = Math.round((subtotal + taxAmount) * 100) / 100;
+  const taxAmount = roundCurrency(subtotal * (taxRate / 100));
+  const total = roundCurrency(subtotal + taxAmount);
   const oldTotal = po.total;
+  const fxSnapshot = await createRateSnapshot(total, newCurrency, newCurrency === 'GBP' ? 'PKR' : 'GBP');
 
   // Status follows the same derivation receiveItems uses — reducing an ordered
   // quantity down to exactly what's already received can legitimately close the
@@ -331,34 +370,74 @@ export const updatePO = asyncHandler(async (req, res) => {
   const anyReceived = newLines.some((l) => l.received > 0);
   const newStatus = allReceived ? 'received' : anyReceived ? 'partial' : po.status;
 
-  const setFields = { items: newLines, subtotal, taxRate, taxAmount, total, balance: total, status: newStatus };
+  const setFields = {
+    items: newLines, subtotal, taxRate, taxAmount, total, balance: total, status: newStatus,
+    currency: newCurrency,
+    fxSnapshots: [...(po.fxSnapshots || []), fxSnapshot],
+  };
   if (supplierChanged) setFields.supplier = newSupplierId;
   if (notes !== undefined) setFields.notes = notes;
   if (expectedAt !== undefined) setFields.expectedAt = expectedAt;
 
-  const updated = await PurchaseOrder.findOneAndUpdate(
-    { _id: po._id, updatedAt: po.updatedAt },
-    { $set: setFields },
-    { new: true }
-  );
-  if (!updated) {
-    res.status(409);
-    throw new Error('This purchase order changed since you opened it (received, paid, or edited elsewhere) — reload and try again.');
-  }
-
-  // Supplier.payable is a plain running total (not ledger-backed — createPO simply
-  // increments it, recordSupplierPayment/reverseSupplierPayment simply adjust it),
-  // so keeping it correct here is the same kind of plain delta adjustment, applied
-  // only after the PO write above is confirmed to have landed against the exact
-  // state that was validated.
+  // PO and supplier payable changes are one financial operation. Use a Mongo
+  // transaction where available and compensate the ordered writes on standalone DBs.
+  const oldField = (po.currency || 'PKR') === 'GBP' ? 'payableGBP' : 'payable';
+  const newField = newCurrency === 'GBP' ? 'payableGBP' : 'payable';
+  const supplierDeltas = [];
   if (supplierChanged) {
-    await Supplier.updateOne({ _id: oldSupplierId }, { $inc: { payable: -oldTotal } });
-    await Supplier.updateOne({ _id: newSupplierId }, { $inc: { payable: total } });
+    supplierDeltas.push({ supplierId: oldSupplierId, field: oldField, delta: -oldTotal });
+    supplierDeltas.push({ supplierId: newSupplierId, field: newField, delta: total });
+  } else if (oldField === newField) {
+    supplierDeltas.push({ supplierId: oldSupplierId, field: oldField, delta: total - oldTotal });
   } else {
-    await Supplier.updateOne({ _id: oldSupplierId }, { $inc: { payable: total - oldTotal } });
+    supplierDeltas.push({ supplierId: oldSupplierId, field: oldField, delta: -oldTotal });
+    supplierDeltas.push({ supplierId: oldSupplierId, field: newField, delta: total });
   }
 
-  await logActivity(req, 'po_updated', { entity: 'PurchaseOrder', entityId: po._id, meta: { total } });
+  const updated = await runAtomically(async (session) => {
+    let claimedPO;
+    const appliedDeltas = [];
+    try {
+      const options = { new: true, ...(session ? { session } : {}) };
+      claimedPO = await PurchaseOrder.findOneAndUpdate(
+        { _id: po._id, updatedAt: po.updatedAt },
+        { $set: setFields },
+        options
+      );
+      if (!claimedPO) {
+        res.status(409);
+        throw new Error('This purchase order changed since you opened it (received, paid, or edited elsewhere) — reload and try again.');
+      }
+      for (const entry of supplierDeltas) {
+        const result = await Supplier.updateOne(
+          { _id: entry.supplierId },
+          { $inc: { [entry.field]: entry.delta } },
+          session ? { session } : {}
+        );
+        if (!result.matchedCount) throw new Error('Supplier payable could not be updated; reload and reconcile before retrying.');
+        appliedDeltas.push(entry);
+      }
+      return claimedPO;
+    } catch (error) {
+      if (!session && claimedPO) {
+        for (const entry of appliedDeltas.reverse()) {
+          await Supplier.updateOne({ _id: entry.supplierId }, { $inc: { [entry.field]: -entry.delta } });
+        }
+        const originalPO = {
+          items: po.items, subtotal: po.subtotal, taxRate: po.taxRate, taxAmount: po.taxAmount,
+          total: po.total, balance: po.balance, status: po.status, currency: po.currency || 'PKR',
+          fxSnapshots: po.fxSnapshots || [], supplier: po.supplier,
+        };
+        if (notes !== undefined) originalPO.notes = po.notes;
+        if (expectedAt !== undefined) originalPO.expectedAt = po.expectedAt;
+        const rollback = await PurchaseOrder.updateOne({ _id: po._id, updatedAt: claimedPO.updatedAt }, { $set: originalPO });
+        if (!rollback.matchedCount) console.error(`[po] Could not compensate failed payable edit for PO ${po.number}; reconciliation is required.`);
+      }
+      throw error;
+    }
+  });
+
+  await logActivity(req, 'po_updated', { entity: 'PurchaseOrder', entityId: po._id, meta: { previousTotal: oldTotal, previousCurrency: po.currency || 'PKR', total, currency: newCurrency } });
   res.json(await PurchaseOrder.findById(po._id).populate('supplier').populate('createdBy', 'name'));
 });
 
@@ -368,6 +447,10 @@ export const receiveItems = asyncHandler(async (req, res) => {
   if (!po) {
     res.status(404);
     throw new Error('Purchase order not found');
+  }
+  if ((po.currency || 'PKR') !== 'PKR') {
+    res.status(400);
+    throw new Error('Receiving GBP purchase orders is disabled until inventory cost records support currency-specific costs. The PO and its GBP payable remain available for review and matching-currency payment.');
   }
   // Validate every receipt before touching any stock — a malformed quantity anywhere
   // in the batch rejects the whole request rather than silently skipping that one
@@ -515,6 +598,11 @@ export const recordSupplierPayment = asyncHandler(async (req, res) => {
     res.status(400);
     throw new Error('This purchase order is already settled');
   }
+  const payableCurrency = po.currency || 'PKR';
+  if ((account.currency || 'PKR') !== payableCurrency) {
+    res.status(400);
+    throw new Error(`Payment account must be denominated in ${payableCurrency} to pay this purchase order`);
+  }
   const cappedAmount = Math.min(amount, po.balance);
 
   // PO paid/balance and Supplier.payable behave exactly as before — the supplier
@@ -525,6 +613,7 @@ export const recordSupplierPayment = asyncHandler(async (req, res) => {
       {
         account: account._id,
         amount: cappedAmount,
+        currency: payableCurrency,
         direction: 'out',
         type: 'supplier_payment',
         method,
@@ -552,6 +641,7 @@ export const recordSupplierPayment = asyncHandler(async (req, res) => {
                     { $ifNull: ['$payments', []] },
                     [{
                       amount: cappedAmount,
+                      currency: payableCurrency,
                       method,
                       reference,
                       date: new Date(),
@@ -575,9 +665,10 @@ export const recordSupplierPayment = asyncHandler(async (req, res) => {
           throw err;
         }
 
+        const payableField = payableCurrency === 'GBP' ? 'payableGBP' : 'payable';
         await Supplier.updateOne(
           { _id: po.supplier },
-          [{ $set: { payable: { $max: [0, { $subtract: ['$payable', cappedAmount] }] } } }],
+          [{ $set: { [payableField]: { $max: [0, { $subtract: [`$${payableField}`, cappedAmount] }] } } }],
           session ? { session } : {}
         );
       }
@@ -589,7 +680,7 @@ export const recordSupplierPayment = asyncHandler(async (req, res) => {
   await logActivity(req, 'supplier_payment', {
     entity: 'PurchaseOrder',
     entityId: po._id,
-    meta: { amount: cappedAmount, account: account.name },
+    meta: { amount: cappedAmount, currency: payableCurrency, account: account.name },
   });
   // Re-read: the payment is applied by a conditional update, so the copy loaded
   // above still shows the pre-payment figures.
@@ -709,9 +800,10 @@ export const reverseSupplierPayment = asyncHandler(async (req, res) => {
         throw e;
       }
 
+      const payableField = (po.currency || 'PKR') === 'GBP' ? 'payableGBP' : 'payable';
       await Supplier.updateOne(
         { _id: po.supplier },
-        { $inc: { payable: amount } },
+        { $inc: { [payableField]: amount } },
         opts
       );
     },

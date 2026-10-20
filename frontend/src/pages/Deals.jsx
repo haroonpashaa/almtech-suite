@@ -100,6 +100,7 @@ export default function Deals() {
         title="Transactions"
         subtitle="Every sale and purchase, with payments and outstanding balances"
         icon={<svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M3 12h18M3 18h12M17 15l3 3-3 3" /></svg>}
+        actions={<Link className="btn-secondary" to="/deal-accounts">Deal accounts</Link>}
       />
       <div className="page page-w space-y-4">
         <div className="segment w-fit">

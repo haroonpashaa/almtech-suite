@@ -77,7 +77,18 @@ export async function postTransaction(entry, session = null) {
   const valid = direction === 'in' ? IN_TYPES : OUT_TYPES;
   if (!valid.includes(type)) throw new Error(`Transaction type "${type}" is not valid for direction "${direction}"`);
 
-  const [txn] = await FinancialTransaction.create([entry], session ? { session } : {});
+  const accountQuery = Account.findById(account).select('currency');
+  if (session) accountQuery.session(session);
+  const accountDoc = await accountQuery;
+  if (!accountDoc) throw new Error('Financial account not found');
+  const currency = entry.currency || accountDoc.currency || 'PKR';
+  if (currency !== accountDoc.currency) {
+    const err = new Error(`Payment currency ${currency} does not match account currency ${accountDoc.currency}`);
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const [txn] = await FinancialTransaction.create([{ ...entry, currency }], session ? { session } : {});
   await Account.updateOne(
     { _id: account },
     { $inc: { currentBalance: signOf(direction) * amount } },

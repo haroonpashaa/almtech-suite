@@ -13,6 +13,8 @@ import { resolvePayment, requireReason, assertReversible, postReversal } from '.
 import { resolvePaging, runPaged } from '../utils/pagination.js';
 import { requirePositiveWholeQuantity } from '../utils/quantity.js';
 import { safeFilterValue } from '../utils/safeFilterValue.js';
+import mongoose from 'mongoose';
+import { validateDealId } from '../utils/dealLink.js';
 
 // Single implementation of "money received against an invoice", shared by the POS
 // initial payment and by later payments on the invoice detail screen.
@@ -22,6 +24,11 @@ import { safeFilterValue } from '../utils/safeFilterValue.js';
 // What is new is that the same operation also posts a ledger row into the selected
 // financial account, and the two are tied together (payment line -> transaction).
 export async function applyInvoicePayment({ invoice, account, amount, method, reference, user, type, idempotencyKey }) {
+  if ((invoice.currency || 'PKR') !== (account.currency || 'PKR')) {
+    const err = new Error(`Payment account currency ${account.currency || 'PKR'} must match invoice currency ${invoice.currency || 'PKR'}`);
+    err.statusCode = 400;
+    throw err;
+  }
   const cappedAmount = Math.min(amount, invoice.balance);
   if (!(cappedAmount > 0)) return null;
 
@@ -29,6 +36,7 @@ export async function applyInvoicePayment({ invoice, account, amount, method, re
     {
       account: account._id,
       amount: cappedAmount,
+      currency: invoice.currency || 'PKR',
       direction: 'in',
       type,
       method,
@@ -67,6 +75,7 @@ export async function applyInvoicePayment({ invoice, account, amount, method, re
                   { $ifNull: ['$payments', []] },
                   [{
                     amount: cappedAmount,
+                    currency: invoice.currency || 'PKR',
                     method,
                     reference,
                     date: new Date(),
@@ -106,7 +115,7 @@ export async function applyInvoicePayment({ invoice, account, amount, method, re
 }
 
 export const listInvoices = asyncHandler(async (req, res) => {
-  const { customer, status, from, to, q } = req.query;
+  const { customer, status, from, to, q, product, model } = req.query;
   const filter = {};
   if (customer) filter.customer = customer;
   if (status) filter.status = safeFilterValue(status);
@@ -116,6 +125,14 @@ export const listInvoices = asyncHandler(async (req, res) => {
     if (to) filter.issuedAt.$lte = new Date(to);
   }
   if (q) filter.number = new RegExp(q, 'i');
+  if (product && !mongoose.isValidObjectId(product)) { res.status(400); throw new Error('Invalid product filter'); }
+  const itemFilter = {};
+  if (product) itemFilter.product = new mongoose.Types.ObjectId(product);
+  if (typeof model === 'string' && model.trim()) {
+    const escaped = [...model.trim()].map((char) => '\\^$.*+?()[]{}|'.includes(char) ? `\\${char}` : char).join('');
+    itemFilter.model = new RegExp(escaped, 'i');
+  }
+  if (Object.keys(itemFilter).length) filter.items = { $elemMatch: itemFilter };
   // 500 remains the default window, so an unparameterised call is unchanged.
   // What is new is X-Total-Count, which lets the client say what it is not showing.
   const paging = resolvePaging(req.query, 500);
@@ -416,7 +433,8 @@ export async function commitInvoiceEffects({ session, invoiceFields, customerId,
 }
 
 export const createInvoice = asyncHandler(async (req, res) => {
-  const { customer: customerId, items, discount = 0, taxRate = 0, notes, initialPayment } = req.body;
+  const { customer: customerId, items, discount = 0, taxRate = 0, notes, initialPayment, dealId } = req.body;
+  const deal = await validateDealId(res, dealId);
   if (!items?.length) {
     res.status(400);
     throw new Error('At least one item is required');
@@ -426,6 +444,12 @@ export const createInvoice = asyncHandler(async (req, res) => {
     res.status(404);
     throw new Error('Customer not found');
   }
+  const configuredCurrency = (await Settings.getSingleton()).currency || 'PKR';
+  if (configuredCurrency !== 'PKR') {
+    res.status(400);
+    throw new Error('GBP sales invoices are disabled until customer receivable balances support separate currencies. Keep the application currency set to PKR.');
+  }
+  const invoiceCurrency = 'PKR';
 
   const lines = [];
   // Tracked across every line in this sale, not just within one, so the same
@@ -472,6 +496,10 @@ export const createInvoice = asyncHandler(async (req, res) => {
   // An initial payment needs an account to land in, and we validate that before
   // creating anything so a bad account can't leave a half-finished sale behind.
   const initialAccount = initialPayment?.amount > 0 ? await resolveAccount(res, initialPayment.account) : null;
+  if (initialAccount && (initialAccount.currency || 'PKR') !== invoiceCurrency) {
+    res.status(400);
+    throw new Error(`Payment account currency ${initialAccount.currency || 'PKR'} must match invoice currency ${invoiceCurrency}`);
+  }
 
   const number = await nextNumber('invoice');
   // The invoice is always created unpaid; any initial payment is then applied
@@ -506,7 +534,9 @@ export const createInvoice = asyncHandler(async (req, res) => {
       session,
       invoiceFields: {
         number,
+        currency: invoiceCurrency,
         customer: customer._id,
+        deal,
         items: enriched,
         subtotal,
         discount,

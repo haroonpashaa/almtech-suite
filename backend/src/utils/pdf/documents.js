@@ -72,7 +72,7 @@ export function buildInvoice({ invoice, customer, settings, res, download }) {
   const doc = new Doc({
     title: `Invoice ${invoice.number}`,
     subject: `Invoice for ${customer?.name || 'customer'}`,
-    currency: settings.currency || 'PKR',
+    currency: invoice.currency || 'PKR',
     settings, res, download, filename: invoice.number,
   });
 
@@ -189,7 +189,7 @@ export function buildPurchaseOrder({ po, supplier, settings, res, download }) {
   const doc = new Doc({
     title: `Purchase Order ${po.number}`,
     subject: `Purchase order to ${supplier?.name || 'supplier'}`,
-    currency: settings.currency || 'PKR',
+    currency: po.currency || 'PKR',
     settings, res, download, filename: po.number,
   });
 
@@ -262,12 +262,12 @@ export function buildPurchaseOrder({ po, supplier, settings, res, download }) {
 export function buildStatement({
   title, party, entries, settings, summary = [], asOf = new Date(),
   debitLabel = 'Debit', creditLabel = 'Credit', footerNote, periodLabel,
-  res, download, filename,
+  res, download, filename, currency = settings.currency || 'PKR',
 }) {
   const doc = new Doc({
     title,
     subject: `${title}${party?.name ? ` — ${party.name}` : ''}`,
-    currency: settings.currency || 'PKR',
+    currency,
     settings, res, download, filename: filename || title,
   });
 
@@ -312,7 +312,7 @@ export function buildReceipt({ payment, party, document: srcDoc, settings, kind 
   const doc = new Doc({
     title: `${kind} receipt`,
     subject: `${kind} receipt${srcDoc?.number ? ` for ${srcDoc.number}` : ''}`,
-    currency: settings.currency || 'PKR',
+    currency: payment.currency || srcDoc?.currency || 'PKR',
     settings, res, download,
     filename: `receipt-${srcDoc?.number || payment.reference || 'payment'}`,
   });
