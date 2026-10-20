@@ -7,14 +7,15 @@ import PurchaseOrder from '../models/PurchaseOrder.js';
 import Expense from '../models/Expense.js';
 import Account from '../models/Account.js';
 import FinancialTransaction from '../models/FinancialTransaction.js';
+import Activity from '../models/Activity.js';
 import '../models/User.js';
-import { createDealAccount, getDealAccount, linkDealRecord, unlinkDealRecord } from './dealAccounts.controller.js';
+import { createDealAccount, deleteDealAccount, getDealAccount, linkDealRecord, unlinkDealRecord } from './dealAccounts.controller.js';
 
 describe('deal accounts', () => {
   let memory;
   const user = { _id: new mongoose.Types.ObjectId(), name: 'Admin' };
   beforeAll(async () => { memory = await MongoMemoryServer.create(); await mongoose.connect(memory.getUri()); });
-  afterEach(async () => { await Promise.all([Deal.deleteMany({}), Invoice.deleteMany({}), PurchaseOrder.deleteMany({}), Expense.deleteMany({}), Account.deleteMany({}), FinancialTransaction.deleteMany({})]); });
+  afterEach(async () => { await Promise.all([Deal.deleteMany({}), Invoice.deleteMany({}), PurchaseOrder.deleteMany({}), Expense.deleteMany({}), Account.deleteMany({}), FinancialTransaction.deleteMany({}), Activity.deleteMany({})]); });
   afterAll(async () => { await mongoose.disconnect(); await memory.stop(); });
   const response = () => ({ statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } });
 
@@ -62,5 +63,58 @@ describe('deal accounts', () => {
     await unlinkDealRecord({ params: { id: String(first.body._id), type: 'invoice', recordId: String(invoice._id) }, user }, response());
     expect((await Invoice.findById(invoice._id)).total).toBe(100);
     expect((await Invoice.findById(invoice._id)).deal).toBeUndefined();
+  });
+
+  it('permanently deletes an empty deal and records the Admin audit event', async () => {
+    const created = response();
+    await createDealAccount({ body: { identifier: 'EMPTY-931' }, user }, created);
+    const res = response();
+
+    await deleteDealAccount({ params: { id: String(created.body._id) }, user }, res);
+
+    expect(res.body).toEqual({ ok: true, identifier: 'EMPTY-931' });
+    expect(await Deal.findById(created.body._id)).toBeNull();
+    expect(await Activity.findOne({ action: 'deal_deleted', entityId: String(created.body._id) })).toMatchObject({
+      user: user._id,
+      userName: user.name,
+      meta: { identifier: 'EMPTY-931' },
+    });
+  });
+
+  it('blocks deletion while invoices, purchase orders, or expenses are linked and preserves them', async () => {
+    const created = response();
+    await createDealAccount({ body: { identifier: 'LINKED-931' }, user }, created);
+    const dealId = created.body._id;
+    const customer = new mongoose.Types.ObjectId();
+    const supplier = new mongoose.Types.ObjectId();
+    const product = new mongoose.Types.ObjectId();
+    const invoice = await Invoice.create({ number: 'INV-LINKED', customer, deal: dealId, items: [{ product, name: 'Laptop', quantity: 1, unitPrice: 100, unitCost: 50, lineTotal: 100 }], subtotal: 100, total: 100, balance: 100 });
+    const purchase = await PurchaseOrder.create({ number: 'PO-LINKED', supplier, deal: dealId, items: [{ product, quantity: 1, received: 0, unitCost: 50, lineTotal: 50 }], subtotal: 50, total: 50, balance: 50 });
+    const account = await Account.create({ name: 'Linked expense account', type: 'cash' });
+    const transaction = await FinancialTransaction.create({ account: account._id, amount: 10, direction: 'out', type: 'expense' });
+    const expense = await Expense.create({ amount: 10, category: 'Shipping', account: account._id, financialTransaction: transaction._id, deal: dealId });
+    const res = response();
+
+    await expect(deleteDealAccount({ params: { id: String(dealId) }, user }, res)).rejects.toThrow(/Unlink all records before deleting/i);
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body).toBeUndefined();
+    expect(await Deal.findById(dealId)).not.toBeNull();
+    expect(await Invoice.findById(invoice._id)).toMatchObject({ deal: dealId, total: 100 });
+    expect(await PurchaseOrder.findById(purchase._id)).toMatchObject({ deal: dealId, total: 50 });
+    expect(await Expense.findById(expense._id)).toMatchObject({ deal: dealId, amount: 10 });
+    expect((await Deal.findById(dealId).select('+deleting +linkOperations')).deleting).toBe(false);
+  });
+
+  it('does not delete a deal while another link operation is active', async () => {
+    const created = response();
+    await createDealAccount({ body: { identifier: 'BUSY-931' }, user }, created);
+    await Deal.updateOne({ _id: created.body._id }, { $set: { linkOperations: 1 } });
+    const res = response();
+
+    await expect(deleteDealAccount({ params: { id: String(created.body._id) }, user }, res)).rejects.toThrow(/being linked or deleted/i);
+
+    expect(res.statusCode).toBe(409);
+    expect(await Deal.findById(created.body._id)).not.toBeNull();
   });
 });
