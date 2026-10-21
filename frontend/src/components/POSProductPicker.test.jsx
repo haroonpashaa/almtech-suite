@@ -84,6 +84,17 @@ afterEach(async () => {
 });
 
 describe('POS product picker', () => {
+  it('renders populated processor, storage, and in-stock serial values from the POS product response', async () => {
+    await mount();
+    const row = container.querySelector('tbody tr');
+
+    expect(row.cells[2].textContent).toContain('SN-1');
+    expect(row.cells[2].textContent).toContain('SN-2');
+    expect(row.cells[4].textContent).toBe('i7');
+    expect(row.cells[5].textContent).toBe('512GB SSD');
+    expect(row.querySelector('select[aria-label="Serial number for ThinkPad X1"]')).toBeTruthy();
+  });
+
   it('selects one or multiple models and Clear filters resets search and attribute filters', async () => {
     await mount();
     const modelButton = container.querySelector('button[aria-haspopup="dialog"]');
@@ -111,6 +122,8 @@ describe('POS product picker', () => {
     const addButton = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Add');
 
     await setSelect(serialSelect, 'SN-1');
+    expect(serialSelect.value).toBe('SN-1');
+    expect(addButton.disabled).toBe(false);
     await click(addButton);
     expect(container.querySelector('[aria-label="Cart state"]').textContent).toBe('[{"quantity":1,"serials":["SN-1"]}]');
 

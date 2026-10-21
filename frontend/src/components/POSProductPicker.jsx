@@ -145,8 +145,9 @@ export default function POSProductPicker({
               const canAdd = product.active !== false && !outOfStock && !stockLimitReached;
               const taken = takenSerials(cart, product._id);
               const selectedSerial = selectedSerials[product._id] || '';
-              const serialOptions = (product.serials || []).filter((unit) => unit.status === 'in_stock' && (!taken.has(unit.serial) || unit.serial === selectedSerial));
-              const selectedSerialAvailable = !selectedSerial || serialOptions.some((unit) => unit.serial === selectedSerial);
+              const availableSerials = (product.serials || []).filter((unit) => unit.status === 'in_stock').map((unit) => unit.serial).filter(Boolean);
+              const serialOptions = availableSerials.filter((serial) => !taken.has(serial) || serial === selectedSerial);
+              const selectedSerialAvailable = !selectedSerial || serialOptions.includes(selectedSerial);
               return (
                 <tr key={product._id} className="tr">
                   <td className="td min-w-48">
@@ -155,10 +156,21 @@ export default function POSProductPicker({
                   </td>
                   <td className="td">{product.brand || '—'}</td>
                   <td className="td">
-                    {product.tracksSerials ? (
+                    {availableSerials.length > 0 ? (
+                      <div className="space-y-1">
+                        <div className="font-mono text-xs break-words" aria-label={`Available serial numbers for ${product.model || product.name}`}>
+                          {availableSerials.join(', ')}
+                        </div>
+                        {product.tracksSerials && (
+                          <select className="select input-sm min-w-40" aria-label={`Serial number for ${product.model || product.name}`} value={selectedSerial} onChange={(event) => onSerialChange(product._id, event.target.value)}>
+                            <option value="">— optional —</option>
+                            {serialOptions.map((serial) => <option key={serial} value={serial}>{serial}</option>)}
+                          </select>
+                        )}
+                      </div>
+                    ) : product.tracksSerials ? (
                       <select className="select input-sm min-w-40" aria-label={`Serial number for ${product.model || product.name}`} value={selectedSerial} onChange={(event) => onSerialChange(product._id, event.target.value)}>
                         <option value="">— optional —</option>
-                        {serialOptions.map((unit) => <option key={unit.serial} value={unit.serial}>{unit.serial}</option>)}
                       </select>
                     ) : '—'}
                   </td>
