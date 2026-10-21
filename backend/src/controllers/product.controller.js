@@ -149,7 +149,9 @@ export const listProducts = asyncHandler(async (req, res) => {
   // the response body keeps its existing {items, total, page, limit} shape, since POS,
   // QuotationForm and PurchaseOrderForm all read `data.items` from this same endpoint.
   const paging = resolvePaging(req.query, 50);
-  const items = await runPaged(res, Product, filter, { sort: '-createdAt', paging });
+  // Stable secondary ordering keeps offset-based pages disjoint when products
+  // share a creation timestamp (including while a large PO catalogue is loaded).
+  const items = await runPaged(res, Product, filter, { sort: { createdAt: -1, _id: 1 }, paging });
   const total = Number(res.get('X-Total-Count'));
   res.json({ items: items.map((p) => sanitizeProduct(req, p)), total, page: paging.page, limit: paging.limit });
 });

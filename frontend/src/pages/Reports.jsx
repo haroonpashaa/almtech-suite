@@ -183,17 +183,22 @@ export default function Reports() {
         )}
 
         {tab === 'products' && (
-          <Table
-            loading={byProduct.isLoading}
-            columns={[
-              { key: 'name', label: 'Product', render: (r) => <span className="font-medium text-ink-900">{r.name}</span> },
-              { key: 'sku', label: 'SKU', render: (r) => <span className="font-mono text-[12px] text-ink-400">{r.sku}</span> },
-              { key: 'quantity', label: 'Qty', className: 'text-right num' },
-              { key: 'revenue', label: 'Revenue', className: 'text-right num font-medium text-ink-900', render: (r) => <Money value={r.revenue} /> },
-            ]}
-            rows={byProduct.data || []}
-            empty="No sales in this range"
-          />
+          <>
+            <p className="text-sm text-ink-500">
+              Product amounts reflect line-level discounts. Invoice-level discounts are included in Profit and Loss, but are not allocated to individual products.
+            </p>
+            <Table
+              loading={byProduct.isLoading}
+              columns={[
+                { key: 'name', label: 'Product', render: (r) => <span className="font-medium text-ink-900">{r.name}</span> },
+                { key: 'sku', label: 'SKU', render: (r) => <span className="font-mono text-[12px] text-ink-400">{r.sku}</span> },
+                { key: 'quantity', label: 'Qty', className: 'text-right num' },
+                { key: 'revenue', label: 'Line Revenue', className: 'text-right num font-medium text-ink-900', render: (r) => <Money value={r.revenue} /> },
+              ]}
+              rows={byProduct.data || []}
+              empty="No sales in this range"
+            />
+          </>
         )}
 
         {tab === 'customers' && (

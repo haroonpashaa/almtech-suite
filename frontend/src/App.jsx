@@ -80,11 +80,11 @@ export default function App() {
         <Route path="invoices/:id" element={<InvoiceDetail />} />
         <Route path="quotations" element={<Quotations />} />
         <Route path="quotations/new" element={<Protected roles={['admin', 'sales']}><QuotationForm /></Protected>} />
-        <Route path="purchase-orders" element={<PurchaseOrders />} />
+        <Route path="purchase-orders" element={<Protected roles={['admin', 'stock']}><PurchaseOrders /></Protected>} />
         <Route path="purchase-summary" element={<Protected roles={['admin', 'stock']}><PurchaseSummary /></Protected>} />
         <Route path="purchase-orders/new" element={<Protected roles={['admin', 'stock']}><PurchaseOrderForm /></Protected>} />
         <Route path="purchase-orders/:id/edit" element={<Protected roles={['admin', 'stock']}><PurchaseOrderForm /></Protected>} />
-        <Route path="purchase-orders/:id" element={<PurchaseOrderDetail />} />
+        <Route path="purchase-orders/:id" element={<Protected roles={['admin', 'stock']}><PurchaseOrderDetail /></Protected>} />
         {/* Supplier screens mirror the API: admin and stock only. */}
         <Route path="suppliers" element={<Protected roles={['admin', 'stock']}><Suppliers /></Protected>} />
         <Route path="suppliers/:id" element={<Protected roles={['admin', 'stock']}><SupplierDetail /></Protected>} />

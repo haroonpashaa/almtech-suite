@@ -5,7 +5,7 @@ import toast from 'react-hot-toast';
 import { useSubmit } from '../hooks/useSubmit.js';
 import { newIdempotencyKey } from '../lib/idempotency.js';
 import { api } from '../api/client.js';
-import { money, date as fmtDate, errorMessage } from '../lib/format.js';
+import { money, date as fmtDate, datetime, errorMessage } from '../lib/format.js';
 import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Table from '../components/Table.jsx';
@@ -13,6 +13,7 @@ import Money from '../components/Money.jsx';
 import Modal from '../components/Modal.jsx';
 import { Badge, LoadingBlock, Spinner, EmptyState } from '../components/ui.jsx';
 import { AgingBuckets, AgingNote, OverdueBadge } from '../components/Aging.jsx';
+import { useAuth } from '../context/AuthContext.jsx';
 
 const statusTone = { paid: 'success', partial: 'warning', open: 'info', returned: 'danger', cancelled: 'neutral' };
 
@@ -28,6 +29,10 @@ export default function ReceivableDetail() {
   // payment dialog opens (openPay, below) — reused across retries of the
   // same attempt for as long as the dialog stays open.
   const [payKey, setPayKey] = useState(newIdempotencyKey);
+  const [correction, setCorrection] = useState(null);
+  const [savingCorrection, setSavingCorrection] = useState(false);
+  const { has } = useAuth();
+  const isAdmin = has('admin');
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['receivable', id],
@@ -75,6 +80,25 @@ export default function ReceivableDetail() {
   // H6: guards against a double tap firing two payment POSTs.
   const { run: pay, pending: paying } = useSubmit(doPay);
 
+  async function doCorrection() {
+    if (!correction || savingCorrection) return;
+    setSavingCorrection(true);
+    try {
+      await api.post(`/finance/receivables/${id}/adjust`, {
+        ...correction,
+        amount: Number(correction.amount),
+        expectedBalance: data.storedBalance,
+      });
+      toast.success('Receivable correction recorded');
+      setCorrection(null);
+      qc.invalidateQueries({ queryKey: ['receivable', id] });
+      qc.invalidateQueries({ queryKey: ['receivables'] });
+      qc.invalidateQueries({ queryKey: ['finance-position'] });
+      qc.invalidateQueries({ queryKey: ['dashboard'] });
+    } catch (e) { toast.error(errorMessage(e)); }
+    finally { setSavingCorrection(false); }
+  }
+
   if (isLoading) return <LoadingBlock />;
   if (isError || !data) {
     return (
@@ -100,7 +124,10 @@ export default function ReceivableDetail() {
         breadcrumb={[{ label: 'Receivables', to: '/receivables' }, { label: data.customer.name }]}
         title={data.customer.name}
         subtitle={data.customer.company || 'Outstanding invoices'}
-        actions={data.oldestAgeDays > 0 && <Badge tone={data.oldestAgeDays > 60 ? 'danger' : 'warning'} dot>{data.oldestAgeDays} days overdue</Badge>}
+        actions={<div className="flex flex-wrap items-center gap-2">
+          {data.oldestAgeDays > 0 && <Badge tone={data.oldestAgeDays > 60 ? 'danger' : 'warning'} dot>{data.oldestAgeDays} days since invoice</Badge>}
+          {isAdmin && <button className="btn-secondary" onClick={() => setCorrection({ direction: 'increase', amount: '', reason: '', idempotencyKey: newIdempotencyKey() })}>Correct balance</button>}
+        </div>}
       />
       <div className="page page-w space-y-4">
         <div className="grid grid-cols-1 min-[420px]:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -131,7 +158,21 @@ export default function ReceivableDetail() {
             <AgingNote />
           </div>
           <AgingBuckets aging={data.aging} currency={currency} />
+          {data.agingExcludesAdjustments && <p className="text-xs text-ink-400">Aging covers invoices and opening balances. Manual corrections are shown separately and are not treated as invoices.</p>}
         </div>
+
+        {isAdmin && data.adjustments?.length > 0 && (
+          <section className="card p-4 space-y-3">
+            <h2 className="section-title">Balance correction history</h2>
+            <Table empty="No balance corrections" columns={[
+              { key: 'date', label: 'Recorded', render: (r) => <span className="text-ink-500 whitespace-nowrap">{datetime(r.createdAt)}</span> },
+              { key: 'reason', label: 'Reason', render: (r) => <span>{r.reason}</span> },
+              { key: 'user', label: 'By', render: (r) => <span>{r.createdBy?.name || '—'}</span> },
+              { key: 'effect', label: 'Effect (PKR)', className: 'text-right num', render: (r) => <span className={r.delta >= 0 ? 'text-emerald-700' : 'text-red-700'}>{r.delta >= 0 ? '+' : '−'} {money(Math.abs(r.delta), 'PKR')}</span> },
+              { key: 'balance', label: 'Balance after', className: 'text-right num', render: (r) => money(r.balanceAfter, 'PKR') },
+            ]} rows={data.adjustments} />
+          </section>
+        )}
 
         <Table
           empty="No outstanding invoices for this customer"
@@ -204,6 +245,27 @@ export default function ReceivableDetail() {
             </div>
           </div>
         )}
+      </Modal>
+
+      <Modal open={!!correction} onClose={() => setCorrection(null)} title="Correct customer receivable" subtitle={`Current stored balance ${money(data.storedBalance, 'PKR')}`} size="md">
+        {correction && <div className="space-y-3">
+          <p className="text-sm text-ink-500">This is an audited non-cash correction. Existing invoices and payment history will not be edited. GBP customer receivables are not supported.</p>
+          <div>
+            <label htmlFor="receivable-correction-direction" className="label">Correction</label>
+            <select id="receivable-correction-direction" className="select" value={correction.direction} onChange={(e) => setCorrection({ ...correction, direction: e.target.value })}>
+              <option value="increase">Increase receivable</option><option value="decrease">Decrease receivable</option>
+            </select>
+          </div>
+          <div>
+            <label htmlFor="receivable-correction-amount" className="label">Amount (PKR)</label>
+            <input id="receivable-correction-amount" className="input num" type="number" min="0.01" step="0.01" value={correction.amount} onChange={(e) => setCorrection({ ...correction, amount: e.target.value })} />
+          </div>
+          <div>
+            <label htmlFor="receivable-correction-reason" className="label">Reason</label>
+            <textarea id="receivable-correction-reason" className="input min-h-20" value={correction.reason} onChange={(e) => setCorrection({ ...correction, reason: e.target.value })} maxLength={500} />
+          </div>
+          <div className="flex gap-2"><button className="btn-primary" onClick={doCorrection} disabled={savingCorrection || !(Number(correction.amount) > 0) || !correction.reason.trim()}>{savingCorrection ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Save correction'}</button><button className="btn-secondary" onClick={() => setCorrection(null)}>Cancel</button></div>
+        </div>}
       </Modal>
     </div>
   );

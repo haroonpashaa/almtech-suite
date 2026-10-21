@@ -93,6 +93,7 @@ export default function Receivables() {
             <AgingNote />
           </div>
           <AgingBuckets aging={data?.aging} currency={currency} active={bucket} onSelect={setBucket} />
+          {data?.agingExcludesAdjustments && <p className="text-xs text-ink-400">Aging covers invoices and opening balances. Admin balance corrections are tracked separately and are not treated as invoices.</p>}
         </div>
 
         {/* Filters */}

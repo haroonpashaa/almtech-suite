@@ -51,9 +51,8 @@ const financialTransactionSchema = new mongoose.Schema(
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer' },
     supplier: { type: mongoose.Schema.Types.ObjectId, ref: 'Supplier' },
 
-    // Transfer support (architecture only — no transfer UI in this change).
-    // The two legs of one transfer share a transferGroup and point at each other's
-    // account via counterpartyAccount.
+    // The two legs of one account transfer share a transferGroup and point at each
+    // other's account via counterpartyAccount. Transfers are not income or expense.
     transferGroup: { type: String },
     counterpartyAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'Account' },
 

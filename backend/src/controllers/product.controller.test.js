@@ -226,6 +226,25 @@ describe('listProducts pagination', () => {
     expect(body.total).toBe(120);
   });
 
+  it('keeps page order deterministic when products share a creation timestamp', async () => {
+    const timestamp = new Date('2026-01-01T00:00:00.000Z');
+    await Product.insertMany(Array.from({ length: 4 }, (_, index) => ({
+      sku: `SAME-TIME-${index}`,
+      name: `Same time product ${index}`,
+      stock: 1,
+      createdAt: timestamp,
+    })));
+
+    const first = await call({ page: 1, limit: 2 });
+    const second = await call({ page: 2, limit: 2 });
+    const all = [...first.items, ...second.items];
+
+    expect(new Set(all.map((item) => String(item._id))).size).toBe(4);
+    expect(all.map((item) => String(item._id))).toEqual(
+      all.map((item) => String(item._id)).slice().sort()
+    );
+  });
+
   it('search finds a product far outside page 1, without requesting a later page', async () => {
     await seed(120); // newest 120 products fill pages 1–3 entirely
     // The oldest product in the seed (index 0) sorts last under -createdAt and would

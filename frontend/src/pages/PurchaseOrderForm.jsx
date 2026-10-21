@@ -12,6 +12,7 @@ import {
   toggleDisplayedProductsInPurchaseOrder,
   toggleProductInPurchaseOrder,
 } from '../lib/purchaseOrderProductSelection.js';
+import { buildPurchaseOrderItemsPayload, loadCompletePurchaseOrderCatalogue } from '../lib/purchaseOrderProductCatalogue.js';
 import PageHeader from '../components/PageHeader.jsx';
 import Combobox from '../components/Combobox.jsx';
 import { Spinner, LoadingBlock } from '../components/ui.jsx';
@@ -62,11 +63,15 @@ export default function PurchaseOrderForm() {
     setNotes(po.notes || '');
   }, [po]);
 
-  const { data: products } = useQuery({
+  const productsQuery = useQuery({
     queryKey: ['products-po', search],
-    queryFn: async () => (await api.get('/products', { params: { q: search } })).data,
+    queryFn: () => loadCompletePurchaseOrderCatalogue(
+      async (page, limit, filters) => (await api.get('/products', { params: { ...filters, page, limit } })).data,
+      { q: search }
+    ),
   });
-  const displayedProducts = products?.items || [];
+  const displayedProducts = productsQuery.isError ? [] : (productsQuery.data?.items || []);
+  const canSelectProducts = productsQuery.isSuccess && !productsQuery.isFetching && !productsQuery.isError;
   const selectedDisplayedCount = displayedProducts.filter((product) =>
     cart.some((line) => line.product === product._id)
   ).length;
@@ -122,7 +127,7 @@ export default function PurchaseOrderForm() {
         if (canEditFinancials) {
           payload.supplier = supplier;
           payload.currency = currency;
-          payload.items = cart.map(({ product, quantity, unitCost }) => ({ product, quantity: Number(quantity), unitCost: Number(unitCost) }));
+          payload.items = buildPurchaseOrderItemsPayload(cart);
           payload.taxRate = Number(taxRate || 0);
         }
         const r = await api.patch(`/purchase-orders/${id}`, payload);
@@ -133,7 +138,7 @@ export default function PurchaseOrderForm() {
           supplier,
           currency,
           dealId: dealId || undefined,
-          items: cart.map(({ product, quantity, unitCost }) => ({ product, quantity: Number(quantity), unitCost: Number(unitCost) })),
+          items: buildPurchaseOrderItemsPayload(cart),
           taxRate: Number(taxRate || 0),
           expectedAt: expectedAt || undefined,
           notes,
@@ -176,14 +181,28 @@ export default function PurchaseOrderForm() {
               </div>
               <div className="mt-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                 <span className="text-xs text-ink-500" aria-live="polite">
-                  {selectedDisplayedCount} of {displayedProducts.length} displayed products selected
+                  {cart.length} selected in purchase order
+                  {productsQuery.data ? ` · ${selectedDisplayedCount} of ${productsQuery.data.total} matching products selected` : ''}
                 </span>
-                <button type="button" className="btn-secondary self-start sm:self-auto" disabled={!displayedProducts.length} onClick={toggleDisplayedProducts}>
+                <button type="button" className="btn-secondary self-start sm:self-auto" disabled={!canSelectProducts || !displayedProducts.length} onClick={toggleDisplayedProducts}>
                   {hasEligibleDisplayedSelectionInCart
                     ? `Deselect All${hasReceivedDisplayedSelection ? ' (received items stay selected)' : ''}`
-                    : 'Select All'} displayed products
+                    : 'Select All'} matching products
                 </button>
               </div>
+              {productsQuery.isFetching && (
+                <p role="status" className="mt-3 text-sm text-ink-500">Loading all matching products…</p>
+              )}
+              {productsQuery.isError && (
+                <div role="alert" className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
+                  <span>Could not load the complete matching product list. No partial list can be selected.</span>
+                  <button type="button" className="btn-secondary" onClick={() => productsQuery.refetch()}>Retry</button>
+                </div>
+              )}
+              {canSelectProducts && !displayedProducts.length && (
+                <p className="mt-3 text-sm text-ink-500">No products match this search.</p>
+              )}
+              {canSelectProducts && displayedProducts.length > 0 && (
               <div className="mt-3 max-h-64 overflow-y-auto grid sm:grid-cols-2 gap-2">
                 {displayedProducts.map((p) => {
                   const cartIndex = cart.findIndex((line) => line.product === p._id);
@@ -207,6 +226,7 @@ export default function PurchaseOrderForm() {
                   );
                 })}
               </div>
+              )}
             </div>
           )}
           <div className="card overflow-hidden">
