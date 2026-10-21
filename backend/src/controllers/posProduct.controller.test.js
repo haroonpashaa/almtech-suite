@@ -54,7 +54,11 @@ describe('POS product selection API', () => {
     });
     expect(filtered.body.total).toBe(1);
     expect(filtered.body.items.map((product) => product.sku)).toEqual(['POS-X1']);
-    expect(filtered.body.items[0].serials).toEqual([{ serial: 'SN-X1-100', status: 'in_stock' }]);
+    expect(filtered.body.items[0]).toMatchObject({
+      processor: 'i7-1355U',
+      storage: '512GB SSD',
+      serials: [{ serial: 'SN-X1-100', status: 'in_stock' }],
+    });
 
     const similarName = await list({ models: JSON.stringify(['ThinkPad X1 Carbon']) });
     expect(similarName.body.items.map((product) => product.sku)).toEqual(['POS-X1C']);
