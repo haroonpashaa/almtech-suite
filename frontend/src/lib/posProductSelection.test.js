@@ -42,6 +42,7 @@ describe('POS product selection', () => {
     const first = addPosCartItem([], trackedProduct, 'SN-1');
     expect(first.error).toBeNull();
     expect(first.cart[0].serials).toEqual(['SN-1']);
+    expect(first.cart[0]).toMatchObject({ processor: 'i7', storage: '512GB SSD', model: 'ThinkPad X1' });
     expect(addPosCartItem(first.cart, trackedProduct, 'SN-1').error).toMatch(/not available/i);
 
     const second = addPosCartItem(first.cart, trackedProduct, 'SN-2');
