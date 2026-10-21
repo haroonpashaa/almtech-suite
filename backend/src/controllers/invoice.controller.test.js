@@ -6,8 +6,10 @@ import Customer from '../models/Customer.js';
 import Invoice from '../models/Invoice.js';
 import Activity from '../models/Activity.js';
 import Settings from '../models/Settings.js';
+import Account from '../models/Account.js';
+import FinancialTransaction from '../models/FinancialTransaction.js';
 import {
-  resolveLineComments, normalizeSaleQuantity, buildLineFromProduct, validateLineSerials, createInvoice,
+  resolveLineComments, normalizeSaleQuantity, buildLineFromProduct, validateLineSerials, createInvoice, recordPayment,
   updateInvoice, returnInvoice, listInvoices,
 } from './invoice.controller.js';
 
@@ -211,6 +213,7 @@ describe('createInvoice cart editing (DB-backed)', () => {
     await Product.deleteMany({});
     await Customer.deleteMany({});
     await Settings.deleteMany({});
+    await Promise.all([Account.deleteMany({}), FinancialTransaction.deleteMany({})]);
   });
 
   afterAll(async () => {
@@ -260,6 +263,48 @@ describe('createInvoice cart editing (DB-backed)', () => {
     expect(line.processor).toBe('i9');
     expect(line.storage).toBe('1TB SSD');
     expect(line.comments).toBe('Sold as-is, buyer aware of the scratch');
+  });
+
+  it('keeps a credit sale as a receivable and applies partial/full collections once', async () => {
+    const customer = await makeCustomer();
+    const product = await makeProduct();
+    const account = await Account.create({ name: 'Cash for receivable test', type: 'cash', openingBalance: 0, currentBalance: 0 });
+    const { status, body: created } = await callCreateInvoice({
+      customer: customer._id.toString(),
+      items: [{ product: product._id.toString(), quantity: 1, unitPrice: 900 }],
+    });
+    expect(status).toBe(201);
+    expect(created).toMatchObject({ paid: 0, balance: 900, status: 'open' });
+    expect((await Customer.findById(customer._id)).balance).toBe(900);
+    expect(created.payments).toHaveLength(0);
+
+    await expect(recordPayment({ params: { id: String(created._id) }, body: { amount: 100, account: String(account._id) }, user: { _id: userId, role: 'sales' } }, mockRes()))
+      .rejects.toThrow(/idempotency key is required/i);
+    expect((await Customer.findById(customer._id)).balance).toBe(900);
+
+    const paymentRequest = { params: { id: String(created._id) }, body: { amount: 300, account: String(account._id), idempotencyKey: 'invoice-partial-payment-1' }, user: { _id: userId, role: 'sales' } };
+    const partial = mockRes();
+    await recordPayment(paymentRequest, partial);
+    expect(partial.body).toMatchObject({ paid: 300, balance: 600, status: 'partial' });
+    expect(partial.body.payments).toHaveLength(1);
+    expect((await Customer.findById(customer._id)).balance).toBe(600);
+    expect((await Account.findById(account._id)).currentBalance).toBe(300);
+    expect(await FinancialTransaction.countDocuments({ invoice: created._id })).toBe(1);
+
+    const duplicate = mockRes();
+    await expect(recordPayment(paymentRequest, duplicate)).rejects.toThrow(/already been recorded/i);
+    expect(duplicate.statusCode).toBe(409);
+    expect((await Customer.findById(customer._id)).balance).toBe(600);
+    expect((await Account.findById(account._id)).currentBalance).toBe(300);
+    expect(await FinancialTransaction.countDocuments({ invoice: created._id })).toBe(1);
+
+    const final = mockRes();
+    await recordPayment({ ...paymentRequest, body: { amount: 600, account: String(account._id), idempotencyKey: 'invoice-final-payment-1' } }, final);
+    expect(final.body).toMatchObject({ paid: 900, balance: 0, status: 'paid' });
+    expect(final.body.payments).toHaveLength(2);
+    expect((await Customer.findById(customer._id)).balance).toBe(0);
+    expect((await Account.findById(account._id)).currentBalance).toBe(900);
+    expect(await FinancialTransaction.countDocuments({ invoice: created._id })).toBe(2);
   });
 
   it('blocks GBP sales invoices while Customer.balance and legacy reporting are single-currency', async () => {

@@ -5,9 +5,11 @@ import Customer from '../models/Customer.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 import Supplier from '../models/Supplier.js';
 import OpeningBalance from '../models/OpeningBalance.js';
+import ReceivableAdjustment from '../models/ReceivableAdjustment.js';
 import { logActivity } from '../utils/activity.js';
 import { requireReason } from '../services/paymentReversal.js';
 import { createRateSnapshot, getCurrentRate, roundCurrency } from '../services/exchangeRate.service.js';
+import { runAtomically, transactionsSupported } from '../utils/ledger.js';
 
 // ---------------------------------------------------------------------------
 // Receivables & Payables
@@ -214,6 +216,45 @@ export const receivables = asyncHandler(async (req, res) => {
       invoiceCount: 0, oldestDate: ob.asOf, oldestAgeDays: ob.ageDays, openingBalance: ob.amount, aging,
     });
   }
+
+  // Manual receivable corrections are reported separately from invoiced and paid
+  // amounts. Their effective date is the recorded correction date, but they are not
+  // invoices and therefore do not enter the invoice-aging buckets.
+  const adjustmentMatch = {};
+  const adjustmentDate = dateMatch('createdAt', from, to);
+  if (adjustmentDate) Object.assign(adjustmentMatch, adjustmentDate);
+  if (status && status !== 'open') adjustmentMatch._id = { $exists: false };
+  const adjustmentGroups = await ReceivableAdjustment.aggregate([
+    { $match: adjustmentMatch },
+    { $group: { _id: '$customer', delta: { $sum: '$delta' }, count: { $sum: 1 } } },
+  ]);
+  const adjustmentParties = await Customer.find({ _id: { $in: adjustmentGroups.map((r) => r._id) } })
+    .select('name company phone balance');
+  const adjustmentPartyById = new Map(adjustmentParties.map((p) => [String(p._id), p]));
+  const searchRx = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
+  for (const item of adjustmentGroups) {
+    const party = adjustmentPartyById.get(String(item._id));
+    if (!party || (searchRx && ![party.name, party.company, party.phone].some((v) => searchRx.test(String(v || ''))))) continue;
+    let row = rows.find((r) => String(r.customerId) === String(item._id));
+    if (!row) {
+      row = {
+        customerId: party._id, name: party.name, company: party.company, phone: party.phone,
+        storedBalance: party.balance, total: 0, paid: 0, outstanding: 0, invoiceCount: 0,
+        oldestDate: null, oldestAgeDays: 0, aging: emptyAging(),
+      };
+      rows.push(row);
+    }
+    row.adjustments = item.delta;
+    row.adjustmentCount = item.count;
+    row.outstanding += item.delta;
+  }
+  for (const row of rows) {
+    row.adjustments ??= 0;
+    if (req.user?.role !== 'admin') {
+      delete row.adjustments;
+      delete row.adjustmentCount;
+    }
+  }
   // Bucket filter runs last so it applies to opening-balance rows as well.
   if (bucket && BUCKETS.includes(bucket)) rows = rows.filter((r) => (r.aging?.[bucket] || 0) > 0);
   rows.sort((a, b) => b.outstanding - a.outstanding);
@@ -236,6 +277,8 @@ export const receivables = asyncHandler(async (req, res) => {
     totalPaid: rows.reduce((s, r) => s + r.paid, 0),
     customerCount: rows.length,
     aging: sumAging(rows),
+    ...(req.user?.role === 'admin' ? { adjustmentsTotal: rows.reduce((s, r) => s + (r.adjustments || 0), 0) } : {}),
+    agingExcludesAdjustments: true,
     storedTotal,
     // Only meaningful on an unfiltered view — a filtered subset is expected to differ
     // from the stored company-wide balance.
@@ -289,20 +332,89 @@ export const customerReceivable = asyncHandler(async (req, res) => {
     aging[bucketFor(openingAgeDays)] += openingBalance;
   }
   const outstanding = rows.reduce((s, r) => s + r.balance, 0) + openingBalance;
+  const adjustments = await ReceivableAdjustment.find({ customer: customer._id })
+    .populate('createdBy', 'name').sort({ createdAt: -1 });
+  const adjustmentTotal = adjustments.reduce((sum, row) => sum + row.delta, 0);
+  const totalOutstanding = outstanding + adjustmentTotal;
 
   res.json({
     agingBasis: 'transaction_date',
     customer,
     invoices: rows,
     openingBalance,
+    ...(req.user?.role === 'admin' ? { adjustments, adjustmentTotal } : {}),
     total: rows.reduce((s, r) => s + r.total, 0),
     paid: rows.reduce((s, r) => s + r.paid, 0),
-    outstanding,
+    outstanding: totalOutstanding,
     storedBalance: customer.balance,
-    reconciled: Math.abs(outstanding - customer.balance) < 0.005,
+    reconciled: Math.abs(totalOutstanding - customer.balance) < 0.005,
     aging,
+    agingExcludesAdjustments: true,
     oldestAgeDays: Math.max(openingAgeDays, ...rows.map((r) => r.ageDays), 0),
   });
+});
+
+// Admin-only, non-cash correction. It never rewrites invoice or payment history.
+// Multi-document transactions are required so the customer balance and immutable
+// audit row cannot be left apart by a failed or interrupted request.
+export const adjustCustomerReceivable = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.isValidObjectId(id)) { res.status(400); throw new Error('Invalid customer id'); }
+  if (!(await transactionsSupported())) {
+    res.status(503);
+    throw new Error('Receivable corrections require MongoDB transaction support; no changes were made.');
+  }
+  const rawAmount = Number(req.body?.amount);
+  const amount = Number.isFinite(rawAmount) ? roundCurrency(rawAmount) : NaN;
+  const direction = req.body?.direction;
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+  const idempotencyKey = typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey.trim() : '';
+  const expectedBalance = Number(req.body?.expectedBalance);
+  if (!Number.isFinite(amount) || amount <= 0) { res.status(400); throw new Error('Amount must be greater than zero'); }
+  if (!['increase', 'decrease'].includes(direction)) { res.status(400); throw new Error('Direction must be increase or decrease'); }
+  if (!reason) { res.status(400); throw new Error('A correction reason is required'); }
+  if (reason.length > 500) { res.status(400); throw new Error('Reason must be 500 characters or fewer'); }
+  if (!idempotencyKey || idempotencyKey.length > 200) { res.status(400); throw new Error('A valid idempotency key is required'); }
+  if (!Number.isFinite(expectedBalance) || expectedBalance < 0) { res.status(400); throw new Error('A valid expected customer balance is required'); }
+  if (await ReceivableAdjustment.exists({ idempotencyKey })) { res.status(409); throw new Error('This correction has already been recorded'); }
+
+  let result;
+  try {
+    result = await runAtomically(async (session) => {
+      const customer = await Customer.findById(id).session(session);
+      if (!customer) { res.status(404); throw new Error('Customer not found'); }
+      if (customer.balance !== expectedBalance) { res.status(409); throw new Error('Customer balance changed since it was loaded. Refresh and retry.'); }
+
+      const [invoiceAgg, openingAgg, adjustmentAgg] = await Promise.all([
+        Invoice.aggregate([{ $match: { customer: customer._id, ...OPEN_INVOICE_MATCH } }, { $group: { _id: null, total: { $sum: '$balance' } } }]).session(session),
+        OpeningBalance.aggregate([{ $match: { entityType: 'customer', entity: customer._id } }, { $group: { _id: null, total: { $sum: '$amount' } } }]).session(session),
+        ReceivableAdjustment.aggregate([{ $match: { customer: customer._id } }, { $group: { _id: null, total: { $sum: '$delta' } } }]).session(session),
+      ]);
+      const currentDerived = (invoiceAgg[0]?.total || 0) + (openingAgg[0]?.total || 0) + (adjustmentAgg[0]?.total || 0);
+      const delta = direction === 'increase' ? amount : -amount;
+      if (currentDerived + delta < -0.005 || customer.balance + delta < -0.005) { res.status(400); throw new Error('A correction cannot reduce receivables below zero'); }
+      const balanceAfter = Math.round((customer.balance + delta) * 100) / 100;
+      const [adjustment] = await ReceivableAdjustment.create([{
+        customer: customer._id, currency: 'PKR', amount, direction, delta, balanceBefore: customer.balance,
+        balanceAfter, reason, idempotencyKey, createdBy: req.user._id,
+      }], { session });
+      const updated = await Customer.findOneAndUpdate(
+        { _id: customer._id, balance: expectedBalance },
+        { $inc: { balance: delta } },
+        { new: true, session }
+      );
+      if (!updated) { res.status(409); throw new Error('Customer balance changed during this correction. Refresh and retry.'); }
+      return { customer: updated, adjustment };
+    });
+  } catch (error) {
+    if (error?.code === 11000) { res.status(409); throw new Error('This correction has already been recorded'); }
+    throw error;
+  }
+  await logActivity(req, 'receivable_adjusted', {
+    entity: 'Customer', entityId: result.customer._id,
+    meta: { adjustmentId: result.adjustment._id, amount, direction, delta: result.adjustment.delta, reason },
+  });
+  res.status(201).json(result);
 });
 
 // ---------------------------------------------------------------------------
@@ -592,8 +704,9 @@ export const adjustSupplierPayable = asyncHandler(async (req, res) => {
 // ---------------------------------------------------------------------------
 export const position = asyncHandler(async (_req, res) => {
   const now = new Date();
-  const [recAgg, payAgg, storedRec, storedPay] = await Promise.all([
+  const [recAgg, adjustmentAgg, payAgg, storedRec, storedPay] = await Promise.all([
     Invoice.aggregate([{ $match: OPEN_INVOICE_MATCH }, { $group: { _id: null, total: { $sum: '$balance' } } }]),
+    ReceivableAdjustment.aggregate([{ $group: { _id: null, total: { $sum: '$delta' } } }]),
     PurchaseOrder.aggregate([{ $match: OPEN_PO_MATCH }, { $group: { _id: { $ifNull: ['$currency', 'PKR'] }, total: { $sum: '$balance' } } }]),
     Customer.aggregate([{ $match: { balance: { $gt: 0 } } }, { $group: { _id: null, total: { $sum: '$balance' } } }]),
     Supplier.aggregate([{ $group: { _id: null, PKR: { $sum: { $ifNull: ['$payable', 0] } }, GBP: { $sum: { $ifNull: ['$payableGBP', 0] } } } }]),
@@ -603,7 +716,7 @@ export const position = asyncHandler(async (_req, res) => {
     OpeningBalance.aggregate([{ $match: { entityType: 'customer' } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
     OpeningBalance.aggregate([{ $match: { entityType: 'supplier' } }, { $group: { _id: { $ifNull: ['$currency', 'PKR'] }, total: { $sum: '$amount' } } }]),
   ]);
-  const receivablesTotal = (recAgg[0]?.total || 0) + (openRec[0]?.total || 0);
+  const receivablesTotal = (recAgg[0]?.total || 0) + (openRec[0]?.total || 0) + (adjustmentAgg[0]?.total || 0);
   const payablesByCurrency = { PKR: 0, GBP: 0 };
   for (const row of payAgg) payablesByCurrency[row._id] += row.total;
   for (const row of openPay) if (payablesByCurrency[row._id] !== undefined) payablesByCurrency[row._id] += row.total;

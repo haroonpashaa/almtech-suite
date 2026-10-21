@@ -7,11 +7,11 @@ import { purchaseSummary } from '../controllers/purchaseSummary.controller.js';
 const r = Router();
 r.use(protect);
 r.get('/summary', requireRole('admin', 'stock'), purchaseSummary);
-r.get('/', listPOs);
-r.get('/:id', getPO);
+r.get('/', requireRole('admin', 'stock'), listPOs);
+r.get('/:id', requireRole('admin', 'stock'), getPO);
 // Mirrors GET /:id. The payment receipt follows the payment permission instead:
 // only admin records or reverses supplier payments, so only admin prints them.
-r.get('/:id/pdf', purchaseOrderPDF);
+r.get('/:id/pdf', requireRole('admin', 'stock'), purchaseOrderPDF);
 r.get('/:id/payments/:paymentIndex/receipt', requireRole('admin'), purchaseOrderReceiptPDF);
 r.post('/', requireRole('admin', 'stock'), createPO);
 r.patch('/:id', requireRole('admin', 'stock'), updatePO);

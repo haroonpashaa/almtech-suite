@@ -3,6 +3,7 @@ import Invoice from '../models/Invoice.js';
 import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
 import Settings from '../models/Settings.js';
+import FinancialTransaction from '../models/FinancialTransaction.js';
 import StockMovement from '../models/StockMovement.js';
 import { nextNumber } from '../utils/numbering.js';
 import { computeItemTotals, applyTax } from '../utils/totals.js';
@@ -600,6 +601,14 @@ export const recordPayment = asyncHandler(async (req, res) => {
     res.status(400);
     throw new Error('Amount must be > 0');
   }
+  if (typeof idempotencyKey !== 'string' || !idempotencyKey.trim() || idempotencyKey.trim().length > 200) {
+    res.status(400);
+    throw new Error('A valid idempotency key is required');
+  }
+  if (await FinancialTransaction.exists({ idempotencyKey: idempotencyKey.trim() })) {
+    res.status(409);
+    throw new Error('This payment has already been recorded');
+  }
   const account = await resolveAccount(res, accountId);
   const invoice = await Invoice.findById(req.params.id);
   if (!invoice) {
@@ -620,7 +629,7 @@ export const recordPayment = asyncHandler(async (req, res) => {
       reference,
       user: req.user,
       type: 'customer_payment',
-      idempotencyKey,
+      idempotencyKey: idempotencyKey.trim(),
     });
   } catch (e) {
     rethrowDuplicatePosting(e, res);

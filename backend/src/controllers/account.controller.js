@@ -1,8 +1,10 @@
 import asyncHandler from 'express-async-handler';
+import mongoose from 'mongoose';
+import { randomUUID } from 'node:crypto';
 import Account from '../models/Account.js';
 import FinancialTransaction from '../models/FinancialTransaction.js';
 import { logActivity } from '../utils/activity.js';
-import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting } from '../utils/ledger.js';
+import { postPaymentAtomically, postTransaction, resolveAccount, rethrowDuplicatePosting, runAtomically, transactionsSupported } from '../utils/ledger.js';
 
 // Selector feed. Deliberately excludes balances: every role that can record a
 // payment needs the list of accounts to choose from, but only admins should see how
@@ -136,6 +138,66 @@ export const adjustAccountLedger = asyncHandler(async (req, res) => {
   res.status(201).json(transaction);
 });
 
+// Account transfers are two balanced ledger legs. They require a MongoDB replica
+// set/sharded-cluster transaction; a standalone server cannot guarantee that both
+// legs commit together, so the endpoint fails closed there.
+export const transferAccounts = asyncHandler(async (req, res) => {
+  const { sourceAccountId, destinationAccountId, amount, reason, idempotencyKey } = req.body || {};
+  const note = typeof reason === 'string' ? reason.trim() : '';
+  const key = typeof idempotencyKey === 'string' ? idempotencyKey.trim() : '';
+  const rawValue = Number(amount);
+  const value = Number.isFinite(rawValue) ? Math.round((rawValue + Number.EPSILON) * 100) / 100 : NaN;
+  if (!sourceAccountId || !destinationAccountId || !mongoose.isValidObjectId(sourceAccountId) || !mongoose.isValidObjectId(destinationAccountId)) {
+    res.status(400); throw new Error('Select valid source and destination accounts');
+  }
+  if (String(sourceAccountId) === String(destinationAccountId)) { res.status(400); throw new Error('Source and destination accounts must be different'); }
+  if (!Number.isFinite(value) || value <= 0) { res.status(400); throw new Error('Transfer amount must be greater than zero'); }
+  if (!note) { res.status(400); throw new Error('A transfer reason is required'); }
+  if (note.length > 500) { res.status(400); throw new Error('Reason must be 500 characters or fewer'); }
+  if (!key || key.length > 180) { res.status(400); throw new Error('A valid idempotency key is required'); }
+  if (!(await transactionsSupported())) {
+    res.status(503);
+    throw new Error('Account transfers require MongoDB transaction support; no changes were made.');
+  }
+  if (await FinancialTransaction.exists({ idempotencyKey: { $in: [`${key}:out`, `${key}:in`] } })) {
+    res.status(409); throw new Error('This transfer has already been recorded');
+  }
+
+  const transferGroup = randomUUID();
+  let legs;
+  try {
+    legs = await runAtomically(async (session) => {
+      const accounts = await Account.find({ _id: { $in: [sourceAccountId, destinationAccountId] } }).session(session);
+      const source = accounts.find((a) => String(a._id) === String(sourceAccountId));
+      const destination = accounts.find((a) => String(a._id) === String(destinationAccountId));
+      if (!source || !destination) { res.status(404); throw new Error('Source or destination account was not found'); }
+      if (!source.active || !destination.active) { res.status(400); throw new Error('Both transfer accounts must be active'); }
+      const currency = source.currency || 'PKR';
+      if (currency !== (destination.currency || 'PKR')) { res.status(400); throw new Error('Transfers require accounts with the same currency'); }
+      const shared = { amount: value, currency, description: note, reference: 'Account transfer', transferGroup, createdBy: req.user._id };
+      const out = await postTransaction({
+        ...shared, account: source._id, direction: 'out', type: 'transfer_out',
+        counterpartyAccount: destination._id, idempotencyKey: `${key}:out`,
+      }, session);
+      const into = await postTransaction({
+        ...shared, account: destination._id, direction: 'in', type: 'transfer_in',
+        counterpartyAccount: source._id, idempotencyKey: `${key}:in`,
+      }, session);
+      return { out, into, currency };
+    });
+  } catch (error) {
+    if (error?.code === 11000 && error?.keyPattern?.idempotencyKey) {
+      res.status(409); throw new Error('This transfer has already been recorded');
+    }
+    throw error;
+  }
+  await logActivity(req, 'account_transferred', {
+    entity: 'FinancialTransaction', entityId: legs.out._id,
+    meta: { transferGroup, sourceAccountId, destinationAccountId, amount: value, currency: legs.currency, reason: note },
+  });
+  res.status(201).json({ transferGroup, currency: legs.currency, transactions: [legs.out, legs.into] });
+});
+
 // Ledger for one account: opening balance, every movement oldest-first with a
 // running balance, and the closing balance.
 //
@@ -232,6 +294,7 @@ export const accountLedger = asyncHandler(async (req, res) => {
       .populate('supplier', 'name')
       .populate('invoice', 'number')
       .populate('purchaseOrder', 'number')
+      .populate('counterpartyAccount', 'name')
       .populate('createdBy', 'name')
       .sort({ date: 1, _id: 1 })
       .skip(skip)
@@ -254,6 +317,7 @@ export const accountLedger = asyncHandler(async (req, res) => {
       method: t.method,
       customer: t.customer?.name,
       supplier: t.supplier?.name,
+      counterpartyAccount: t.counterpartyAccount?.name,
       invoice: t.invoice?.number,
       invoiceId: t.invoice?._id,
       purchaseOrder: t.purchaseOrder?.number,

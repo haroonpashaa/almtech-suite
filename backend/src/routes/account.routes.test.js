@@ -7,7 +7,7 @@ function middlewareFor(path, method) {
   return layer.route.stack[0].handle;
 }
 
-describe('account ledger adjustment route permissions', () => {
+describe('account ledger adjustment and transfer route permissions', () => {
   it('permits only admins to post manual account adjustments', () => {
     const middleware = middlewareFor('/:id/adjustments', 'post');
     const result = (role) => {
@@ -19,6 +19,20 @@ describe('account ledger adjustment route permissions', () => {
     expect(result('admin').blocked).toBe(false);
     expect(result('sales')).toMatchObject({ blocked: true, statusCode: 403 });
     expect(result('stock')).toMatchObject({ blocked: true, statusCode: 403 });
+  });
+
+  it('permits only admins to transfer between accounts', () => {
+    const middleware = middlewareFor('/transfers', 'post');
+    const result = (role) => {
+      const res = { statusCode: 200, status(code) { this.statusCode = code; return this; } };
+      let error;
+      middleware({ user: role ? { role } : undefined }, res, (nextError) => { error = nextError; });
+      return { blocked: !!error, statusCode: res.statusCode };
+    };
+    expect(result('admin').blocked).toBe(false);
+    expect(result('sales')).toMatchObject({ blocked: true, statusCode: 403 });
+    expect(result('stock')).toMatchObject({ blocked: true, statusCode: 403 });
+    expect(result(undefined)).toMatchObject({ blocked: true, statusCode: 403 });
   });
 
   it('keeps account edits, including deactivation, Admin-only', () => {

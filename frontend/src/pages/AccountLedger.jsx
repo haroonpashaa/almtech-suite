@@ -40,6 +40,8 @@ export default function AccountLedger() {
   const [saving, setSaving] = useState(false);
   const [adjustment, setAdjustment] = useState(null);
   const [savingAdjustment, setSavingAdjustment] = useState(false);
+  const [transfer, setTransfer] = useState(null);
+  const [savingTransfer, setSavingTransfer] = useState(false);
 
   // `page: 0` means "the newest page" — resolved below once the total is known.
   // A ledger that silently showed the OLDEST 500 rows while presenting them
@@ -61,6 +63,10 @@ export default function AccountLedger() {
   });
   const defaultCurrency = useCurrency();
   const currency = data?.account?.currency || defaultCurrency;
+  const { data: activeAccounts = [] } = useQuery({
+    queryKey: ['accounts'],
+    queryFn: async () => (await api.get('/accounts')).data,
+  });
 
   function openEdit() {
     setForm({
@@ -92,6 +98,20 @@ export default function AccountLedger() {
       qc.invalidateQueries({ queryKey: ['dashboard'] });
     } catch (e) { toast.error(errorMessage(e)); }
     finally { setSavingAdjustment(false); }
+  }
+
+  async function saveTransfer() {
+    if (!transfer || savingTransfer) return;
+    setSavingTransfer(true);
+    try {
+      await api.post('/accounts/transfers', { ...transfer, sourceAccountId: id, amount: Number(transfer.amount) });
+      toast.success('Transfer recorded');
+      setTransfer(null);
+      qc.invalidateQueries({ queryKey: ['account-ledger'] });
+      qc.invalidateQueries({ queryKey: ['accounts-summary'] });
+      qc.invalidateQueries({ queryKey: ['dashboard'] });
+    } catch (e) { toast.error(errorMessage(e)); }
+    finally { setSavingTransfer(false); }
   }
 
   // currentBalance is never sent — the backend shifts it by the opening-balance
@@ -146,6 +166,7 @@ export default function AccountLedger() {
             <Badge tone={data.reconciled ? 'success' : 'danger'} dot>{data.reconciled ? 'reconciled' : 'balance drift'}</Badge>
             <button className="btn-secondary" onClick={openEdit}>Edit</button>
             <button className="btn-primary" onClick={() => setAdjustment({ direction: 'in', amount: '', reason: '', idempotencyKey: newIdempotencyKey() })}>Add / deduct</button>
+            <button className="btn-secondary" onClick={() => setTransfer({ destinationAccountId: '', amount: '', reason: '', idempotencyKey: newIdempotencyKey() })}>Transfer</button>
             <DocumentActions path={`/accounts/${id}/statement/pdf`} filename={`statement-${data.account?.name || 'account'}`} label="Statement" />
           </>
         }
@@ -205,7 +226,7 @@ export default function AccountLedger() {
             {
               key: 'party',
               label: 'Customer / Supplier',
-              render: (e) => e.customer || e.supplier || <span className="text-ink-300">—</span>,
+              render: (e) => e.customer || e.supplier || e.counterpartyAccount || <span className="text-ink-300">—</span>,
             },
             {
               key: 'ref',
@@ -322,6 +343,24 @@ export default function AccountLedger() {
             <button className="btn-primary" disabled={savingAdjustment || !(Number(adjustment.amount) > 0) || !adjustment.reason.trim()} onClick={saveAdjustment}>{savingAdjustment ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Post adjustment'}</button>
             <button className="btn-secondary" disabled={savingAdjustment} onClick={() => setAdjustment(null)}>Cancel</button>
           </div>
+        </div>}
+      </Modal>
+      <Modal open={!!transfer} onClose={() => !savingTransfer && setTransfer(null)} title="Transfer between accounts" subtitle={`Source: ${data.account.name} · ${currency}`} size="md">
+        {transfer && <div className="space-y-3">
+          <p className="text-sm text-ink-500">Both accounts must be active and use {currency}. Transfers are recorded as a matched money-out and money-in pair, not as income or expense. MongoDB transaction support is required.</p>
+          <div><label htmlFor="account-transfer-destination" className="label">Destination account</label>
+            <select id="account-transfer-destination" className="select" value={transfer.destinationAccountId} onChange={(e) => setTransfer({ ...transfer, destinationAccountId: e.target.value })}>
+              <option value="">— select account —</option>
+              {activeAccounts.filter((account) => account._id !== id && (account.currency || 'PKR') === currency).map((account) => <option key={account._id} value={account._id}>{account.name}</option>)}
+            </select>
+          </div>
+          <div><label htmlFor="account-transfer-amount" className="label">Amount ({currency})</label>
+            <input id="account-transfer-amount" className="input num" type="number" min="0.01" step="0.01" value={transfer.amount} onChange={(e) => setTransfer({ ...transfer, amount: e.target.value })} />
+          </div>
+          <div><label htmlFor="account-transfer-reason" className="label">Reason</label>
+            <input id="account-transfer-reason" className="input" maxLength={500} value={transfer.reason} onChange={(e) => setTransfer({ ...transfer, reason: e.target.value })} />
+          </div>
+          <div className="flex gap-2"><button className="btn-primary" onClick={saveTransfer} disabled={savingTransfer || !transfer.destinationAccountId || !(Number(transfer.amount) > 0) || !transfer.reason.trim()}>{savingTransfer ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Record transfer'}</button><button className="btn-secondary" disabled={savingTransfer} onClick={() => setTransfer(null)}>Cancel</button></div>
         </div>}
       </Modal>
     </div>

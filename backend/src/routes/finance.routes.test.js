@@ -99,4 +99,11 @@ describe('finance router RBAC (real middleware, DB-free)', () => {
     expect(none.blocked).toBe(true);
     expect(none.statusCode).toBe(403);
   });
+
+  it('POST /receivables/:id/adjust is admin-only', () => {
+    expect(checkPost('/receivables/:id/adjust', 'admin').blocked).toBe(false);
+    expect(checkPost('/receivables/:id/adjust', 'sales')).toMatchObject({ blocked: true, statusCode: 403 });
+    expect(checkPost('/receivables/:id/adjust', 'stock')).toMatchObject({ blocked: true, statusCode: 403 });
+    expect(checkPost('/receivables/:id/adjust', undefined)).toMatchObject({ blocked: true, statusCode: 403 });
+  });
 });

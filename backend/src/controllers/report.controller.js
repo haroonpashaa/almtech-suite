@@ -9,6 +9,20 @@ import Expense from '../models/Expense.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 
 const PKR_ONLY = { $expr: { $eq: [{ $ifNull: ['$currency', 'PKR'] }, 'PKR'] } };
+// These are the persisted invoice states that represent an issued sale. Drafts
+// have not been realized, while returned/cancelled invoices have been reversed.
+const REALIZED_INVOICE_STATUSES = ['open', 'partial', 'paid'];
+
+function realizedInvoiceMatch(filters = {}) {
+  return { ...filters, status: { $in: REALIZED_INVOICE_STATUSES }, ...PKR_ONLY };
+}
+
+// `items.lineTotal` already includes line-level discounts. The invoice-level
+// discount is stored once on Invoice, so it is applied once to subtotal for
+// total revenue. Tax is excluded from revenue, matching the existing P&L basis.
+const invoiceRevenueAfterDiscount = {
+  $max: [0, { $subtract: [{ $ifNull: ['$subtotal', 0] }, { $ifNull: ['$discount', 0] }] }],
+};
 
 function dateRange(from, to) {
   const f = from ? new Date(from) : new Date(Date.now() - 30 * 86400000);
@@ -23,31 +37,34 @@ export const dashboard = asyncHandler(async (req, res) => {
   startOfWeek.setDate(now.getDate() - 7);
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
+  const canSeePayables = ['admin', 'stock'].includes(req.user?.role);
   const [salesToday, salesWeek, salesMonth, receivables, payables, lowStock, recentInvoices, topProducts, dailySeries] =
     await Promise.all([
       Invoice.aggregate([
-        { $match: { issuedAt: { $gte: startOfDay }, status: { $ne: 'cancelled' }, ...PKR_ONLY } },
+        { $match: realizedInvoiceMatch({ issuedAt: { $gte: startOfDay } }) },
         { $group: { _id: null, total: { $sum: '$total' }, count: { $sum: 1 } } },
       ]),
       Invoice.aggregate([
-        { $match: { issuedAt: { $gte: startOfWeek }, status: { $ne: 'cancelled' }, ...PKR_ONLY } },
+        { $match: realizedInvoiceMatch({ issuedAt: { $gte: startOfWeek } }) },
         { $group: { _id: null, total: { $sum: '$total' } } },
       ]),
       Invoice.aggregate([
-        { $match: { issuedAt: { $gte: startOfMonth }, status: { $ne: 'cancelled' }, ...PKR_ONLY } },
+        { $match: realizedInvoiceMatch({ issuedAt: { $gte: startOfMonth } }) },
         { $group: { _id: null, total: { $sum: '$total' } } },
       ]),
       Customer.aggregate([{ $group: { _id: null, total: { $sum: '$balance' } } }]),
-      Supplier.aggregate([{ $group: { _id: null, total: { $sum: '$payable' } } }]),
+      canSeePayables
+        ? Supplier.aggregate([{ $group: { _id: null, total: { $sum: '$payable' } } }])
+        : Promise.resolve([]),
       Product.find({ active: true, $expr: { $lte: ['$stock', '$lowStockThreshold'] } })
         .sort('stock')
         .limit(10),
-      Invoice.find({ status: { $ne: 'cancelled' }, ...PKR_ONLY })
+      Invoice.find(realizedInvoiceMatch())
         .populate('customer', 'name company')
         .sort('-issuedAt')
         .limit(8),
       Invoice.aggregate([
-        { $match: { issuedAt: { $gte: startOfWeek }, status: { $ne: 'cancelled' }, ...PKR_ONLY } },
+        { $match: realizedInvoiceMatch({ issuedAt: { $gte: startOfWeek } }) },
         { $unwind: '$items' },
         {
           $group: {
@@ -62,7 +79,7 @@ export const dashboard = asyncHandler(async (req, res) => {
         { $limit: 5 },
       ]),
       Invoice.aggregate([
-        { $match: { issuedAt: { $gte: new Date(Date.now() - 30 * 86400000) }, status: { $ne: 'cancelled' }, ...PKR_ONLY } },
+        { $match: realizedInvoiceMatch({ issuedAt: { $gte: new Date(Date.now() - 30 * 86400000) } }) },
         {
           $group: {
             _id: { $dateToString: { format: '%Y-%m-%d', date: '$issuedAt' } },
@@ -105,7 +122,7 @@ export const dashboard = asyncHandler(async (req, res) => {
     salesWeek: salesWeek[0]?.total || 0,
     salesMonth: salesMonth[0]?.total || 0,
     receivables: receivables[0]?.total || 0,
-    payables: payables[0]?.total || 0,
+    ...(canSeePayables ? { payables: payables[0]?.total || 0 } : {}),
     lowStock,
     recentInvoices,
     topProducts,
@@ -132,7 +149,7 @@ export const dailySales = asyncHandler(async (req, res) => {
   const date = req.query.date ? new Date(req.query.date) : new Date();
   const start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
   const end = new Date(start.getTime() + 86400000);
-  const invoices = await Invoice.find({ issuedAt: { $gte: start, $lt: end }, status: { $ne: 'cancelled' }, ...PKR_ONLY })
+  const invoices = await Invoice.find(realizedInvoiceMatch({ issuedAt: { $gte: start, $lt: end } }))
     .populate('customer', 'name')
     .sort('issuedAt');
   const totals = invoices.reduce(
@@ -150,15 +167,18 @@ export const dailySales = asyncHandler(async (req, res) => {
 export const profitAndLoss = asyncHandler(async (req, res) => {
   const issuedAt = dateRange(req.query.from, req.query.to);
   const pipeline = [
-    { $match: { issuedAt, status: { $nin: ['cancelled', 'returned'] }, ...PKR_ONLY } },
+    { $match: realizedInvoiceMatch({ issuedAt }) },
     { $unwind: '$items' },
     {
       $group: {
-        _id: null,
-        revenue: { $sum: '$items.lineTotal' },
+        // Group per invoice before the final total so a document-level discount
+        // is subtracted once, regardless of how many product lines it contains.
+        _id: '$_id',
+        revenue: { $first: invoiceRevenueAfterDiscount },
         cost: { $sum: { $multiply: ['$items.quantity', '$items.unitCost'] } },
       },
     },
+    { $group: { _id: null, revenue: { $sum: '$revenue' }, cost: { $sum: '$cost' } } },
   ];
   // Operating expenses come from Expense records only — never from the ledger. Each
   // expense has exactly one FinancialTransaction, so summing both would double-count
@@ -199,7 +219,7 @@ export const profitAndLoss = asyncHandler(async (req, res) => {
 export const salesByProduct = asyncHandler(async (req, res) => {
   const issuedAt = dateRange(req.query.from, req.query.to);
   const pipeline = [
-    { $match: { issuedAt, status: { $nin: ['cancelled', 'returned'] }, ...PKR_ONLY } },
+    { $match: realizedInvoiceMatch({ issuedAt }) },
     { $unwind: '$items' },
     {
       $group: {
@@ -218,7 +238,7 @@ export const salesByProduct = asyncHandler(async (req, res) => {
 export const salesByCustomer = asyncHandler(async (req, res) => {
   const issuedAt = dateRange(req.query.from, req.query.to);
   const pipeline = [
-    { $match: { issuedAt, status: { $nin: ['cancelled', 'returned'] }, ...PKR_ONLY } },
+    { $match: realizedInvoiceMatch({ issuedAt }) },
     {
       $group: {
         _id: '$customer',
@@ -271,13 +291,21 @@ export const monthlySummary = asyncHandler(async (_req, res) => {
   from.setMonth(from.getMonth() - 11);
   from.setDate(1);
   const pipeline = [
-    { $match: { issuedAt: { $gte: from }, status: { $nin: ['cancelled', 'returned'] }, ...PKR_ONLY } },
+    { $match: realizedInvoiceMatch({ issuedAt: { $gte: from } }) },
     { $unwind: '$items' },
     {
       $group: {
-        _id: { $dateToString: { format: '%Y-%m', date: '$issuedAt' } },
-        revenue: { $sum: '$items.lineTotal' },
+        _id: '$_id',
+        month: { $first: { $dateToString: { format: '%Y-%m', date: '$issuedAt' } } },
+        revenue: { $first: invoiceRevenueAfterDiscount },
         cost: { $sum: { $multiply: ['$items.quantity', '$items.unitCost'] } },
+      },
+    },
+    {
+      $group: {
+        _id: '$month',
+        revenue: { $sum: '$revenue' },
+        cost: { $sum: '$cost' },
       },
     },
     { $sort: { _id: 1 } },
@@ -293,8 +321,9 @@ export const monthlySummary = asyncHandler(async (_req, res) => {
 // inclusion rules the existing reports already use, so a chart can never tell a
 // different story from the numbers beside it:
 //
-//   revenue    Invoice.items.lineTotal, excluding cancelled/returned — identical
-//              to the profitAndLoss revenue aggregation.
+//   revenue    Invoice.subtotal minus its invoice-level discount (line-level
+//              discounts are already in subtotal), excluding non-realized sales;
+//              identical to the profitAndLoss revenue aggregation.
 //   expenses   Expense.amount where status === 'posted' — identical to the
 //              profitAndLoss expense aggregation and to /expenses reporting.
 //   purchases  PurchaseOrder.total, excluding cancelled/draft — the same set
@@ -316,9 +345,8 @@ export const series = asyncHandler(async (req, res) => {
 
   const [revenueRows, expenseRows, purchaseRows] = await Promise.all([
     Invoice.aggregate([
-      { $match: { issuedAt: range, status: { $nin: ['cancelled', 'returned'] }, ...PKR_ONLY } },
-      { $unwind: '$items' },
-      { $addFields: { __amount: '$items.lineTotal' } },
+      { $match: realizedInvoiceMatch({ issuedAt: range }) },
+      { $addFields: { __amount: invoiceRevenueAfterDiscount } },
       ...bucket('issuedAt'),
     ]),
     Expense.aggregate([
