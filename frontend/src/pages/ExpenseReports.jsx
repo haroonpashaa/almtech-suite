@@ -95,7 +95,7 @@ export default function ExpenseReports() {
               columns={[
                 { key: 'category', label: 'Category', render: (e) => <span className="font-medium text-ink-900">{e.category}</span> },
                 { key: 'description', label: 'Description', render: (e) => e.description || <span className="text-ink-300">—</span> },
-                { key: 'account', label: 'Account', render: (e) => e.account?.name || <span className="text-ink-300">—</span> },
+                { key: 'account', label: 'Account', render: (e) => e.paymentSource === 'other' ? 'Other' : e.account?.name || <span className="text-ink-300">—</span> },
                 { key: 'amount', label: `Amount (${currency})`, className: 'text-right num font-medium text-red-600', render: (e) => <Money value={e.amount} /> },
               ]}
               rows={daily.data?.items || []}

@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 import Expense, { EXPENSE_CATEGORIES } from '../models/Expense.js';
 import FinancialTransaction from '../models/FinancialTransaction.js';
 import { logActivity } from '../utils/activity.js';
-import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting } from '../utils/ledger.js';
+import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting, runAtomically } from '../utils/ledger.js';
 import { safeFilterValue } from '../utils/safeFilterValue.js';
 import { claimDealForLink, requireDealTransactionSupport, validateDealId } from '../utils/dealLink.js';
 
@@ -19,7 +19,8 @@ function buildFilter(query) {
   const safeStatus = safeFilterValue(status) ?? 'posted';
   if (safeStatus !== 'all') filter.status = safeStatus;
   if (category) filter.category = safeFilterValue(category);
-  if (account && mongoose.isValidObjectId(account)) filter.account = account;
+  if (account === 'other') filter.paymentSource = 'other';
+  else if (account && mongoose.isValidObjectId(account)) filter.account = account;
   if (from || to) {
     filter.date = {};
     if (from) filter.date.$gte = new Date(from);
@@ -70,7 +71,24 @@ export const getExpense = asyncHandler(async (req, res) => {
 });
 
 export const createExpense = asyncHandler(async (req, res) => {
-  const { amount, category, account: accountId, date, description, notes, reference, idempotencyKey, dealId } = req.body;
+  const { amount, category, account: accountId, date, description, notes, reference, idempotencyKey, dealId, paymentSource = 'account' } = req.body;
+  if (!['account', 'other'].includes(paymentSource)) {
+    res.status(400);
+    throw new Error('Invalid expense payment source');
+  }
+  const isOther = paymentSource === 'other';
+  if (isOther && req.user.role !== 'admin') {
+    res.status(403);
+    throw new Error('Only an administrator can record expenses paid through Other');
+  }
+  if (isOther && accountId) {
+    res.status(400);
+    throw new Error('Other expenses must not include a payment account');
+  }
+  if (isOther && (typeof reference !== 'string' || !reference.trim())) {
+    res.status(400);
+    throw new Error('Enter a reference describing who or how this expense was paid');
+  }
   const deal = await validateDealId(res, dealId);
   await requireDealTransactionSupport(res, deal);
 
@@ -85,8 +103,8 @@ export const createExpense = asyncHandler(async (req, res) => {
   }
   // Rejects missing, malformed, unknown and inactive accounts — the same validation
   // invoice and supplier payments use.
-  const account = await resolveAccount(res, accountId);
-  if ((account.currency || 'PKR') !== 'PKR') {
+  const account = isOther ? null : await resolveAccount(res, accountId);
+  if (account && (account.currency || 'PKR') !== 'PKR') {
     res.status(400);
     throw new Error('Expenses from GBP accounts are disabled until all expense and profit reports support separate currencies.');
   }
@@ -104,7 +122,17 @@ export const createExpense = asyncHandler(async (req, res) => {
 
   let expense;
   try {
-    await postPaymentAtomically(
+    if (isOther) {
+      await runAtomically(async (session) => {
+        if (deal) await claimDealForLink(session, deal);
+        const [created] = await Expense.create([{
+          _id: expenseId, amount: numericAmount, currency: 'PKR', category,
+          paymentSource: 'other', deal, date: when, description, notes, reference,
+          status: 'posted', createdBy: req.user._id, idempotencyKey,
+        }], session ? { session } : {});
+        expense = created;
+      });
+    } else await postPaymentAtomically(
       {
         account: account._id,
         amount: numericAmount,
@@ -151,7 +179,7 @@ export const createExpense = asyncHandler(async (req, res) => {
   await logActivity(req, 'expense_created', {
     entity: 'Expense',
     entityId: expense._id,
-    meta: { amount: numericAmount, category, account: account.name },
+    meta: { amount: numericAmount, category, account: account?.name || 'Other', paymentSource, reference },
   });
   res.status(201).json(await expense.populate('account', 'name type currency'));
 });
@@ -161,7 +189,7 @@ export const createExpense = asyncHandler(async (req, res) => {
 // already moved the money. Only descriptive fields may be corrected — and category,
 // which is a reporting classification, not a movement. To change money, void and
 // re-record.
-const IMMUTABLE_FIELDS = ['amount', 'account', 'date'];
+const IMMUTABLE_FIELDS = ['amount', 'account', 'date', 'paymentSource'];
 
 export const updateExpense = asyncHandler(async (req, res) => {
   const expense = await Expense.findById(req.params.id);
@@ -178,12 +206,16 @@ export const updateExpense = asyncHandler(async (req, res) => {
   if (attempted.length) {
     res.status(400);
     throw new Error(
-      `Cannot change ${attempted.join(', ')} on a posted expense — the money has already left the account. ` +
+      `Cannot change ${attempted.join(', ')} on a posted expense. ` +
         'Void this expense and record a corrected one instead.'
     );
   }
 
   const { category, description, notes, reference } = req.body;
+  if (expense.paymentSource === 'other' && reference !== undefined && (typeof reference !== 'string' || !reference.trim())) {
+    res.status(400);
+    throw new Error('Enter a reference describing who or how this expense was paid');
+  }
   if (category !== undefined) {
     if (!EXPENSE_CATEGORIES.includes(category)) {
       res.status(400);
@@ -199,7 +231,7 @@ export const updateExpense = asyncHandler(async (req, res) => {
 
   // Keep the ledger row's descriptive fields in step. This touches no amount,
   // account, direction or date, so no balance can move.
-  await FinancialTransaction.updateOne(
+  if (expense.financialTransaction) await FinancialTransaction.updateOne(
     { _id: expense.financialTransaction },
     { $set: { description: expense.description || `${expense.category} expense`, reference: expense.reference } }
   );
@@ -224,7 +256,18 @@ export const voidExpense = asyncHandler(async (req, res) => {
   }
 
   try {
-    await postPaymentAtomically(
+    if (expense.paymentSource === 'other') {
+      // No account was debited, so voiding must not create an account credit.
+      const result = await Expense.updateOne(
+        { _id: expense._id, status: 'posted' },
+        { $set: { status: 'voided', voidedAt: new Date(), voidedBy: req.user._id, voidReason: reason } }
+      );
+      if (!result.modifiedCount) {
+        res.status(400);
+        throw new Error('This expense has already been voided');
+      }
+      expense.set({ status: 'voided', voidedAt: new Date(), voidedBy: req.user._id, voidReason: reason });
+    } else await postPaymentAtomically(
       {
         account: expense.account._id,
         amount: expense.amount,
@@ -316,10 +359,10 @@ export const monthlyExpenses = asyncHandler(async (req, res) => {
     ]),
     Expense.aggregate([
       { $match: match },
-      { $group: { _id: '$account', total: { $sum: '$amount' } } },
-      { $lookup: { from: 'accounts', localField: '_id', foreignField: '_id', as: 'account' } },
-      { $unwind: '$account' },
-      { $project: { _id: 0, account: '$account.name', total: 1 } },
+      { $group: { _id: { account: '$account', paymentSource: { $ifNull: ['$paymentSource', 'account'] } }, total: { $sum: '$amount' } } },
+      { $lookup: { from: 'accounts', localField: '_id.account', foreignField: '_id', as: 'account' } },
+      { $unwind: { path: '$account', preserveNullAndEmptyArrays: true } },
+      { $project: { _id: 0, account: { $cond: [{ $eq: ['$_id.paymentSource', 'other'] }, 'Other', { $ifNull: ['$account.name', 'Unknown account'] }] }, total: 1 } },
       { $sort: { total: -1 } },
     ]),
   ]);
