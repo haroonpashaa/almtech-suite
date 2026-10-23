@@ -35,10 +35,31 @@ describe('buildProductPayload', () => {
     expect(missing.sellingPrice).toBe(0);
   });
 
-  it('coerces stock and lowStockThreshold to numbers', () => {
-    const payload = buildProductPayload({ name: 'X1', sku: 'SN1', stock: '7', lowStockThreshold: '3', barcode: '' });
+  it('coerces initial stock and lowStockThreshold to numbers on create', () => {
+    const payload = buildProductPayload({ name: 'X1', sku: 'SN1', stock: '7', lowStockThreshold: '3', barcode: '' }, { isNew: true });
     expect(payload.stock).toBe(7);
     expect(payload.lowStockThreshold).toBe(3);
+  });
+
+  it('does not submit stale inventory or server metadata loaded into an edit form', () => {
+    const form = {
+      _id: 'product-1', name: 'X1 updated', sku: 'SN1', stock: 7, tracksSerials: true,
+      serials: [{ serial: 'SN-1', status: 'in_stock' }], __v: 0,
+      createdAt: '2026-01-01', updatedAt: '2026-01-02', isLowStock: false,
+      purchasePrice: 500, sellingPrice: 900, lowStockThreshold: '3', barcode: ' 123 ',
+    };
+    expect(buildProductPayload(form)).toEqual({ name: 'X1 updated', sku: 'SN1', lowStockThreshold: 3, barcode: '123' });
+    expect(form.stock).toBe(7);
+    expect(form.serials).toEqual([{ serial: 'SN-1', status: 'in_stock' }]);
+  });
+
+  it('keeps initial stock and serial tracking on create without accepting serial records', () => {
+    const payload = buildProductPayload({
+      name: 'X1', sku: 'SN1', stock: '2', tracksSerials: true,
+      serials: [{ serial: 'SN-1', status: 'sold' }], lowStockThreshold: '1',
+    }, { isNew: true });
+    expect(payload).toMatchObject({ stock: 2, tracksSerials: true, sellingPrice: 0 });
+    expect(payload).not.toHaveProperty('serials');
   });
 
   it('trims the barcode', () => {

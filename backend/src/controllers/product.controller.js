@@ -218,8 +218,30 @@ export const createProduct = asyncHandler(async (req, res) => {
 // activity log itself is admin-only (`activity.routes.js`).
 const PRODUCT_AUDIT_FIELDS = ['sellingPrice', 'purchasePrice', 'active'];
 
+// Existing inventory is changed by receiving, sales/returns and stock adjustments,
+// never by saving a catalogue form (which may contain an old inventory snapshot).
+const PRODUCT_EDIT_FIELDS = [
+  'name', 'sku', 'brand', 'model', 'category', 'description',
+  'processor', 'ram', 'storage', 'graphics', 'screen', 'condition', 'warranty', 'comments',
+  'image', 'purchasePrice', 'sellingPrice', 'lowStockThreshold', 'barcode', 'active',
+];
+
 export const updateProduct = asyncHandler(async (req, res) => {
-  const { barcode: rawBarcode, ...rest } = req.body;
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    res.status(400);
+    throw new Error('Product edits must contain an object of editable fields');
+  }
+  const rejected = Object.keys(body).filter((field) => !PRODUCT_EDIT_FIELDS.includes(field));
+  if (rejected.length) {
+    res.status(400);
+    throw new Error(`Fields cannot be changed through product edits: ${rejected.join(', ')}. Use stock adjustments or purchase receiving for inventory changes.`);
+  }
+  const editable = {};
+  for (const field of PRODUCT_EDIT_FIELDS) {
+    if (Object.hasOwn(body, field)) editable[field] = body[field];
+  }
+  const { barcode: rawBarcode, ...rest } = editable;
   const update = { $set: stripCommentsInput(req, stripCostInput(req, rest)) };
   let barcode = '';
   const before = await Product.findById(req.params.id).select(PRODUCT_AUDIT_FIELDS.join(' ')).lean();

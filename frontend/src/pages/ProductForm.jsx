@@ -139,7 +139,8 @@ export default function ProductForm() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label htmlFor="productform-stock-49" className="label">Stock</label>
-              <input id="productform-stock-49" className="input num" type="number" value={form.stock} onChange={(e) => set('stock', e.target.value)} />
+              <input id="productform-stock-49" className="input num" type="number" readOnly={!!id} value={form.stock} onChange={(e) => set('stock', e.target.value)} />
+              {id && <p className="text-xs text-ink-400 mt-1">Use stock adjustments on the Products page or receive a purchase order to change stock.</p>}
             </div>
             <div>
               <label htmlFor="productform-low-stock-threshold-50" className="label">Low Stock Threshold</label>
@@ -208,9 +209,10 @@ export default function ProductForm() {
 
         <Section title="Options">
           <label className="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer">
-            <input type="checkbox" className="w-4 h-4 rounded accent-brand-600" checked={form.tracksSerials} onChange={(e) => set('tracksSerials', e.target.checked)} />
+            <input type="checkbox" className="w-4 h-4 rounded accent-brand-600" disabled={!!id} checked={form.tracksSerials} onChange={(e) => set('tracksSerials', e.target.checked)} />
             Track serial numbers / IMEI for this product
           </label>
+          {id && <p className="text-xs text-ink-400 mt-1">Serial tracking is set when the product is created.</p>}
         </Section>
 
         <div className="flex gap-2 pt-1">
