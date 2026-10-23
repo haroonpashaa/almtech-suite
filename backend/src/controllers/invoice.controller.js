@@ -7,6 +7,7 @@ import FinancialTransaction from '../models/FinancialTransaction.js';
 import StockMovement from '../models/StockMovement.js';
 import { nextNumber } from '../utils/numbering.js';
 import { computeItemTotals, applyTax } from '../utils/totals.js';
+import { allocateBulkPrice } from '../utils/bulkPricing.js';
 import { logActivity } from '../utils/activity.js';
 import { streamInvoicePDF } from '../utils/pdf.js';
 import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting, runAtomically, reverseTransaction } from '../utils/ledger.js';
@@ -434,7 +435,12 @@ export async function commitInvoiceEffects({ session, invoiceFields, customerId,
 }
 
 export const createInvoice = asyncHandler(async (req, res) => {
-  const { customer: customerId, items, discount = 0, taxRate = 0, notes, initialPayment, dealId } = req.body;
+  const { customer: customerId, items, discount = 0, taxRate = 0, notes, initialPayment, dealId, bulkSellingTotal } = req.body;
+  const isBulk = Object.hasOwn(req.body, 'bulkSellingTotal');
+  if (isBulk && req.user.role !== 'admin') {
+    res.status(403);
+    throw new Error('Only an administrator can set a bulk selling amount');
+  }
   const deal = await validateDealId(res, dealId);
   await requireDealTransactionSupport(res, deal);
   if (!items?.length) {
@@ -473,8 +479,8 @@ export const createInvoice = asyncHandler(async (req, res) => {
       role: req.user.role,
       product,
       quantity,
-      requestedUnitPrice: it.unitPrice,
-      requestedDiscount: it.discount,
+      requestedUnitPrice: isBulk ? 0 : it.unitPrice,
+      requestedDiscount: isBulk ? 0 : it.discount,
     });
     // Order matters: `it.product` is the raw id string from the request, so it must be
     // spread BEFORE `product` or it overwrites the fetched document and the line loses
@@ -483,7 +489,9 @@ export const createInvoice = asyncHandler(async (req, res) => {
     lines.push(await buildLineFromProduct({ ...it, quantity, serials, product, unitPrice, discount: lineDiscount }));
   }
 
-  const { items: enriched, subtotal } = computeItemTotals(lines);
+  // Batch pricing is resolved on the server, after validating the real stock and
+  // serials. Client prices/costs cannot override it. Buying costs stay unchanged.
+  const { items: enriched, subtotal } = isBulk ? allocateBulkPrice(lines, bulkSellingTotal) : computeItemTotals(lines);
   const { taxAmount, total } = applyTax({ subtotal, discount, taxRate });
 
   // `initialPayment` is an object ({ amount, method, account }); subtracting it directly
@@ -541,6 +549,7 @@ export const createInvoice = asyncHandler(async (req, res) => {
         customer: customer._id,
         deal,
         items: enriched,
+        ...(isBulk ? { bulkSellingTotal: subtotal } : {}),
         subtotal,
         discount,
         taxRate,
@@ -588,7 +597,7 @@ export const createInvoice = asyncHandler(async (req, res) => {
   await logActivity(req, 'invoice_created', {
     entity: 'Invoice',
     entityId: invoice._id,
-    meta: { number, total, customer: customer.name },
+    meta: { number, total, customer: customer.name, ...(isBulk ? { bulkSellingTotal: subtotal } : {}) },
   });
   // Re-read for the same reason as recordPayment: a POS initial payment is applied
   // by a conditional update, so the in-memory copy would still say unpaid.
