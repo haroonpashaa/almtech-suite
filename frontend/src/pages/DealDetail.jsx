@@ -107,8 +107,8 @@ export default function DealDetail() {
                   render: (it) => <Money value={isSale ? it.unitPrice : it.unitCost} />,
                 },
                 {
-                  key: 'lineTotal', label: `Line Total (${currency})`, align: 'right',
-                  render: (it) => <Money value={it.lineTotal} className="font-medium text-ink-900" />,
+                  key: 'lineTotal', label: `${!isSale && data.bulkPurchaseTotal != null ? 'Bulk allocation' : 'Line Total'} (${currency})`, align: 'right',
+                  render: (it) => <Money value={!isSale && data.bulkPurchaseTotal != null ? it.bulkAllocatedTotal : it.lineTotal} className="font-medium text-ink-900" />,
                 },
               ]}
             />

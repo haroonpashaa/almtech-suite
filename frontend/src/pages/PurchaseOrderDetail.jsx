@@ -153,7 +153,8 @@ export default function PurchaseOrderDetail() {
                   <th scope="col" className="th text-right">Ordered</th>
                   <th scope="col" className="th text-right">Received</th>
                   <th scope="col" className="th text-right">Receive Now</th>
-                  <th scope="col" className="th text-right">Cost</th>
+                  <th scope="col" className="th text-right">Unit cost</th>
+                  {po.bulkPurchaseTotal != null && <th scope="col" className="th text-right">Bulk allocation</th>}
                 </tr>
               </thead>
               <tbody>
@@ -181,6 +182,7 @@ export default function PurchaseOrderDetail() {
                         ) : <span className="text-ink-300">—</span>}
                       </td>
                       <td className="td text-right num text-ink-700">{money(it.unitCost, currency)}</td>
+                      {po.bulkPurchaseTotal != null && <td className="td text-right num">{money(it.bulkAllocatedTotal, currency)}</td>}
                     </tr>
                   );
                 })}
@@ -212,6 +214,7 @@ export default function PurchaseOrderDetail() {
                         <div className={`num text-[13px] ${pending > 0 ? 'text-amber-700 font-medium' : 'text-ink-400'}`}>{pending}</div>
                       </div>
                     </div>
+                    {po.bulkPurchaseTotal != null && <p className="mt-2 text-xs text-ink-500">Unit cost: {money(it.unitCost, currency)} · Bulk allocation: {money(it.bulkAllocatedTotal, currency)}</p>}
                     {has('admin', 'stock') && pending > 0 ? (
                       <div className="mt-2.5">
                         <label htmlFor={`recv-${i}`} className="t-meta block mb-1">Receive now (max {pending})</label>
@@ -275,7 +278,8 @@ export default function PurchaseOrderDetail() {
           <div className="card p-5">
             <h3 className="text-sm font-semibold text-ink-900 mb-3">Summary</h3>
             <div className="space-y-1.5">
-              <div className="flex justify-between text-sm"><span className="text-ink-500">Subtotal</span><span className="num text-ink-700">{money(po.subtotal, currency)}</span></div>
+              {po.bulkPurchaseTotal != null && <p className="mb-3 text-xs text-ink-500">Bulk purchase payable, allocated equally across ordered units. Original unit costs are used for receiving and profit calculations.</p>}
+              <div className="flex justify-between text-sm"><span className="text-ink-500">{po.bulkPurchaseTotal != null ? 'Bulk payable before tax' : 'Subtotal'}</span><span className="num text-ink-700">{money(po.subtotal, currency)}</span></div>
               {po.taxAmount > 0 && <div className="flex justify-between text-sm"><span className="text-ink-500">Tax</span><span className="num text-ink-700">{money(po.taxAmount, currency)}</span></div>}
             </div>
             <div className="flex justify-between items-baseline mt-3 pt-3 border-t border-ink-100">
