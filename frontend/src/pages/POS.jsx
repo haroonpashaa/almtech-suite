@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSubmit } from '../hooks/useSubmit.js';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
@@ -10,6 +10,7 @@ import { clampQuantity, isValidQuantity } from '../lib/quantity.js';
 import { resizeSerials, compactSerials, serialsAreSubmittable } from '../lib/cartSerials.js';
 import { parsePricingPaste } from '../lib/pricingPaste.js';
 import { allocateBulkPrice } from '../lib/bulkPricing.js';
+import { addPosStockSelection, loadAllPosStock, selectPosStock } from '../lib/posStockSelection.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { usePagedList } from '../hooks/usePagedList.js';
 import { useCurrency } from '../hooks/useSettings.js';
@@ -38,6 +39,12 @@ export default function POS() {
   const [customer, setCustomer] = useState('');
   const [dealId, setDealId] = useState('');
   const [cart, setCart] = useState([]);
+  const [stockSelection, setStockSelection] = useState({});
+  const [selectingAllStock, setSelectingAllStock] = useState(false);
+  const selectionRequest = useRef(0);
+  const cartRef = useRef(cart);
+  cartRef.current = cart;
+  useEffect(() => () => { selectionRequest.current += 1; }, []);
   const [discount, setDiscount] = useState('');
   const [taxRate, setTaxRate] = useState(0);
   const [paymentAmount, setPaymentAmount] = useState('');
@@ -69,6 +76,52 @@ export default function POS() {
     queryFn: async () => (await api.get('/accounts')).data,
   });
   const currency = useCurrency();
+
+  const stockPreview = useMemo(() => addPosStockSelection(cart, Object.values(stockSelection), selectedSerials), [cart, stockSelection, selectedSerials]);
+  const pendingStockSelection = selectingAllStock || Object.keys(stockSelection).length > 0;
+  function changeProductFilters(filters) {
+    selectionRequest.current += 1;
+    setSelectingAllStock(false);
+    setProductFilters(filters);
+  }
+  function toggleStock(product) {
+    setStockSelection(current => {
+      if (!current[product._id]) return selectPosStock(current, [product], cart);
+      const next = { ...current };
+      delete next[product._id];
+      return next;
+    });
+  }
+  function clearStockSelection() {
+    selectionRequest.current += 1;
+    setSelectingAllStock(false);
+    setStockSelection({});
+  }
+  async function selectAllStock() {
+    const request = ++selectionRequest.current;
+    const params = buildPosProductParams(productFilters);
+    setSelectingAllStock(true);
+    try {
+      const products = await loadAllPosStock(async (page, limit) => {
+        if (request !== selectionRequest.current) throw new Error('Selection cancelled');
+        return (await api.get('/products/pos', { params: { ...params, page, limit } })).data;
+      });
+      if (request !== selectionRequest.current) return;
+      setStockSelection(current => selectPosStock(current, products, cartRef.current));
+    } catch (error) {
+      if (request === selectionRequest.current) toast.error(errorMessage(error));
+    } finally {
+      if (request === selectionRequest.current) setSelectingAllStock(false);
+    }
+  }
+  function addSelectedStock() {
+    if (selectingAllStock) return;
+    if (stockPreview.error) return toast.error(stockPreview.error);
+    setCart(stockPreview.cart);
+    setSelectedSerials(current => Object.fromEntries(Object.entries(current).filter(([id]) => !stockSelection[id])));
+    setStockSelection({});
+    toast.success('Selected stock added to the cart. Review quantities and the selling amount before saving.');
+  }
 
   function addToCart(p, serial = '') {
     const attempt = addPosCartItem(cart, p, serial);
@@ -156,6 +209,7 @@ export default function POS() {
   const itemCount = cart.reduce((s, l) => s + Number(l.quantity || 0), 0);
 
   async function doSubmit() {
+    if (pendingStockSelection) return toast.error('Add the selected stock to the cart or deselect it before saving the invoice');
     if (!customer) return toast.error('Select a customer');
     if (!cart.length) return toast.error('Cart is empty');
     if (isBulk && bulkPreview?.error) return toast.error(bulkPreview.error);
@@ -261,7 +315,7 @@ export default function POS() {
             models={modelOptions.data || []}
             modelsLoading={modelOptions.isLoading}
             modelsError={modelOptions.isError}
-            onFiltersChange={setProductFilters}
+            onFiltersChange={changeProductFilters}
             products={productList.rows}
             loading={productList.isLoading}
             error={productList.isError}
@@ -275,6 +329,16 @@ export default function POS() {
             onAdd={addToCart}
             currency={currency}
             formatMoney={money}
+            bulkSelection={canSetBulkPrice ? {
+              items: stockSelection,
+              loading: selectingAllStock,
+              error: Object.keys(stockSelection).length ? stockPreview.error : null,
+              onToggle: toggleStock,
+              onQuantityChange: (product, quantity) => setStockSelection(current => ({ ...current, [product._id]: { product, quantity } })),
+              onSelectAll: selectAllStock,
+              onClear: clearStockSelection,
+              onAdd: addSelectedStock,
+            } : null}
           />
 
           {/* Cart */}
@@ -509,7 +573,7 @@ export default function POS() {
               {canSetBulkPrice && (
                 <div className="space-y-2">
                   <label className="flex items-center gap-2 text-sm font-medium text-ink-700">
-                    <input type="checkbox" checked={bulkMode} onChange={(e) => setBulkMode(e.target.checked)} />
+                    <input id="pos-bulk-mode" type="checkbox" checked={bulkMode} onChange={(e) => setBulkMode(e.target.checked)} />
                     Bulk sale — one batch price
                   </label>
                   {isBulk && (
@@ -584,7 +648,8 @@ export default function POS() {
                   </select>
                 </div>
               )}
-              <button className="btn-primary btn-lg w-full mt-5" onClick={submit} disabled={saving || submitting || cart.length === 0 || !!bulkPreview?.error}>
+              {pendingStockSelection && <p role="status" className="text-sm text-ink-600 mt-4">Add the selected stock to the cart or deselect it before saving.</p>}
+              <button className="btn-primary btn-lg w-full mt-5" onClick={submit} disabled={saving || submitting || pendingStockSelection || cart.length === 0 || !!bulkPreview?.error}>
                 {saving || submitting ? <><Spinner className="w-4 h-4" /> Saving…</> : <>Save Invoice · {money(totals.total, currency)}</>}
               </button>
             </div>
@@ -605,7 +670,7 @@ export default function POS() {
             <button
               className="btn-primary btn-lg shrink-0"
               onClick={submit}
-              disabled={saving || submitting || cart.length === 0 || !!bulkPreview?.error}
+              disabled={saving || submitting || pendingStockSelection || cart.length === 0 || !!bulkPreview?.error}
             >
               {saving || submitting ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Save Invoice'}
             </button>

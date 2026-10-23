@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { filterPosModelOptions, MAX_POS_MODEL_FILTERS, togglePosModel } from '../lib/posProductSelection.js';
+import { remainingPosStock } from '../lib/posStockSelection.js';
+import { clampQuantity } from '../lib/quantity.js';
 
 function takenSerials(cart, productId) {
   return new Set(cart.filter((line) => line.product === productId).flatMap((line) => line.serials || []).filter(Boolean));
@@ -24,6 +26,7 @@ export default function POSProductPicker({
   onAdd,
   currency,
   formatMoney,
+  bulkSelection = null,
 }) {
   const [modelOpen, setModelOpen] = useState(false);
   const [modelSearch, setModelSearch] = useState('');
@@ -32,6 +35,8 @@ export default function POSProductPicker({
   const hasFilters = Boolean(filters.q || filters.models.length || filters.brand || filters.ram || filters.processor || filters.storage || filters.serial);
   const totalPages = Math.max(1, Math.ceil((total || 0) / limit));
   const resultLabel = useMemo(() => `${total ?? 0} matching product${total === 1 ? '' : 's'}`, [total]);
+  const selected = Object.values(bulkSelection?.items || {});
+  const selectedUnits = selected.reduce((sum, entry) => sum + Number(entry.quantity || 0), 0);
 
   const updateFilter = (key, value) => onFiltersChange({ ...filters, [key]: value });
   const toggleModel = (model) => updateFilter('models', togglePosModel(filters.models, model));
@@ -114,10 +119,25 @@ export default function POSProductPicker({
         </button>
       )}
 
+      {bulkSelection && (
+        <div className="mt-3 space-y-2" aria-label="Batch stock selection">
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" className="btn-secondary btn-sm" disabled={loading || error || bulkSelection.loading || total === 0} onClick={bulkSelection.onSelectAll}>
+              {bulkSelection.loading ? 'Selecting products…' : 'Select all matching products'}
+            </button>
+            <button type="button" className="btn-secondary btn-sm" disabled={!selected.length && !bulkSelection.loading} onClick={bulkSelection.onClear}>Deselect all</button>
+            <button type="button" className="btn-primary btn-sm" disabled={!selected.length || bulkSelection.loading || !!bulkSelection.error} onClick={bulkSelection.onAdd}>Add selected to cart</button>
+          </div>
+          <p className="text-xs text-ink-500" role="status">{selected.length} {selected.length === 1 ? 'product' : 'products'} selected · {selectedUnits} {selectedUnits === 1 ? 'unit' : 'units'}. Selections stay across pages and filters.</p>
+          <p className="text-xs text-ink-500">Select All covers every matching page. Quantities start at remaining stock; adjust them before adding. Serial-tracked units use available serials. Stock changes only when the invoice is saved.</p>
+          {bulkSelection.error && <p role="alert" className="text-xs text-red-600">{bulkSelection.error}</p>}
+        </div>
+      )}
       <div className="mt-3 overflow-x-auto rounded-lg border border-ink-100">
         <table className="min-w-[1050px] w-full text-sm">
           <thead>
             <tr>
+              {bulkSelection && <th scope="col" className="th">Select</th>}
               <th scope="col" className="th">Product model</th>
               <th scope="col" className="th">Brand</th>
               <th scope="col" className="th min-w-44">Serial number</th>
@@ -126,17 +146,18 @@ export default function POSProductPicker({
               <th scope="col" className="th">Storage</th>
               <th scope="col" className="th">Condition / comments</th>
               <th scope="col" className="th text-right">Available</th>
+              {bulkSelection && <th scope="col" className="th text-right">To add</th>}
               <th scope="col" className="th text-right">Price</th>
               <th scope="col" className="th text-right">Action</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan="10" className="p-6 text-center text-ink-400">Loading products…</td></tr>
+              <tr><td colSpan={bulkSelection ? 12 : 10} className="p-6 text-center text-ink-400">Loading products…</td></tr>
             ) : error ? (
-              <tr><td colSpan="10" className="p-6 text-center text-red-600">Could not load products. Please try again.</td></tr>
+              <tr><td colSpan={bulkSelection ? 12 : 10} className="p-6 text-center text-red-600">Could not load products. Please try again.</td></tr>
             ) : products.length === 0 ? (
-              <tr><td colSpan="10" className="p-6 text-center text-ink-400">No products match these filters.</td></tr>
+              <tr><td colSpan={bulkSelection ? 12 : 10} className="p-6 text-center text-ink-400">No products match these filters.</td></tr>
             ) : products.map((product) => {
               const line = cart.find((item) => item.product === product._id);
               const quantityInCart = Number(line?.quantity || 0);
@@ -148,8 +169,11 @@ export default function POSProductPicker({
               const availableSerials = (product.serials || []).filter((unit) => unit.status === 'in_stock').map((unit) => unit.serial).filter(Boolean);
               const serialOptions = availableSerials.filter((serial) => !taken.has(serial) || serial === selectedSerial);
               const selectedSerialAvailable = !selectedSerial || serialOptions.includes(selectedSerial);
+              const stockEntry = bulkSelection?.items[product._id];
+              const remaining = remainingPosStock(product, cart);
               return (
                 <tr key={product._id} className="tr">
+                  {bulkSelection && <td className="td"><input type="checkbox" aria-label={`Select ${product.name} (${product.sku})`} checked={!!stockEntry} disabled={bulkSelection.loading || (!stockEntry && !canAdd)} onChange={() => bulkSelection.onToggle(product)} /></td>}
                   <td className="td min-w-48">
                     <div className="font-medium text-ink-900">{product.model || '—'}</div>
                     <div className="t-meta">{product.name} · <span className="font-mono">{product.sku}</span></div>
@@ -179,6 +203,7 @@ export default function POSProductPicker({
                   <td className="td">{product.storage || '—'}</td>
                   <td className="td max-w-56"><span>{product.comments || product.condition || '—'}</span></td>
                   <td className="td text-right whitespace-nowrap">{Math.max(0, Number(product.stock) - quantityInCart)} <span className="t-meta">/ {product.stock}</span></td>
+                  {bulkSelection && <td className="td"><input type="number" min="1" max={remaining} step="1" className="input input-sm w-24 text-right num" aria-label={`Quantity to add for ${product.name} (${product.sku})`} value={stockEntry?.quantity ?? ''} disabled={!stockEntry || bulkSelection.loading || remaining < 1} onChange={(event) => bulkSelection.onQuantityChange(product, clampQuantity(event.target.value, remaining))} /></td>}
                   <td className="td text-right whitespace-nowrap num">{formatMoney(product.sellingPrice, currency)}</td>
                   <td className="td text-right">
                     <button type="button" className="btn-sm btn-primary" disabled={!canAdd || !selectedSerialAvailable} onClick={() => onAdd(product, selectedSerial)}>

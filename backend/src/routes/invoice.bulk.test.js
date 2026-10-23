@@ -15,6 +15,7 @@ import Activity from '../models/Activity.js';
 import Settings from '../models/Settings.js';
 import User from '../models/User.js';
 import { profitAndLoss } from '../controllers/report.controller.js';
+import { addPosStockSelection } from '../../../frontend/src/lib/posStockSelection.js';
 
 let memory, server, base;
 const tokens = {};
@@ -183,5 +184,45 @@ describe('Admin bulk selling (isolated replica set)', () => {
     expect(attempts.filter(result => result.status >= 400)).toHaveLength(1);
     expect(await Invoice.countDocuments()).toBe(1);
     expect((await Product.findById(product._id)).stock).toBe(50);
+  });
+
+  it('posts a batch built by stock selection and reduces only the chosen quantities and serial units', async () => {
+    const { product, customer } = await fixture();
+    const tracked = await Product.create({ name: 'Tracked laptop', sku: 'SELECTED-2', stock: 3, purchasePrice: 500, sellingPrice: 1000,
+      tracksSerials: true, serials: ['SELECT-1', 'SELECT-2', 'SELECT-3'].map(serial => ({ serial, status: 'in_stock' })) });
+    const asPickerProduct = doc => ({ ...doc.toObject(), _id: String(doc._id) });
+    const selected = addPosStockSelection([], [{ product: asPickerProduct(product), quantity: 450 }, { product: asPickerProduct(tracked), quantity: 2 }]);
+    expect(selected.error).toBeNull();
+    const response = await post({ customer: customer._id, bulkSellingTotal: 1000000.01, items: selected.cart });
+    expect(response.status).toBe(201);
+    expect(response.body.items.map(line => line.quantity)).toEqual([450, 2]);
+    expect(response.body.items[1].serials).toEqual(['SELECT-1', 'SELECT-2']);
+    expect((await Product.findById(product._id)).stock).toBe(50);
+    expect((await Product.findById(tracked._id)).stock).toBe(1);
+    expect((await Product.findById(tracked._id)).serials.map(unit => unit.status)).toEqual(['sold', 'sold', 'in_stock']);
+    expect(await StockMovement.countDocuments({ type: 'sale' })).toBe(2);
+    expect((await Customer.findById(customer._id)).balance).toBe(1000000.01);
+    const report = { json(body) { this.body = body; } };
+    await profitAndLoss({ query: {} }, report);
+    expect(report.body.cost).toBe(451000);
+    expect(report.body.revenue).toBe(1000000.01);
+  });
+
+  it('rejects a selected batch if stock or a selected serial became unavailable before saving', async () => {
+    const { product, customer } = await fixture();
+    const pickerProduct = { ...product.toObject(), _id: String(product._id) };
+    const selected = addPosStockSelection([], [{ product: pickerProduct, quantity: 450 }]);
+    await Product.updateOne({ _id: product._id }, { $set: { stock: 400 } });
+    expect((await post({ customer: customer._id, bulkSellingTotal: 1000000, items: selected.cart })).status).toBe(400);
+    expect((await Product.findById(product._id)).stock).toBe(400);
+    const tracked = await Product.create({ name: 'Tracked', sku: 'STALE-SERIAL', stock: 2, tracksSerials: true,
+      serials: [{ serial: 'STALE-1', status: 'in_stock' }, { serial: 'STALE-2', status: 'in_stock' }] });
+    const trackedSelection = addPosStockSelection([], [{ product: { ...tracked.toObject(), _id: String(tracked._id) }, quantity: 2 }]);
+    await Product.updateOne({ _id: tracked._id }, { $set: { 'serials.0.status': 'sold' } });
+    expect((await post({ customer: customer._id, bulkSellingTotal: 100, items: trackedSelection.cart })).status).toBe(400);
+    expect(await Invoice.countDocuments()).toBe(0);
+    expect(await StockMovement.countDocuments()).toBe(0);
+    expect((await Customer.findById(customer._id)).balance).toBe(0);
+    expect((await Product.findById(tracked._id)).stock).toBe(2);
   });
 });
