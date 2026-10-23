@@ -216,12 +216,16 @@ export function buildPurchaseOrder({ po, supplier, settings, res, download }) {
   ]);
 
   doc.table({
-    columns: itemColumns(doc, { priceLabel: 'Unit cost', showDiscount: false, showReceived: true }),
+    columns: itemColumns(doc, { priceLabel: 'Unit cost', showDiscount: false, showReceived: true }).map(column =>
+      po.bulkPurchaseTotal != null && column.key === 'total'
+        ? { ...column, label: `Bulk share (${po.currency || 'PKR'})`, render: row => doc.amount(row.bulkAllocatedTotal) }
+        : column),
     rows: po.items || [],
     emptyText: 'This purchase order has no line items.',
   });
 
-  const rows = [{ label: 'Subtotal', value: doc.money(po.subtotal) }];
+  if (po.bulkPurchaseTotal != null) doc.note('Bulk purchase', 'The bulk amount is the supplier payable before tax. Shares are allocated equally per unit with rounding. Original unit costs are unchanged and remain the receiving and profit cost basis.');
+  const rows = [{ label: po.bulkPurchaseTotal != null ? 'Bulk payable before tax' : 'Subtotal', value: doc.money(po.subtotal) }];
   if (po.taxAmount) rows.push({ label: `Tax (${po.taxRate || 0}%)`, value: doc.money(po.taxAmount) });
   rows.push({ label: 'TOTAL', value: doc.money(po.total), grand: true });
   rows.push({ label: 'Paid', value: doc.money(po.paid), color: po.paid ? COLOR.positive : COLOR.ink500 });

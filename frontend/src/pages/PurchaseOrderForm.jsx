@@ -5,7 +5,8 @@ import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
 import { money, errorMessage } from '../lib/format.js';
 import { clampQuantity, isValidQuantity } from '../lib/quantity.js';
-import { useCurrency } from '../hooks/useSettings.js';
+import { useAuth } from '../context/AuthContext.jsx';
+import { allocateBulkPurchase } from '../lib/bulkPurchase.js';
 import {
   addProductToPurchaseOrder,
   hasEligibleDisplayedSelection,
@@ -32,6 +33,9 @@ function isValidOrderedQuantity(value, floor) {
 
 export default function PurchaseOrderForm() {
   const { id } = useParams();
+  const isAdmin = useAuth()?.user?.role === 'admin';
+  const [bulkPurchase, setBulkPurchase] = useState(false);
+  const [bulkAmount, setBulkAmount] = useState('');
   const navigate = useNavigate();
   const [supplier, setSupplier] = useState('');
   const [currency, setCurrency] = useState('PKR');
@@ -53,6 +57,8 @@ export default function PurchaseOrderForm() {
     if (!po) return;
     setSupplier(po.supplier?._id || po.supplier || '');
     setCurrency(po.currency || 'PKR');
+    setBulkPurchase(po.bulkPurchaseTotal != null);
+    setBulkAmount(po.bulkPurchaseTotal ?? '');
     setDealId(po.deal?._id || po.deal || '');
     setCart(po.items.map((l) => ({
       product: l.product?._id || l.product, name: l.name, sku: l.sku,
@@ -85,11 +91,12 @@ export default function PurchaseOrderForm() {
   // be safely split, and a paid PO's total can't change without risking a
   // mismatched balance. New (create) always allows full editing.
   const isEdit = !!id;
-  const canEditFinancials = !isEdit || (po && po.paid === 0 && po.status !== 'received' && po.status !== 'cancelled');
+  const bulkLocked = po?.bulkPurchaseTotal != null && (!isAdmin || po.items.some(line => line.received > 0));
+  const canEditFinancials = !isEdit || (po && !bulkLocked && po.paid === 0 && po.status !== 'received' && po.status !== 'cancelled');
   const anyReceivedAnywhere = isEdit && cart.some((l) => l.received > 0);
   const canChangeSupplier = canEditFinancials && !anyReceivedAnywhere;
   const lockedReason = isEdit && po && !canEditFinancials
-    ? (po.paid > 0
+    ? (bulkLocked ? 'Bulk purchase financial details are locked after receipt and for non-Admin users. Notes and expected delivery can still be changed.' : po.paid > 0
       ? 'This purchase order has payments recorded against it, so its items, supplier and cost details can no longer be edited. Only notes and expected delivery can still be changed.'
       : 'This purchase order has been fully received, so its items, supplier and cost details are locked. Only notes and expected delivery can still be changed.')
     : null;
@@ -106,11 +113,17 @@ export default function PurchaseOrderForm() {
   function removeLine(i) {
     setCart((c) => (c[i]?.received > 0 ? c : c.filter((_, j) => j !== i)));
   }
+  const allocation = useMemo(() => {
+    if (!bulkPurchase) return null;
+    try { return allocateBulkPurchase(cart.map(line => ({ ...line, quantity: Number(line.quantity) })), bulkAmount); }
+    catch (error) { return { error: error.message }; }
+  }, [cart, bulkPurchase, bulkAmount]);
   const totals = useMemo(() => {
-    const subtotal = cart.reduce((s, l) => s + (Number(l.quantity) || 0) * (Number(l.unitCost) || 0), 0);
+    const original = cart.reduce((s, l) => s + (Number(l.quantity) || 0) * (Number(l.unitCost) || 0), 0);
+    const subtotal = bulkPurchase ? (allocation?.subtotal || 0) : original;
     const tax = Math.round(subtotal * (Number(taxRate || 0) / 100) * 100) / 100;
-    return { subtotal, tax, total: subtotal + tax };
-  }, [cart, taxRate]);
+    return { original, subtotal, tax, total: Math.round((subtotal + tax) * 100) / 100 };
+  }, [cart, taxRate, bulkPurchase, allocation]);
 
   async function submit() {
     if (!supplier || !cart.length) return toast.error('Supplier and items required');
@@ -120,6 +133,7 @@ export default function PurchaseOrderForm() {
       const invalidCost = cart.find((l) => l.unitCost === '' || !Number.isFinite(Number(l.unitCost)) || Number(l.unitCost) < 0);
       if (invalidCost) return toast.error(`Enter a valid unit cost for ${invalidCost.name}`);
     }
+    if (canEditFinancials && bulkPurchase && allocation?.error) return toast.error(allocation.error);
     setSaving(true);
     try {
       if (isEdit) {
@@ -129,6 +143,7 @@ export default function PurchaseOrderForm() {
           payload.currency = currency;
           payload.items = buildPurchaseOrderItemsPayload(cart);
           payload.taxRate = Number(taxRate || 0);
+          if (isAdmin) payload.bulkPurchaseTotal = bulkPurchase ? Number(bulkAmount) : null;
         }
         const r = await api.patch(`/purchase-orders/${id}`, payload);
         toast.success(`PO ${r.data.number} updated`);
@@ -138,6 +153,7 @@ export default function PurchaseOrderForm() {
           supplier,
           currency,
           dealId: dealId || undefined,
+          ...(isAdmin && bulkPurchase ? { bulkPurchaseTotal: Number(bulkAmount) } : {}),
           items: buildPurchaseOrderItemsPayload(cart),
           taxRate: Number(taxRate || 0),
           expectedAt: expectedAt || undefined,
@@ -240,6 +256,7 @@ export default function PurchaseOrderForm() {
                   <th scope="col" className="th text-right">Qty</th>
                   <th scope="col" className="th text-right">Unit Cost</th>
                   <th scope="col" className="th text-right">Line Total</th>
+                  {bulkPurchase && <th scope="col" className="th text-right">Bulk allocation</th>}
                   {canEditFinancials && <th className="w-10"></th>}
                 </tr></thead>
                 <tbody>
@@ -262,6 +279,7 @@ export default function PurchaseOrderForm() {
                             : <input className="input input-sm w-24 text-right num input-money" type="number" step="0.01" value={line.unitCost} onChange={(e) => setLine(i, { unitCost: e.target.value })} />}
                         </td>
                         <td className="td text-right num font-semibold text-ink-900 whitespace-nowrap">{money((Number(line.quantity) || 0) * (Number(line.unitCost) || 0), currency)}</td>
+                        {bulkPurchase && <td className="td text-right num">{allocation?.items ? money(allocation.items[i].bulkAllocatedTotal, currency) : '—'}</td>}
                         {canEditFinancials && (
                           <td className="td text-right">
                             {line.received > 0 ? (
@@ -324,6 +342,7 @@ export default function PurchaseOrderForm() {
                         <span className="t-meta">Line total</span>
                         <span className="num font-semibold text-ink-900">{money((Number(line.quantity) || 0) * (Number(line.unitCost) || 0), currency)}</span>
                       </div>
+                      {bulkPurchase && <p className="mt-2 text-xs text-ink-500">Bulk allocation: {allocation?.items ? money(allocation.items[i].bulkAllocatedTotal, currency) : '—'}</p>}
                     </li>
                   );
                 })}
@@ -361,6 +380,18 @@ export default function PurchaseOrderForm() {
               ) : (
                 <div><label className="label">Payable currency</label><div className="input bg-ink-25 text-ink-700">{po?.currency || 'PKR'}</div></div>
               )}
+              {(isAdmin || bulkPurchase) && <div className="space-y-2">
+                <label className="flex items-center gap-2 text-sm text-ink-900">
+                  <input type="checkbox" checked={bulkPurchase} disabled={!canEditFinancials || !isAdmin || anyReceivedAnywhere} onChange={event => setBulkPurchase(event.target.checked)} />
+                  Bulk purchase — one batch payable
+                </label>
+                {bulkPurchase && <>
+                  <label htmlFor="po-bulk-amount" className="label">Bulk purchase amount ({currency}, before tax)</label>
+                  <input id="po-bulk-amount" className="input num" type="number" inputMode="decimal" min="0.01" step="0.01" value={bulkAmount} disabled={!canEditFinancials || !isAdmin} onChange={event => setBulkAmount(event.target.value)} aria-describedby="po-bulk-help" />
+                  <p id="po-bulk-help" className="text-xs text-ink-500">One payable for all selected quantities, allocated equally per unit. Unit costs stay unchanged, including for receiving and profit calculations. Line allocations include rounding and add up to the bulk amount.</p>
+                  {allocation?.error && cart.length > 0 && <p role="alert" className="text-xs text-red-700">{allocation.error}</p>}
+                </>}
+              </div>}
               <div><label htmlFor="purchaseorderform-expected-delivery-207" className="label">Expected Delivery</label><input id="purchaseorderform-expected-delivery-207" className="input" type="date" value={expectedAt} onChange={(e) => setExpectedAt(e.target.value)} /></div>
               {canEditFinancials ? (
                 <div><label htmlFor="purchaseorderform-tax-208" className="label">Tax %</label><input id="purchaseorderform-tax-208" className="input num" type="number" value={taxRate} onChange={(e) => setTaxRate(e.target.value)} /></div>
@@ -372,7 +403,8 @@ export default function PurchaseOrderForm() {
             </div>
             <div className="card p-5">
               <div className="space-y-1.5">
-                <div className="flex justify-between text-sm"><span className="text-ink-500">Subtotal</span><span className="num text-ink-700">{money(totals.subtotal, currency)}</span></div>
+                {bulkPurchase && <div className="flex justify-between text-sm"><span className="text-ink-500">Original cost basis (unchanged)</span><span className="num text-ink-700">{money(totals.original, currency)}</span></div>}
+                <div className="flex justify-between text-sm"><span className="text-ink-500">{bulkPurchase ? 'Bulk payable before tax' : 'Subtotal'}</span><span className="num text-ink-700">{money(totals.subtotal, currency)}</span></div>
                 <div className="flex justify-between text-sm"><span className="text-ink-500">Tax</span><span className="num text-ink-700">{money(totals.tax, currency)}</span></div>
               </div>
               <div className="flex justify-between items-baseline mt-3 pt-3 border-t border-ink-100"><span className="text-sm font-medium text-ink-900">Total</span><span className="text-2xl font-semibold num text-ink-900">{money(totals.total, currency)}</span></div>

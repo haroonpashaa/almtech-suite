@@ -8,6 +8,8 @@ const lineSchema = new mongoose.Schema(
     quantity: { type: Number, required: true, min: 1 },
     received: { type: Number, default: 0, min: 0 },
     unitCost: { type: Number, required: true, min: 0 },
+    // Payable allocation only; receiving continues to use unitCost.
+    bulkAllocatedTotal: { type: Number, min: 0 },
     serials: [String],
     lineTotal: { type: Number, required: true, min: 0 },
   },
@@ -59,6 +61,7 @@ const poSchema = new mongoose.Schema(
     currency: { type: String, enum: ['GBP', 'PKR'], default: 'PKR', required: true },
     fxSnapshots: { type: [fxSnapshotSchema], default: [] },
     items: [lineSchema],
+    bulkPurchaseTotal: { type: Number, min: 0, default: null },
     subtotal: { type: Number, required: true, min: 0 },
     taxRate: { type: Number, default: 0, min: 0 },
     taxAmount: { type: Number, default: 0, min: 0 },

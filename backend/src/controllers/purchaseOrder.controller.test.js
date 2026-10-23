@@ -6,6 +6,9 @@ import Product from '../models/Product.js';
 import Account from '../models/Account.js';
 import FinancialTransaction from '../models/FinancialTransaction.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
+import { purchaseDeal, listPurchaseDeals } from './deal.controller.js';
+import { purchaseSummary } from './purchaseSummary.controller.js';
+import { dashboard, series } from './report.controller.js';
 import '../models/User.js'; // registers the schema so .populate('createdBy') can resolve it
 import {
   createPO, updatePO, receiveItems, recordSupplierPayment, reverseSupplierPayment, listPOs, getPO,
@@ -85,6 +88,160 @@ describe('Purchase Order editing (DB-backed)', () => {
     await receiveItems(req({ params: { id: po._id.toString() }, body: { receipts } }), res);
     return res.body;
   }
+
+
+  describe('bulk purchase payable stays separate from inventory costs', () => {
+    async function createBulk(extra = {}, role = 'admin') {
+      const supplier = await makeSupplier();
+      const a = await makeProduct('BULK-A', 100);
+      const b = await makeProduct('BULK-B', 250);
+      const items = [{ product: String(a._id), quantity: 2, unitCost: 100 }, { product: String(b._id), quantity: 1, unitCost: 250 }];
+      const res = mockRes();
+      await createPO(req({ user: { _id: userId, role }, body: { supplier: String(supplier._id), items, bulkPurchaseTotal: 100, ...extra } }), res);
+      return { po: res.body, supplier, a, b, items };
+    }
+    async function editBulk(po, body, role = 'admin') {
+      const res = mockRes();
+      await updatePO(req({ user: { _id: userId, role }, params: { id: String(po._id) }, body: { expectedUpdatedAt: po.updatedAt.toISOString(), ...body } }), res);
+      return res.body;
+    }
+    it('creates an exact bulk payable with tax, original unit costs and penny allocations', async () => {
+      const { po, supplier, a, b } = await createBulk({ taxRate: 10 });
+      expect(po.bulkPurchaseTotal).toBe(100);
+      expect(po.subtotal).toBe(100);
+      expect(po.total).toBe(110);
+      expect(po.balance).toBe(110);
+      expect(po.items.map(l => [l.unitCost, l.lineTotal, l.bulkAllocatedTotal])).toEqual([[100, 200, 66.66], [250, 250, 33.34]]);
+      expect((await Supplier.findById(supplier._id)).payable).toBe(110);
+      expect((await Product.findById(a._id)).purchasePrice).toBe(100);
+      expect((await Product.findById(b._id)).stock).toBe(0);
+    });
+    it('receives stock and serials using original costs, never the allocated payable', async () => {
+      const { po, supplier, a, b } = await createBulk();
+      await Product.updateOne({ _id: a._id }, { tracksSerials: true });
+      const received = await callReceive(po, [{ product: String(a._id), quantity: 2, serials: ['BULK-1', 'BULK-2'] }, { product: String(b._id), quantity: 1 }]);
+      expect(received.status).toBe('received');
+      const freshA = await Product.findById(a._id);
+      expect(freshA.stock).toBe(2);
+      expect(freshA.purchasePrice).toBe(100);
+      expect(freshA.serials.map(s => [s.serial, s.status])).toEqual([['BULK-1', 'in_stock'], ['BULK-2', 'in_stock']]);
+      expect((await Product.findById(b._id)).purchasePrice).toBe(250);
+      expect((await Supplier.findById(supplier._id)).payable).toBe(100);
+    });
+    it('payment and reversal reconcile against the bulk total rather than original line totals', async () => {
+      const { po, supplier } = await createBulk();
+      const account = await makeAccount();
+      const res = mockRes();
+      await recordSupplierPayment(req({ params: { id: String(po._id) }, body: { amount: 40, account: String(account._id) } }), res);
+      expect(res.body.balance).toBe(60);
+      expect((await Supplier.findById(supplier._id)).payable).toBe(60);
+      const reversal = mockRes();
+      await reverseSupplierPayment(req({ params: { id: String(po._id), paymentId: '0' }, body: { reason: 'Correction' } }), reversal);
+      expect(reversal.body.balance).toBe(100);
+      expect((await Supplier.findById(supplier._id)).payable).toBe(100);
+    });
+    it('updates or removes an unreceived bulk amount without mutating unit costs', async () => {
+      const { po, supplier, items } = await createBulk();
+      const changed = await editBulk(po, { items: items.map((line, index) => ({ ...line, quantity: index === 0 ? 8 : 1 })), bulkPurchaseTotal: 90 });
+      expect(changed.items.map(line => line.bulkAllocatedTotal)).toEqual([80, 10]);
+      expect(changed.total).toBe(90);
+      expect(changed.items.map(l => l.unitCost)).toEqual([100, 250]);
+      expect((await Supplier.findById(supplier._id)).payable).toBe(90);
+      const normal = await editBulk(changed, { items, bulkPurchaseTotal: null });
+      expect(normal.bulkPurchaseTotal).toBeNull();
+      expect(normal.total).toBe(450);
+      expect(normal.items.every(l => l.bulkAllocatedTotal === undefined)).toBe(true);
+      expect((await Supplier.findById(supplier._id)).payable).toBe(450);
+    });
+    it('restores the bulk amount and allocations if a supplier payable edit fails', async () => {
+      const { po, supplier, items } = await createBulk();
+      const original = po.toObject();
+      const spy = vi.spyOn(Supplier, 'updateOne').mockRejectedValueOnce(new Error('Simulated payable failure'));
+      try {
+        await expect(editBulk(po, { items, bulkPurchaseTotal: 90 })).rejects.toThrow(/Simulated payable failure/);
+      } finally { spy.mockRestore(); }
+      const restored = await PurchaseOrder.findById(po._id);
+      expect(restored.bulkPurchaseTotal).toBe(100);
+      expect(restored.total).toBe(100);
+      expect(restored.items.map(line => line.toObject())).toEqual(original.items);
+      expect((await Supplier.findById(supplier._id)).payable).toBe(100);
+    });
+    it('ignores forged allocation fields and calculates every share on the server', async () => {
+      const { po, items } = await createBulk();
+      const updated = await editBulk(po, { items: items.map(line => ({ ...line, bulkAllocatedTotal: 999999 })), bulkPurchaseTotal: 0.01 });
+      expect(updated.items.map(line => line.bulkAllocatedTotal)).toEqual([0, 0.01]);
+      expect(updated.items.map(line => line.unitCost)).toEqual([100, 250]);
+      expect(updated.total).toBe(0.01);
+    });
+    it('preserves bulk mode when an older client omits the field', async () => {
+      const { po, items } = await createBulk();
+      const updated = await editBulk(po, { items });
+      expect(updated.total).toBe(100);
+      expect(updated.bulkPurchaseTotal).toBe(100);
+    });
+    it('locks financial reallocation after partial receipt but keeps metadata editable', async () => {
+      const { po, a, items } = await createBulk();
+      await callReceive(po, [{ product: String(a._id), quantity: 1 }]);
+      const partial = await PurchaseOrder.findById(po._id);
+      await expect(editBulk(partial, { items, bulkPurchaseTotal: 90 })).rejects.toThrow(/after any stock/);
+      const metadata = await editBulk(partial, { notes: 'Receipt checked' }, 'stock');
+      expect(metadata.notes).toBe('Receipt checked');
+      expect(metadata.total).toBe(100);
+    });
+    it('keeps payment and stale-form financial locks', async () => {
+      const { po, items } = await createBulk();
+      const changed = await editBulk(po, { items, bulkPurchaseTotal: 90 });
+      await expect(editBulk(po, { items, bulkPurchaseTotal: 80 })).rejects.toThrow(/changed since/);
+      const account = await makeAccount();
+      const res = mockRes();
+      await recordSupplierPayment(req({ params: { id: String(po._id) }, body: { amount: 10, account: String(account._id) } }), res);
+      await expect(editBulk(res.body, { items, bulkPurchaseTotal: 80 })).rejects.toThrow(/payments recorded/);
+    });
+    it('blocks Stock from creating or changing bulk financial details via direct API calls', async () => {
+      await expect(createBulk({}, 'stock')).rejects.toThrow(/Only Admin/);
+      // Failed creation did not post a payable or order.
+      expect(await PurchaseOrder.countDocuments()).toBe(0);
+      const supplier = await Supplier.findOne();
+      expect(supplier.payable).toBe(0);
+      await Product.deleteMany({});
+      const { po, items } = await createBulk();
+      await expect(editBulk(po, { items, bulkPurchaseTotal: null }, 'stock')).rejects.toThrow(/Only Admin/);
+    });
+    it.each(['', -1, 0, 1.001, 'invalid', true])('rejects invalid bulk amount %s without posting', async amount => {
+      await expect(createBulk({ bulkPurchaseTotal: amount })).rejects.toThrow(/bulk purchase|Bulk purchase/);
+      expect(await PurchaseOrder.countDocuments()).toBe(0);
+      expect((await Supplier.findOne()).payable).toBe(0);
+    });
+    it('keeps GBP payable separate and retains the existing receiving restriction', async () => {
+      const { po, supplier, a } = await createBulk({ currency: 'GBP' });
+      const fresh = await Supplier.findById(supplier._id);
+      expect(fresh.payableGBP).toBe(100);
+      expect(fresh.payable).toBe(0);
+      await expect(callReceive(po, [{ product: String(a._id), quantity: 1 }])).rejects.toThrow(/Receiving GBP/);
+    });
+    it('uses bulk amounts in dashboard payables, purchase summary and financial series', async () => {
+      const { po } = await createBulk({ taxRate: 10 });
+      const list = mockRes();
+      await listPurchaseDeals(req({ query: {} }), list);
+      expect(list.body.summary.total).toBe(110);
+      expect(list.body.rows[0].outstanding).toBe(110);
+      const detail = mockRes();
+      await purchaseDeal(req({ params: { id: String(po._id) } }), detail);
+      expect(detail.body.bulkPurchaseTotal).toBe(100);
+      expect(detail.body.items.map(line => line.bulkAllocatedTotal)).toEqual([66.66, 33.34]);
+      expect(detail.body.totals.total).toBe(110);
+      const summary = mockRes();
+      await purchaseSummary(req({ query: {} }), summary);
+      expect(summary.body.totalsByCurrency.find(row => row.currency === 'PKR').purchaseValue).toBe(110);
+      expect(summary.body.totalsByCurrency.find(row => row.currency === 'PKR').outstanding).toBe(110);
+      const dash = mockRes();
+      await dashboard(req({ user: { _id: userId, role: 'admin' }, query: {} }), dash);
+      expect(dash.body.payables).toBe(110);
+      const chart = mockRes();
+      await series(req({ query: {} }), chart);
+      expect(chart.body.totals.purchases).toBe(110);
+    });
+  });
 
   // =========================================================================
   it('1. an unreceived PO can be edited', async () => {

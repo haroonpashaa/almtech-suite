@@ -372,6 +372,7 @@ export const purchaseDeal = asyncHandler(async (req, res) => {
 
   res.json({
     kind: 'purchase',
+    bulkPurchaseTotal: po.bulkPurchaseTotal ?? null,
     _id: po._id,
     number: po.number,
     date: po.orderedAt,

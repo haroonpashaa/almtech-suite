@@ -1,3 +1,4 @@
+import { allocateBulkPurchase } from '../utils/bulkPurchase.js';
 import asyncHandler from 'express-async-handler';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 import Product from '../models/Product.js';
@@ -70,6 +71,10 @@ export const getPO = asyncHandler(async (req, res) => {
 
 export const createPO = asyncHandler(async (req, res) => {
   const { supplier: supplierId, items, taxRate = 0, expectedAt, notes, dealId, currency = 'PKR' } = req.body;
+  const bulkPurchaseTotal = req.body.bulkPurchaseTotal ?? null;
+  if (bulkPurchaseTotal !== null && req.user?.role !== 'admin') { res.status(403); throw new Error('Only Admin can set a bulk purchase payable'); }
+  if (!Array.isArray(items) || !items.length) { res.status(400); throw new Error('At least one item is required'); }
+  if (!Number.isFinite(Number(taxRate)) || Number(taxRate) < 0) { res.status(400); throw new Error('Invalid tax rate'); }
   if (!['GBP', 'PKR'].includes(currency)) { res.status(400); throw new Error('Payable currency must be GBP or PKR'); }
   const deal = await validateDealId(res, dealId);
   await requireDealTransactionSupport(res, deal);
@@ -78,7 +83,8 @@ export const createPO = asyncHandler(async (req, res) => {
     res.status(404);
     throw new Error('Supplier not found');
   }
-  const lines = [];
+  let lines = [];
+  const seenProducts = new Set();
   let subtotal = 0;
   for (const it of items) {
     const product = await Product.findById(it.product);
@@ -86,6 +92,9 @@ export const createPO = asyncHandler(async (req, res) => {
       res.status(400);
       throw new Error(`Product not found: ${it.product}`);
     }
+    const key = product._id.toString();
+    if (seenProducts.has(key)) { res.status(400); throw new Error(`Duplicate product on this purchase order: ${product.name}`); }
+    seenProducts.add(key);
     const quantity = requirePositiveWholeQuantity(it.quantity, product.name);
     const unitCost = Number(it.unitCost);
     if (!Number.isFinite(unitCost) || unitCost < 0 || Math.abs(unitCost - roundCurrency(unitCost)) > 1e-8) {
@@ -103,6 +112,11 @@ export const createPO = asyncHandler(async (req, res) => {
       lineTotal,
     });
     subtotal += lineTotal;
+  }
+  if (bulkPurchaseTotal !== null) {
+    const allocation = allocateBulkPurchase(lines, bulkPurchaseTotal);
+    lines = allocation.items;
+    subtotal = allocation.subtotal;
   }
   const taxAmount = Math.round(subtotal * (taxRate / 100) * 100) / 100;
   const total = roundCurrency(subtotal + taxAmount);
@@ -131,6 +145,7 @@ export const createPO = asyncHandler(async (req, res) => {
         fxSnapshots: [fxSnapshot],
         items: lines,
         subtotal,
+        bulkPurchaseTotal: bulkPurchaseTotal === null ? null : subtotal,
         taxRate,
         taxAmount,
         total,
@@ -151,7 +166,7 @@ export const createPO = asyncHandler(async (req, res) => {
     return created;
   });
 
-  await logActivity(req, 'po_created', { entity: 'PurchaseOrder', entityId: po._id, meta: { number, total, currency } });
+  await logActivity(req, 'po_created', { entity: 'PurchaseOrder', entityId: po._id, meta: { number, total, currency, bulkPurchaseTotal: po.bulkPurchaseTotal } });
   res.status(201).json(po);
 });
 
@@ -220,7 +235,7 @@ export const updatePO = asyncHandler(async (req, res) => {
   }
 
   const { notes, expectedAt } = req.body;
-  const wantsFinancialEdit = ['supplier', 'items', 'taxRate', 'currency'].some((k) => req.body[k] !== undefined);
+  const wantsFinancialEdit = ['supplier', 'items', 'taxRate', 'currency', 'bulkPurchaseTotal'].some((k) => req.body[k] !== undefined);
 
   if (!wantsFinancialEdit) {
     // Metadata-only edit — safe at any receiving/payment state.
@@ -264,6 +279,13 @@ export const updatePO = asyncHandler(async (req, res) => {
     throw new Error('At least one item is required');
   }
 
+  const bulkPurchaseTotal = req.body.bulkPurchaseTotal === undefined ? (po.bulkPurchaseTotal ?? null) : req.body.bulkPurchaseTotal;
+  if ((po.bulkPurchaseTotal != null || bulkPurchaseTotal != null) && req.user?.role !== 'admin') {
+    res.status(403); throw new Error('Only Admin can edit bulk purchase financial details');
+  }
+  if ((po.bulkPurchaseTotal != null || bulkPurchaseTotal != null) && po.items.some(line => line.received > 0)) {
+    res.status(409); throw new Error('Bulk purchase financial details cannot change after any stock has been received');
+  }
   const newCurrency = req.body.currency ?? po.currency ?? 'PKR';
   if (!['GBP', 'PKR'].includes(newCurrency)) { res.status(400); throw new Error('Payable currency must be GBP or PKR'); }
   const currencyChanged = newCurrency !== (po.currency || 'PKR');
@@ -290,7 +312,7 @@ export const updatePO = asyncHandler(async (req, res) => {
 
   const existingByProduct = new Map(po.items.map((l) => [l.product.toString(), l]));
   const seenProducts = new Set();
-  const newLines = [];
+  let newLines = [];
   let subtotal = 0;
 
   for (const it of req.body.items) {
@@ -355,6 +377,11 @@ export const updatePO = asyncHandler(async (req, res) => {
     }
   }
 
+  if (bulkPurchaseTotal !== null) {
+    const allocation = allocateBulkPurchase(newLines, bulkPurchaseTotal);
+    newLines = allocation.items;
+    subtotal = allocation.subtotal;
+  }
   const taxRate = req.body.taxRate !== undefined ? Number(req.body.taxRate) : po.taxRate;
   if (!Number.isFinite(taxRate) || taxRate < 0) {
     res.status(400);
@@ -373,6 +400,7 @@ export const updatePO = asyncHandler(async (req, res) => {
   const newStatus = allReceived ? 'received' : anyReceived ? 'partial' : po.status;
 
   const setFields = {
+    bulkPurchaseTotal: bulkPurchaseTotal === null ? null : subtotal,
     items: newLines, subtotal, taxRate, taxAmount, total, balance: total, status: newStatus,
     currency: newCurrency,
     fxSnapshots: [...(po.fxSnapshots || []), fxSnapshot],
@@ -426,6 +454,7 @@ export const updatePO = asyncHandler(async (req, res) => {
           await Supplier.updateOne({ _id: entry.supplierId }, { $inc: { [entry.field]: -entry.delta } });
         }
         const originalPO = {
+          bulkPurchaseTotal: po.bulkPurchaseTotal ?? null,
           items: po.items, subtotal: po.subtotal, taxRate: po.taxRate, taxAmount: po.taxAmount,
           total: po.total, balance: po.balance, status: po.status, currency: po.currency || 'PKR',
           fxSnapshots: po.fxSnapshots || [], supplier: po.supplier,
@@ -439,7 +468,7 @@ export const updatePO = asyncHandler(async (req, res) => {
     }
   });
 
-  await logActivity(req, 'po_updated', { entity: 'PurchaseOrder', entityId: po._id, meta: { previousTotal: oldTotal, previousCurrency: po.currency || 'PKR', total, currency: newCurrency } });
+  await logActivity(req, 'po_updated', { entity: 'PurchaseOrder', entityId: po._id, meta: { bulkPurchaseTotal: updated.bulkPurchaseTotal, previousBulkPurchaseTotal: po.bulkPurchaseTotal, previousTotal: oldTotal, previousCurrency: po.currency || 'PKR', total, currency: newCurrency } });
   res.json(await PurchaseOrder.findById(po._id).populate('supplier').populate('createdBy', 'name'));
 });
 
