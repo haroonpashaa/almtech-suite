@@ -115,10 +115,12 @@ export default function POS() {
   }
   // Quantity changes go through here rather than updateLine directly, because a
   // tracksSerials line's serial slots must grow or shrink in step with it.
+  // A blank input is temporary editing state; keep its selections until the
+  // next quantity (or the existing blur fallback) determines the slot count.
   function updateQuantity(idx, quantity) {
     setCart((c) => c.map((line, i) => {
       if (i !== idx) return line;
-      return { ...line, quantity, serials: line.tracksSerials ? resizeSerials(line.serials, quantity) : line.serials };
+      return { ...line, quantity, serials: line.tracksSerials && quantity !== '' ? resizeSerials(line.serials, quantity) : line.serials };
     }));
   }
   function updateSerialSlot(idx, slotIndex, value) {
