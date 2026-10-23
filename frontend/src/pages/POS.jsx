@@ -9,6 +9,8 @@ import { money, errorMessage } from '../lib/format.js';
 import { clampQuantity, isValidQuantity } from '../lib/quantity.js';
 import { resizeSerials, compactSerials, serialsAreSubmittable } from '../lib/cartSerials.js';
 import { parsePricingPaste } from '../lib/pricingPaste.js';
+import { allocateBulkPrice } from '../lib/bulkPricing.js';
+import { useAuth } from '../context/AuthContext.jsx';
 import { usePagedList } from '../hooks/usePagedList.js';
 import { useCurrency } from '../hooks/useSettings.js';
 import PageHeader from '../components/PageHeader.jsx';
@@ -26,6 +28,11 @@ import {
 
 export default function POS() {
   const navigate = useNavigate();
+  const auth = useAuth();
+  const canSetBulkPrice = !!auth?.has('admin');
+  const [bulkMode, setBulkMode] = useState(false);
+  const [bulkAmount, setBulkAmount] = useState('');
+  const isBulk = canSetBulkPrice && bulkMode;
   const [productFilters, setProductFilters] = useState(emptyPosProductFilters);
   const [selectedSerials, setSelectedSerials] = useState({});
   const [customer, setCustomer] = useState('');
@@ -104,6 +111,7 @@ export default function POS() {
     setCart((c) => c.map((line, i) => (i === idx ? { ...line, ...patch } : line)));
   }
   function pastePrices(startIndex, event) {
+    if (isBulk) return;
     const pasted = event.clipboardData?.getData('text');
     if (!pasted || !/[\t\r\n]/.test(pasted)) return;
     event.preventDefault();
@@ -135,13 +143,22 @@ export default function POS() {
     setCart((c) => removePosCartItem(c, idx));
   }
 
-  const totals = useMemo(() => calculatePosTotals(cart, discount, taxRate), [cart, discount, taxRate]);
+  const bulkPreview = useMemo(() => {
+    if (!isBulk) return null;
+    try { return allocateBulkPrice(cart.map(line => ({ ...line, quantity: line.quantity === '' ? 0 : Number(line.quantity) })), bulkAmount); }
+    catch (error) { return { error: error.message }; }
+  }, [isBulk, cart, bulkAmount]);
+  const pricedCart = bulkPreview?.items || cart;
+  const totals = useMemo(() => bulkPreview?.items
+    ? calculatePosTotals([{ quantity: 1, unitPrice: bulkPreview.subtotal }], discount, taxRate)
+    : calculatePosTotals(cart, discount, taxRate), [cart, discount, taxRate, bulkPreview]);
 
   const itemCount = cart.reduce((s, l) => s + Number(l.quantity || 0), 0);
 
   async function doSubmit() {
     if (!customer) return toast.error('Select a customer');
     if (!cart.length) return toast.error('Cart is empty');
+    if (isBulk && bulkPreview?.error) return toast.error(bulkPreview.error);
     const invalidLine = cart.find((l) => !isValidQuantity(l.quantity, l.stock));
     if (invalidLine) return toast.error(`Enter a valid quantity for ${invalidLine.name} (1–${invalidLine.stock})`);
     // A blank price field can now genuinely stay blank while editing (that's the fix —
@@ -149,7 +166,7 @@ export default function POS() {
     // it really can still be blank at submit time. Catch that here rather than letting
     // it silently become a $0 line.
     const invalidPriceLine = cart.find((l) => l.unitPrice === '' || !Number.isFinite(Number(l.unitPrice)) || Number(l.unitPrice) < 0);
-    if (invalidPriceLine) return toast.error(`Enter a valid price for ${invalidPriceLine.name}`);
+    if (!isBulk && invalidPriceLine) return toast.error(`Enter a valid price for ${invalidPriceLine.name}`);
     const blankNameLine = cart.find((l) => !String(l.name || '').trim());
     if (blankNameLine) return toast.error('Enter an item name for every line in the cart');
     // Serial capture stays optional (unchanged from before this was editable at
@@ -166,7 +183,8 @@ export default function POS() {
       const payload = {
         customer,
         dealId: dealId || undefined,
-        items: cart.map(({ product, quantity, unitPrice, discount, comments, name, model, ram, processor, storage, serials }) => ({
+        ...(isBulk ? { bulkSellingTotal: bulkPreview.subtotal } : {}),
+        items: pricedCart.map(({ product, quantity, unitPrice, discount, comments, name, model, ram, processor, storage, serials }) => ({
           product,
           name: name.trim(),
           model: model || '',
@@ -289,7 +307,7 @@ export default function POS() {
                     </tr>
                   </thead>
                   <tbody>
-                    {cart.map((line, i) => (
+                    {pricedCart.map((line, i) => (
                       <tr key={i} className="tr align-top">
                         <td className="td min-w-[16rem]">
                           <input
@@ -342,13 +360,13 @@ export default function POS() {
                           </div>
                         </td>
                         <td className="td text-right">
-                          <input type="number" step="0.01" className="input input-sm w-24 text-right num input-money" value={line.unitPrice} onPaste={(e) => pastePrices(i, e)} onChange={(e) => updateLine(i, { unitPrice: e.target.value })} />
+                          <input type="number" step="0.01" aria-label="Selling price per unit" readOnly={isBulk} className="input input-sm w-24 text-right num input-money" value={line.unitPrice} onPaste={(e) => pastePrices(i, e)} onChange={(e) => updateLine(i, { unitPrice: e.target.value })} />
                         </td>
                         <td className="td text-right">
-                          <input type="number" step="0.01" className="input input-sm w-20 text-right num input-money" value={line.discount} onChange={(e) => updateLine(i, { discount: e.target.value })} />
+                          <input type="number" step="0.01" aria-label="Line discount" readOnly={isBulk} className="input input-sm w-20 text-right num input-money" value={line.discount} onChange={(e) => updateLine(i, { discount: e.target.value })} />
                         </td>
                         <td className="td text-right font-semibold text-ink-900 num whitespace-nowrap">
-                          {money(Math.max(0, (Number(line.quantity) || 0) * (Number(line.unitPrice) || 0) - (Number(line.discount) || 0)), currency)}
+                          {money(line.lineTotal ?? Math.max(0, (Number(line.quantity) || 0) * (Number(line.unitPrice) || 0) - (Number(line.discount) || 0)), currency)}
                         </td>
                         <td className="td text-right">
                           <button className="btn-icon text-ink-300 hover:text-red-600 hover:bg-red-50" onClick={() => removeLine(i)} aria-label="Remove">
@@ -367,7 +385,7 @@ export default function POS() {
                 scrolling is not an acceptable answer for the till screen. */}
             {cart.length > 0 && (
               <ul className="sm:hidden divide-y divide-ink-100">
-                {cart.map((line, i) => (
+                {pricedCart.map((line, i) => (
                   <li key={i} className="p-3.5">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
@@ -438,7 +456,7 @@ export default function POS() {
                       <span className="ml-auto text-right">
                         <span className="block t-meta">Line total</span>
                         <span className="num font-semibold text-ink-900 whitespace-nowrap">
-                          {money(Math.max(0, (Number(line.quantity) || 0) * (Number(line.unitPrice) || 0) - (Number(line.discount) || 0)), currency)}
+                          {money(line.lineTotal ?? Math.max(0, (Number(line.quantity) || 0) * (Number(line.unitPrice) || 0) - (Number(line.discount) || 0)), currency)}
                         </span>
                       </span>
                     </div>
@@ -447,13 +465,13 @@ export default function POS() {
                       <div>
                         <label htmlFor={`pos-price-${i}`} className="t-meta block mb-1">Unit price</label>
                         <input id={`pos-price-${i}`} type="number" inputMode="decimal" step="0.01"
-                               className="input input-sm text-right num input-money w-full" value={line.unitPrice}
+                               aria-label="Selling price per unit" readOnly={isBulk} className="input input-sm text-right num input-money w-full" value={line.unitPrice}
                                onPaste={(e) => pastePrices(i, e)} onChange={(e) => updateLine(i, { unitPrice: e.target.value })} />
                       </div>
                       <div>
                         <label htmlFor={`pos-disc-${i}`} className="t-meta block mb-1">Discount</label>
                         <input id={`pos-disc-${i}`} type="number" inputMode="decimal" step="0.01"
-                               className="input input-sm text-right num input-money w-full" value={line.discount}
+                               aria-label="Line discount" readOnly={isBulk} className="input input-sm text-right num input-money w-full" value={line.discount}
                                onChange={(e) => updateLine(i, { discount: e.target.value })} />
                       </div>
                     </div>
@@ -488,6 +506,22 @@ export default function POS() {
                 />
               </div>
               <DealSelector value={dealId} onChange={setDealId} id="pos-deal" />
+              {canSetBulkPrice && (
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2 text-sm font-medium text-ink-700">
+                    <input type="checkbox" checked={bulkMode} onChange={(e) => setBulkMode(e.target.checked)} />
+                    Bulk sale — one batch price
+                  </label>
+                  {isBulk && (
+                    <div>
+                      <label htmlFor="pos-bulk-selling-total" className="label">Batch selling amount ({currency}) <span className="text-red-500">*</span></label>
+                      <input id="pos-bulk-selling-total" className="input num input-money" type="number" inputMode="decimal" min="0.01" step="0.01" required value={bulkAmount} onChange={(e) => setBulkAmount(e.target.value)} placeholder="Total amount for the whole batch" aria-describedby="pos-bulk-help pos-bulk-error" aria-invalid={!!bulkPreview?.error} />
+                      <p id="pos-bulk-help" className="text-xs text-ink-500 mt-1">For all {itemCount} selected items in the cart, before invoice discount and tax. The amount is shared equally per unit; line discounts handle penny rounding. Buying costs stay unchanged.</p>
+                      {bulkPreview?.error && <p id="pos-bulk-error" role="alert" className="text-xs text-red-600 mt-1">{bulkPreview.error}</p>}
+                    </div>
+                  )}
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label htmlFor="pos-discount-27" className="label">Discount</label>
@@ -550,7 +584,7 @@ export default function POS() {
                   </select>
                 </div>
               )}
-              <button className="btn-primary btn-lg w-full mt-5" onClick={submit} disabled={saving || submitting || cart.length === 0}>
+              <button className="btn-primary btn-lg w-full mt-5" onClick={submit} disabled={saving || submitting || cart.length === 0 || !!bulkPreview?.error}>
                 {saving || submitting ? <><Spinner className="w-4 h-4" /> Saving…</> : <>Save Invoice · {money(totals.total, currency)}</>}
               </button>
             </div>
@@ -571,7 +605,7 @@ export default function POS() {
             <button
               className="btn-primary btn-lg shrink-0"
               onClick={submit}
-              disabled={saving || submitting || cart.length === 0}
+              disabled={saving || submitting || cart.length === 0 || !!bulkPreview?.error}
             >
               {saving || submitting ? <><Spinner className="w-4 h-4" /> Saving…</> : 'Save Invoice'}
             </button>

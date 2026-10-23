@@ -56,6 +56,9 @@ const invoiceSchema = new mongoose.Schema(
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: true },
     deal: { type: mongoose.Schema.Types.ObjectId, ref: 'Deal', index: true },
     items: [lineSchema],
+    // Admin's agreed batch amount, before invoice discount and tax. Line totals
+    // allocate this exact amount; unitCost remains the original buying-cost snapshot.
+    bulkSellingTotal: { type: Number, min: 0 },
     subtotal: { type: Number, required: true, min: 0 },
     discount: { type: Number, default: 0, min: 0 },
     taxRate: { type: Number, default: 0, min: 0 },
