@@ -234,7 +234,8 @@ export const EXPORTERS = {
       const filter = dateRange(from, to, 'date') || {};
       if (status !== 'all') filter.status = status;
       if (category) filter.category = category;
-      if (account) filter.account = account;
+      if (account === 'other') filter.paymentSource = 'other';
+      else if (account) filter.account = account;
       const rows = await Expense.find(filter).populate('account', 'name').populate('createdBy', 'name').sort('-date').lean();
       return {
         sheetName: 'Expenses',
@@ -243,7 +244,7 @@ export const EXPORTERS = {
           { header: 'Date', type: 'date', key: 'date' },
           { header: 'Category', key: 'category' },
           { header: 'Description', key: 'description', width: 34 },
-          { header: 'Account', value: (r) => r.account?.name || '' },
+          { header: 'Account', value: (r) => r.paymentSource === 'other' ? 'Other' : r.account?.name || '' },
           { header: 'Reference', key: 'reference' },
           { header: 'Status', key: 'status' },
           { header: 'Recorded By', value: (r) => r.createdBy?.name || '' },

@@ -72,6 +72,7 @@ export default function Expenses() {
   });
   const defaultCurrency = useCurrency();
   const selectedAccount = (accounts || []).find((a) => a._id === form.account);
+  const isOther = form.account === 'other';
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -86,7 +87,10 @@ export default function Expenses() {
   async function save() {
     setSaving(true);
     try {
-      await api.post('/expenses', { ...form, amount: Number(form.amount), dealId: form.dealId || undefined });
+      await api.post('/expenses', {
+        ...form, amount: Number(form.amount), dealId: form.dealId || undefined,
+        ...(isOther ? { account: undefined, paymentSource: 'other' } : {}),
+      });
       toast.success('Expense recorded');
       setForm(emptyForm());
       setShowAdd(false);
@@ -137,7 +141,7 @@ export default function Expenses() {
     setVoiding(true);
     try {
       await api.post(`/expenses/${detail._id}/void`, { reason: voidReason || undefined });
-      toast.success('Expense voided and reversed');
+      toast.success(detail.paymentSource === 'other' ? 'Expense voided' : 'Expense voided and reversed');
       setDetail(null);
       setVoidReason('');
       refresh();
@@ -148,14 +152,14 @@ export default function Expenses() {
     }
   }
 
-  const canSave = form.category && form.account && Number(form.amount) > 0 && form.date;
+  const canSave = form.category && form.account && Number(form.amount) > 0 && form.date && (!isOther || (has('admin') && form.reference.trim()));
   const filtered = from || to || category || account || status !== 'posted';
 
   return (
     <div>
       <PageHeader
         title="Expenses"
-        subtitle="Business expenses, paid from your financial accounts"
+        subtitle="Business expenses and their payment sources"
         icon={<svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16v16H4zM8 9h8M8 13h8M8 17h4" /></svg>}
         actions={
           <button className="btn-primary" onClick={() => { setForm(emptyForm()); setShowAdd(true); }}>
@@ -186,6 +190,7 @@ export default function Expenses() {
             <label htmlFor="expenses-account-14" className="label">Account</label>
             <select id="expenses-account-14" className="select" value={account} onChange={(e) => setAccount(e.target.value)}>
               <option value="">All accounts</option>
+              <option value="other">Other</option>
               {(accounts || []).map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
             </select>
           </div>
@@ -234,7 +239,7 @@ export default function Expenses() {
             { key: 'date', label: 'Date', render: (e) => <span className="text-ink-500 whitespace-nowrap">{fmtDate(e.date)}</span> },
             { key: 'category', label: 'Category', render: (e) => <span className="font-medium text-ink-900">{e.category}</span> },
             { key: 'description', label: 'Description', render: (e) => e.description || <span className="text-ink-300">—</span> },
-            { key: 'account', label: 'Account', render: (e) => e.account?.name || <span className="text-ink-300">—</span> },
+            { key: 'account', label: 'Account', render: (e) => e.paymentSource === 'other' ? 'Other' : e.account?.name || <span className="text-ink-300">—</span> },
             { key: 'reference', label: 'Reference', render: (e) => e.reference ? <span className="font-mono text-[12px] text-ink-500">{e.reference}</span> : <span className="text-ink-300">—</span> },
             { key: 'status', label: '', render: (e) => (e.status === 'voided' ? <Badge tone="danger" dot>voided</Badge> : null) },
             {
@@ -253,7 +258,7 @@ export default function Expenses() {
       </div>
 
       {/* Add expense */}
-      <Modal open={showAdd} onClose={() => setShowAdd(false)} title="Add Expense" subtitle="Money leaves the selected account immediately">
+      <Modal open={showAdd} onClose={() => setShowAdd(false)} title="Add Expense" subtitle={isOther ? 'Paid outside your listed accounts. No account balance will change.' : 'Money leaves the selected account immediately'}>
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -261,7 +266,7 @@ export default function Expenses() {
               <input id="expenses-date-16" className="input" type="date" value={form.date} onChange={(e) => set('date', e.target.value)} />
             </div>
             <div>
-              <label htmlFor="expenses-amount-17" className="label">Amount ({selectedAccount?.currency || 'Select account'}) <span className="text-red-500">*</span></label>
+              <label htmlFor="expenses-amount-17" className="label">Amount ({isOther ? 'PKR' : selectedAccount?.currency || 'Select account'}) <span className="text-red-500">*</span></label>
               <input id="expenses-amount-17" className="input num input-money" type="number" step="0.01" min="0" value={form.amount} onChange={(e) => set('amount', e.target.value)} placeholder="Enter amount" />
             </div>
           </div>
@@ -278,6 +283,7 @@ export default function Expenses() {
               <select id="expenses-payment-account-19" className="select" value={form.account} onChange={(e) => set('account', e.target.value)}>
                 <option value="">— select account —</option>
                 {(accounts || []).map((a) => <option key={a._id} value={a._id}>{a.name} · {a.currency || 'PKR'}</option>)}
+                {has('admin') && <option value="other">Other</option>}
               </select>
             </div>
           </div>
@@ -287,8 +293,9 @@ export default function Expenses() {
           </div>
           <DealSelector value={form.dealId} onChange={(value) => set('dealId', value)} id="expenses-deal" />
           <div>
-            <label htmlFor="expenses-reference-21" className="label">Reference</label>
-            <input id="expenses-reference-21" className="input font-mono" value={form.reference} onChange={(e) => set('reference', e.target.value)} placeholder="Bill / receipt / voucher number (optional)" />
+            <label htmlFor="expenses-reference-21" className="label">Reference {isOther && <span className="text-red-500">*</span>}</label>
+            <input id="expenses-reference-21" className="input font-mono" required={isOther} aria-describedby={isOther ? 'expenses-other-reference-help' : undefined} value={form.reference} onChange={(e) => set('reference', e.target.value)} placeholder={isOther ? 'e.g. Paid through Haroon’s personal account' : 'Bill / receipt / voucher number (optional)'} />
+            {isOther && <p id="expenses-other-reference-help" className="text-xs text-ink-500 mt-1">Enter who paid or which payment medium was used.</p>}
           </div>
           <div>
             <label htmlFor="expenses-notes-22" className="label">Notes</label>
@@ -344,7 +351,7 @@ export default function Expenses() {
           <div className="space-y-3 text-sm">
             <div className="grid grid-cols-2 gap-3">
               <div><div className="section-title">Date</div><div className="mt-1 text-ink-800">{fmtDate(detail.date)}</div></div>
-              <div><div className="section-title">Account</div><div className="mt-1 text-ink-800">{detail.account?.name || '—'}</div></div>
+              <div><div className="section-title">Account</div><div className="mt-1 text-ink-800">{detail.paymentSource === 'other' ? 'Other' : detail.account?.name || '—'}</div></div>
               <div><div className="section-title">Reference</div><div className="mt-1 text-ink-800 font-mono text-[12px]">{detail.reference || '—'}</div></div>
               <div><div className="section-title">Recorded by</div><div className="mt-1 text-ink-800">{detail.createdBy?.name || '—'}</div></div>
             </div>
@@ -361,14 +368,14 @@ export default function Expenses() {
                   <Badge tone="danger" dot>voided</Badge>
                 </div>
                 <p className="text-xs text-red-700 mt-1.5">
-                  A reversing entry returned {money(detail.amount, detail.currency || detail.account?.currency || 'PKR')} to {detail.account?.name}.
+                  {detail.paymentSource === 'other' ? 'This expense was voided without changing any listed account balance.' : <>A reversing entry returned {money(detail.amount, detail.currency || detail.account?.currency || 'PKR')} to {detail.account?.name}.</>}
                   {detail.voidReason ? ` Reason: ${detail.voidReason}` : ''}
                 </p>
               </div>
             ) : (
               <div className="rounded-lg bg-ink-25 border border-ink-100 p-3">
                 <p className="text-xs text-ink-500">
-                  Amount, account and date cannot be edited once posted — the money has already left the account.
+                  Amount, payment source and date cannot be edited once posted.
                   {has('admin')
                     ? ' Void this expense and record a corrected one instead.'
                     : ' Ask an administrator to void it if it was recorded in error.'}
@@ -380,7 +387,7 @@ export default function Expenses() {
                     <label className="label mt-3">Void reason</label>
                     <input className="input" value={voidReason} onChange={(e) => setVoidReason(e.target.value)} placeholder="Optional" />
                     <button className="btn-secondary w-full mt-3 text-red-600 border-red-200 hover:bg-red-50" onClick={() => setConfirmVoid(true)} disabled={voiding}>
-                      {voiding ? <><Spinner className="w-4 h-4" /> Voiding…</> : 'Void & reverse this expense'}
+                      {voiding ? <><Spinner className="w-4 h-4" /> Voiding…</> : detail.paymentSource === 'other' ? 'Void this expense' : 'Void & reverse this expense'}
                     </button>
                   </>
                 )}
@@ -394,14 +401,14 @@ export default function Expenses() {
         onClose={() => setConfirmVoid(false)}
         onConfirm={async (reason) => { setVoidReason(reason); await voidExpense(); }}
         title="Void this expense?"
-        description="Nothing is deleted. The expense stays on record marked voided, and a reversing entry puts the money back."
+        description={detail?.paymentSource === 'other' ? 'The expense stays on record marked voided. No listed account balance changes.' : 'Nothing is deleted. The expense stays on record marked voided, and a reversing entry puts the money back.'}
         consequences={detail ? [
-          `${money(detail.amount, detail.currency || detail.account?.currency || 'PKR')} returns to ${detail.account?.name || 'the paying account'}`,
+          detail.paymentSource === 'other' ? 'No money is credited to a listed account' : `${money(detail.amount, detail.currency || detail.account?.currency || 'PKR')} returns to ${detail.account?.name || 'the paying account'}`,
           `The ${detail.category} expense is marked VOIDED and drops out of expense totals and P&L`,
-          'Both the original and the reversing entry remain in the account ledger',
+          detail.paymentSource === 'other' ? 'The original reference remains on the expense record' : 'Both the original and the reversing entry remain in the account ledger',
           'A voided expense cannot be edited or voided again',
         ] : []}
-        confirmLabel="Void & reverse"
+        confirmLabel={detail?.paymentSource === 'other' ? 'Void expense' : 'Void & reverse'}
         reasonRequired
         reasonLabel="Why is this being voided?"
         reasonPlaceholder="e.g. Duplicate entry"
