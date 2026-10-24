@@ -16,7 +16,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 let root, container, client;
 const products = [{ _id: 'a', name: 'Laptop A', sku: 'A', purchasePrice: 100 }, { _id: 'b', name: 'Laptop B', sku: 'B', purchasePrice: 250 }];
 const po = {
-  _id: 'po1', number: 'PO-1', supplier: { _id: 's1', name: 'Supplier A' }, currency: 'PKR',
+  _id: 'po1', __v: 0, number: 'PO-1', supplier: { _id: 's1', name: 'Supplier A' }, currency: 'PKR',
   items: [{ product: 'a', name: 'Laptop A', sku: 'A', quantity: 2, unitCost: 100, received: 0, bulkAllocatedTotal: 60 }, { product: 'b', name: 'Laptop B', sku: 'B', quantity: 1, unitCost: 250, received: 0, bulkAllocatedTotal: 30 }],
   bulkPurchaseTotal: 90, paid: 0, status: 'ordered', updatedAt: '2026-10-24T00:00:00.000Z', taxRate: 0,
 };
@@ -186,4 +186,28 @@ it('shows the saved FX amount as historical, without recalculating against the c
   await mount({ ...po, total: 90, subtotal: 90, balance: 90, fxSnapshots: [{ originalAmount: 350, fromCurrency: 'PKR', toCurrency: 'GBP', equivalentAmount: 0.97, rate: 1 / 360, effectiveAt: '2026-10-23T00:00:00Z', source: 'Historical' }] }, 'detail');
   expect(container.textContent).toContain('Historical snapshot: PKR 350.00 = GBP 0.97');
   expect(container.textContent).not.toContain('Refresh displayed equivalent');
+});
+
+
+it('refreshes cached inventory when receiving a PO without changing the ordered item costs', async () => {
+  vi.spyOn(api, 'post').mockResolvedValue({ data: po });
+  vi.spyOn(api, 'get').mockResolvedValue({ data: po });
+  await mount({ ...po, total: 90, balance: 90 }, 'detail');
+  for (const key of ['products', 'products-pos', 'products-po', 'product', 'dashboard']) client.setQueryData([key, 'cached'], { stock: 0 });
+  await change(container.querySelector('#recv-0'), '1');
+  await click('Receive Selected');
+  for (const key of ['products', 'products-pos', 'products-po', 'product', 'dashboard']) expect(client.getQueryState([key, 'cached']).isInvalidated, key).toBe(true);
+  expect(api.post).toHaveBeenCalledWith('/purchase-orders/po1/receive', { receipts: [{ product: 'a', quantity: 1 }], expectedUpdatedAt: po.updatedAt, expectedVersion: po.__v });
+});
+
+
+it('refreshes stock after an uncertain receipt error without posting the receipt twice', async () => {
+  const post = vi.spyOn(api, 'post').mockRejectedValue(new Error('Lost receipt response'));
+  vi.spyOn(api, 'get').mockResolvedValue({ data: po });
+  await mount({ ...po, total: 90, balance: 90 }, 'detail');
+  client.setQueryData(['products', 'cached'], { stock: 0 });
+  await change(container.querySelector('#recv-0'), '1');
+  await click('Receive Selected');
+  expect(post).toHaveBeenCalledTimes(1);
+  expect(client.getQueryState(['products', 'cached']).isInvalidated).toBe(true);
 });

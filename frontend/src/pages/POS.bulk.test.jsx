@@ -285,3 +285,23 @@ describe('Admin selecting stock for the cart', () => {
     expect(api.post).not.toHaveBeenCalled();
   });
 });
+
+
+it('marks cached inventory and financial summaries stale after a successful sale', async () => {
+  await mount(); await chooseCustomer();
+  const cached = ['products', 'products-po', 'product-models', 'dashboard', 'invoices', 'receivables', 'finance-position', 'accounts-summary'];
+  for (const key of cached) client.setQueryData([key, 'cached'], { stock: 500 });
+  await save();
+  for (const key of cached) expect(client.getQueryState([key, 'cached']).isInvalidated, key).toBe(true);
+});
+
+
+it('refreshes uncertain save state without automatically resubmitting the sale', async () => {
+  await mount(); await chooseCustomer();
+  client.setQueryData(['products', 'cached'], { stock: 500 });
+  api.post.mockRejectedValueOnce(new Error('Connection lost after submission'));
+  await save();
+  expect(api.post).toHaveBeenCalledTimes(1);
+  expect(client.getQueryState(['products', 'cached']).isInvalidated).toBe(true);
+  expect([...container.querySelectorAll('button')].find(button => button.textContent.startsWith('Save Invoice ·')).disabled).toBe(false);
+});

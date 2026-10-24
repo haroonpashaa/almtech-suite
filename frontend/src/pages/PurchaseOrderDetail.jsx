@@ -1,3 +1,4 @@
+import { invalidateInventory } from '../lib/invalidateInventory.js';
 import { useState } from 'react';
 import { useSubmit } from '../hooks/useSubmit.js';
 import { Link, useParams } from 'react-router-dom';
@@ -47,13 +48,17 @@ export default function PurchaseOrderDetail() {
       .filter((r) => r.quantity > 0);
     if (!list.length) return toast.error('Enter quantities to receive');
     try {
-      await api.post(`/purchase-orders/${id}/receive`, { receipts: list });
+      await api.post(`/purchase-orders/${id}/receive`, { receipts: list, expectedUpdatedAt: po.updatedAt, expectedVersion: po.__v });
+      invalidateInventory(qc);
       toast.success('Stock received');
       setReceipts({});
       qc.invalidateQueries({ queryKey: ['po', id] });
       qc.invalidateQueries({ queryKey: ['accounts-summary'] });
       qc.invalidateQueries({ queryKey: ['dashboard'] });
     } catch (e) {
+      // Refresh after conflicts or lost responses; never replay a receipt automatically.
+      qc.invalidateQueries({ queryKey: ['po', id] });
+      invalidateInventory(qc);
       toast.error(errorMessage(e));
     }
   }

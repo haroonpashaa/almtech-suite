@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
 import Invoice from '../models/Invoice.js';
 import Activity from '../models/Activity.js';
+import StockMovement from '../models/StockMovement.js';
 import Settings from '../models/Settings.js';
 import Account from '../models/Account.js';
 import FinancialTransaction from '../models/FinancialTransaction.js';
@@ -209,6 +210,8 @@ describe('createInvoice cart editing (DB-backed)', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
+    await StockMovement.deleteMany({});
     await Invoice.deleteMany({});
     await Product.deleteMany({});
     await Customer.deleteMany({});
@@ -332,6 +335,57 @@ describe('createInvoice cart editing (DB-backed)', () => {
     expect(stored.sellingPrice).toBe(900); // unchanged
   });
 
+  it('rolls back stock, invoice and all movements when a later sale line fails', async () => {
+    const customer = await makeCustomer();
+    const first = await makeProduct({ sku: 'FAIL-A', stock: 3 });
+    const second = await makeProduct({ sku: 'FAIL-B', stock: 3 });
+    const create = StockMovement.create.bind(StockMovement);
+    let calls = 0;
+    vi.spyOn(StockMovement, 'create').mockImplementation((...args) => {
+      if (++calls === 2) throw new Error('Injected isolated movement failure');
+      return create(...args);
+    });
+    await expect(callCreateInvoice({ customer: customer._id, items: [{ product: first._id, quantity: 1, unitPrice: 900 }, { product: second._id, quantity: 1, unitPrice: 900 }] })).rejects.toThrow('Injected isolated movement failure');
+    expect((await Product.findById(first._id)).stock).toBe(3);
+    expect((await Product.findById(second._id)).stock).toBe(3);
+    expect((await Customer.findById(customer._id)).balance).toBe(0);
+    expect(await Invoice.countDocuments()).toBe(0);
+    expect(await StockMovement.countDocuments()).toBe(0);
+  });
+
+  it('restores only this invoice serial claim when the serial write acknowledgement fails', async () => {
+    const customer = await makeCustomer();
+    const product = await makeProduct({ tracksSerials: true, stock: 2, serials: [{ serial: 'SN-A', status: 'in_stock' }, { serial: 'SN-B', status: 'in_stock' }] });
+    const update = Product.updateOne.bind(Product);
+    let calls = 0;
+    vi.spyOn(Product, 'updateOne').mockImplementation(async (...args) => {
+      const result = await update(...args);
+      if (++calls === 1) throw new Error('Injected lost serial acknowledgement');
+      return result;
+    });
+    await expect(callCreateInvoice({ customer: customer._id, items: [{ product: product._id, quantity: 1, unitPrice: 900, serials: ['SN-A'] }] })).rejects.toThrow('Injected lost serial acknowledgement');
+    const saved = await Product.findById(product._id);
+    expect(saved.stock).toBe(2);
+    expect(saved.serials.every(serial => serial.status === 'in_stock' && !serial.soldInvoice)).toBe(true);
+    expect(await Invoice.countDocuments()).toBe(0);
+    expect(await StockMovement.countDocuments()).toBe(0);
+  });
+
+  it('clearly reports a saved invoice when its separate initial payment fails', async () => {
+    const customer = await makeCustomer(); const product = await makeProduct();
+    const account = await Account.create({ name: 'Cash', type: 'cash', openingBalance: 1000, currentBalance: 1000 });
+    vi.spyOn(FinancialTransaction, 'create').mockRejectedValueOnce(new Error('Injected payment failure'));
+    const res = mockRes();
+    await expect(createInvoice(req({ customer: customer._id, items: [{ product: product._id, quantity: 1, unitPrice: 900 }], initialPayment: { amount: 100, account: account._id, idempotencyKey: 'isolated-initial-payment' } }), res)).rejects.toThrow(/was created and stock was deducted.*Do not submit the sale again/);
+    expect(res.statusCode).toBe(502);
+    expect(await Invoice.countDocuments()).toBe(1);
+    expect((await Invoice.findOne()).paid).toBe(0);
+    expect((await Product.findById(product._id)).stock).toBe(4);
+    expect((await Customer.findById(customer._id)).balance).toBe(900);
+    expect((await Account.findById(account._id)).currentBalance).toBe(1000);
+    expect(await FinancialTransaction.countDocuments()).toBe(0);
+  });
+
   it('deducts exactly the edited quantity from stock', async () => {
     const customer = await makeCustomer();
     const product = await makeProduct({ stock: 5 });
@@ -443,6 +497,8 @@ describe('invoice correction actions (DB-backed)', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
+    await StockMovement.deleteMany({});
     await Invoice.deleteMany({});
     await Product.deleteMany({});
     await Customer.deleteMany({});
