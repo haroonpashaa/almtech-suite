@@ -340,6 +340,8 @@ export async function commitInvoiceEffects({ session, invoiceFields, customerId,
       committed.push({ product: it.product, quantity: it.quantity, serials: [] });
 
       if (it.serials?.length && claimed.tracksSerials) {
+        // Capture before the write: a lost acknowledgement can still mean it applied.
+        committed[committed.length - 1].serials = it.serials;
         await Product.updateOne(
           { _id: it.product },
           { $set: { 'serials.$[s].status': 'sold', 'serials.$[s].soldInvoice': created._id } },
@@ -359,7 +361,6 @@ export async function commitInvoiceEffects({ session, invoiceFields, customerId,
           err.statusCode = 409;
           throw err;
         }
-        committed[committed.length - 1].serials = it.serials;
       }
 
       await StockMovement.create(
@@ -420,10 +421,11 @@ export async function commitInvoiceEffects({ session, invoiceFields, customerId,
           await Product.updateOne(
             { _id: c.product },
             { $set: { 'serials.$[s].status': 'in_stock' }, $unset: { 'serials.$[s].soldInvoice': '' } },
-            { arrayFilters: [{ 's.serial': { $in: c.serials } }] }
+            { arrayFilters: [{ 's.serial': { $in: c.serials }, 's.soldInvoice': created._id }] }
           );
         }
       }
+      await StockMovement.deleteMany({ refType: 'Invoice', refId: created._id, type: 'sale' });
       await Invoice.deleteOne({ _id: created._id });
     }
     throw e;
@@ -585,11 +587,10 @@ export const createInvoice = asyncHandler(async (req, res) => {
       // The invoice and its stock movements are already committed at this point.
       // Rather than unwind a completed sale, leave it recorded as unpaid and say so —
       // the payment can be retried from the invoice screen without re-selling stock.
-      rethrowDuplicatePosting(e, res);
       res.status(502);
       throw new Error(
-        `Invoice ${invoice.number} was created but the initial payment could not be posted ` +
-          `(${e.message}). The invoice is saved as unpaid — record the payment from the invoice screen.`
+        `Invoice ${invoice.number} was created and stock was deducted, but the initial payment could not be posted. ` +
+          'The invoice is saved as unpaid — open the existing invoice to record payment. Do not submit the sale again.'
       );
     }
   }

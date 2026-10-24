@@ -1,7 +1,8 @@
+import { invalidateSale } from '../lib/invalidateInventory.js';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSubmit } from '../hooks/useSubmit.js';
 import { useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { api } from '../api/client.js';
 import { newIdempotencyKey } from '../lib/idempotency.js';
@@ -28,6 +29,7 @@ import {
 } from '../lib/posProductSelection.js';
 
 export default function POS() {
+  const qc = useQueryClient();
   const navigate = useNavigate();
   const auth = useAuth();
   const canSetBulkPrice = !!auth?.has('admin');
@@ -260,10 +262,13 @@ export default function POS() {
             : undefined,
       };
       const r = await api.post('/invoices', payload);
+      invalidateSale(qc);
       toast.success(`Invoice ${r.data.number} created`);
       setPayKey(newIdempotencyKey());
       navigate(`/invoices/${r.data._id}`);
     } catch (e) {
+      // A timeout or failed initial payment may follow a committed invoice.
+      invalidateSale(qc);
       toast.error(errorMessage(e));
     } finally {
       setSaving(false);

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import Supplier from '../models/Supplier.js';
 import Product from '../models/Product.js';
 import Account from '../models/Account.js';
@@ -25,7 +25,7 @@ describe('Purchase Order editing (DB-backed)', () => {
       const time = Math.floor(Date.now() / 1000);
       return { ok: true, json: async () => ({ result: 'success', base_code: base, conversion_rates: base === 'GBP' ? { GBP: 1, PKR: 360 } : { GBP: 1 / 360, PKR: 1 }, time_last_update_unix: time - 60, time_next_update_unix: time + 86400 }) };
     });
-    mem = await MongoMemoryServer.create();
+    mem = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
     await mongoose.connect(mem.getUri());
   });
 
@@ -92,7 +92,7 @@ describe('Purchase Order editing (DB-backed)', () => {
   }
   async function callReceive(po, receipts) {
     const res = mockRes();
-    await receiveItems(req({ params: { id: po._id.toString() }, body: { receipts } }), res);
+    await receiveItems(req({ params: { id: po._id.toString() }, body: { receipts, expectedUpdatedAt: (await PurchaseOrder.findById(po._id)).updatedAt.toISOString(), expectedVersion: (await PurchaseOrder.findById(po._id)).__v } }), res);
     return res.body;
   }
 
@@ -718,7 +718,7 @@ describe('Purchase order notes visibility (DB-backed)', () => {
       const time = Math.floor(Date.now() / 1000);
       return { ok: true, json: async () => ({ result: 'success', base_code: base, conversion_rates: base === 'GBP' ? { GBP: 1, PKR: 360 } : { GBP: 1 / 360, PKR: 1 }, time_last_update_unix: time - 60, time_next_update_unix: time + 86400 }) };
     });
-    mem = await MongoMemoryServer.create();
+    mem = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
     await mongoose.connect(mem.getUri());
   });
 

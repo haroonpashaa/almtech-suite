@@ -7,7 +7,7 @@ import Supplier from '../models/Supplier.js';
 import StockMovement from '../models/StockMovement.js';
 import { nextNumber } from '../utils/numbering.js';
 import { logActivity } from '../utils/activity.js';
-import { claimPartyBalanceForPayment, postPaymentAtomically, resolveAccount, rethrowDuplicatePosting, runAtomically } from '../utils/ledger.js';
+import { claimPartyBalanceForPayment, postPaymentAtomically, resolveAccount, rethrowDuplicatePosting, runAtomically, transactionsSupported } from '../utils/ledger.js';
 import { resolvePayment, requireReason, assertReversible, postReversal } from '../services/paymentReversal.js';
 import { resolvePaging, runPaged } from '../utils/pagination.js';
 import { requirePositiveWholeQuantity } from '../utils/quantity.js';
@@ -478,13 +478,23 @@ export const updatePO = asyncHandler(async (req, res) => {
   res.json(await PurchaseOrder.findById(po._id).populate('supplier').populate('createdBy', 'name'));
 });
 
-export const receiveItems = asyncHandler(async (req, res) => {
+async function receiveStockInTransaction(req, res, session) {
   const { receipts } = req.body;
-  const po = await PurchaseOrder.findById(req.params.id);
+  if (!Array.isArray(receipts) || !receipts.length) { res.status(400); throw new Error('At least one receipt is required'); }
+  const po = await PurchaseOrder.findById(req.params.id).session(session);
   if (!po) {
     res.status(404);
     throw new Error('Purchase order not found');
   }
+  if (!req.body.expectedUpdatedAt || !Number.isSafeInteger(req.body.expectedVersion) || req.body.expectedVersion < 0) {
+    res.status(400); throw new Error('Reload the purchase order before receiving stock (expectedUpdatedAt and expectedVersion are required)');
+  }
+  const expected = new Date(req.body.expectedUpdatedAt);
+  if (Number.isNaN(expected.getTime())) { res.status(400); throw new Error('Invalid expectedUpdatedAt'); }
+  if (expected.getTime() !== po.updatedAt.getTime() || req.body.expectedVersion !== (po.__v || 0)) {
+    res.status(409); throw new Error('This purchase order changed since it was loaded. Refresh and check received quantities before retrying.');
+  }
+  if (['draft', 'cancelled'].includes(po.status)) { res.status(409); throw new Error('Draft or cancelled purchase orders cannot be received'); }
   if ((po.currency || 'PKR') !== 'PKR') {
     res.status(400);
     throw new Error('Receiving GBP purchase orders is disabled until inventory cost records support currency-specific costs. The PO and its GBP payable remain available for historical review; new postings are PKR-only.');
@@ -497,8 +507,15 @@ export const receiveItems = asyncHandler(async (req, res) => {
   // passed straight through and left the product with fractional stock.
   for (const r of receipts) {
     const line = po.items.find((l) => l.product.toString() === r.product);
-    if (!line) continue;
+    if (!line) { res.status(400); throw new Error('Receipt product does not belong to this purchase order'); }
     requirePositiveWholeQuantity(r.quantity, line.name);
+  }
+
+  const receivingIds = po.items.filter(line => receipts.some(receipt => receipt.product === String(line.product))).map(line => line.product);
+  const existing = await Product.find({ _id: { $in: receivingIds } }).select('_id').session(session);
+  const existingIds = new Set(existing.map(product => String(product._id)));
+  if (receivingIds.some(id => !existingIds.has(String(id)))) {
+    res.status(400); throw new Error('A product on this purchase order no longer exists; no stock was received');
   }
 
   // Serial numbers identify one physical unit and must be globally unique across
@@ -511,7 +528,7 @@ export const receiveItems = asyncHandler(async (req, res) => {
   const incomingSerials = receipts.flatMap((r) => (Array.isArray(r.serials) ? r.serials.map((sn) => ({ serial: sn, product: r.product })) : []));
   if (incomingSerials.length) {
     const uniqueSerials = [...new Set(incomingSerials.map((s) => s.serial))];
-    const owners = await Product.find({ 'serials.serial': { $in: uniqueSerials } }).select('sku name serials.serial');
+    const owners = await Product.find({ 'serials.serial': { $in: uniqueSerials } }).select('sku name serials.serial').session(session);
     const ownerBySerial = new Map();
     for (const p of owners) {
       for (const s of p.serials) {
@@ -533,6 +550,9 @@ export const receiveItems = asyncHandler(async (req, res) => {
       claimedInBatchBy.set(serial, product);
     }
   }
+
+  // A monotonic receipt version also rejects retries within the same millisecond.
+  await PurchaseOrder.updateOne({ _id: po._id }, { $inc: { __v: 1 } }, { session });
 
   for (const r of receipts) {
     const line = po.items.find((l) => l.product.toString() === r.product);
@@ -566,7 +586,7 @@ export const receiveItems = asyncHandler(async (req, res) => {
         },
       },
       { $inc: { 'items.$[line].received': incoming } },
-      { arrayFilters: [{ 'line.product': line.product }], returnDocument: 'before' }
+      { arrayFilters: [{ 'line.product': line.product }], returnDocument: 'before', session }
     );
     if (!claimed) continue;   // another request took the remainder — do nothing at all
 
@@ -578,7 +598,7 @@ export const receiveItems = asyncHandler(async (req, res) => {
     const movedProduct = await Product.findOneAndUpdate(
       { _id: line.product },
       { $inc: { stock: incoming }, $set: { purchasePrice: line.unitCost } },
-      { returnDocument: 'after' }
+      { returnDocument: 'after', session }
     );
     if (movedProduct) {
       if (movedProduct.tracksSerials && r.serials?.length) {
@@ -586,12 +606,13 @@ export const receiveItems = asyncHandler(async (req, res) => {
         if (fresh.length) {
           await Product.updateOne(
             { _id: line.product },
-            { $push: { serials: { $each: fresh.map((sn) => ({ serial: sn, status: 'in_stock' })) } } }
+            { $push: { serials: { $each: fresh.map((sn) => ({ serial: sn, status: 'in_stock' })) } } },
+            { session }
           );
         }
       }
       // Exactly one movement per successful claim, for exactly the claimed amount.
-      await StockMovement.create({
+      await StockMovement.create([{
         product: movedProduct._id,
         type: 'purchase',
         quantity: incoming,
@@ -600,23 +621,34 @@ export const receiveItems = asyncHandler(async (req, res) => {
         refId: po._id,
         refNumber: po.number,
         createdBy: req.user._id,
-      });
+      }], { session });
     }
   }
   // Status is derived from what the DATABASE now holds, not from this request's
   // in-memory copy, and only the status field is written. Saving the whole document
   // would push a stale `items` array back over a concurrent request's claim — which
   // is precisely the lost update the arrayFilter above exists to prevent.
-  const fresh = await PurchaseOrder.findById(po._id);
+  const fresh = await PurchaseOrder.findById(po._id).session(session);
   const allReceived = fresh.items.every((l) => l.received >= l.quantity);
   const anyReceived = fresh.items.some((l) => l.received > 0);
   const status = allReceived ? 'received' : anyReceived ? 'partial' : fresh.status;
   if (status !== fresh.status) {
-    await PurchaseOrder.updateOne({ _id: po._id }, { $set: { status } });
+    await PurchaseOrder.updateOne({ _id: po._id }, { $set: { status } }, { session });
     fresh.status = status;
   }
-  await logActivity(req, 'po_received', { entity: 'PurchaseOrder', entityId: po._id });
-  res.json(fresh);
+  return fresh;
+}
+
+export const receiveItems = asyncHandler(async (req, res) => {
+  // Receiving changes several records. Fail closed rather than partially receiving
+  // a PO on a standalone database; the existing deal/finance flows use this rule.
+  if (!(await transactionsSupported())) {
+    res.status(503);
+    throw new Error('Purchase receiving requires MongoDB transaction support; no stock or order records were changed.');
+  }
+  const result = await runAtomically(session => receiveStockInTransaction(req, res, session));
+  await logActivity(req, 'po_received', { entity: 'PurchaseOrder', entityId: result._id });
+  res.json(result);
 });
 
 export const recordSupplierPayment = asyncHandler(async (req, res) => {

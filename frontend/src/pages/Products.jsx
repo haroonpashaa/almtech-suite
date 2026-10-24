@@ -1,3 +1,4 @@
+import { invalidateInventory } from '../lib/invalidateInventory.js';
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
@@ -48,7 +49,7 @@ export default function Products() {
       await api.post(`/products/${adjusting._id}/adjust`, { quantity, note });
       toast.success(`${adjusting.name}: stock ${quantity > 0 ? 'increased' : 'reduced'} by ${Math.abs(quantity)}`);
       setAdjusting(null);
-      qc.invalidateQueries({ queryKey: ['products'] });
+      invalidateInventory(qc);
     } catch (e) {
       toast.error(errorMessage(e));
     } finally {

@@ -1,3 +1,4 @@
+import { invalidateInventory } from '../lib/invalidateInventory.js';
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -82,6 +83,7 @@ export default function InvoiceDetail() {
   async function doReturn(reason) {
     try {
       await api.post(`/invoices/${id}/return`, { reason });
+      invalidateInventory(qc);
       toast.success('Invoice returned and payments refunded');
       qc.invalidateQueries({ queryKey: ['invoice', id] });
       ['accounts-summary', 'dashboard', 'receivables', 'finance-position', 'payment-history', 'deal'].forEach((k) =>
