@@ -644,7 +644,7 @@ export default function POS() {
                   <label htmlFor="pos-deposit-to-32" className="label">Deposit To <span className="text-red-500">*</span></label>
                   <select id="pos-deposit-to-32" className="select" value={paymentAccount} onChange={(e) => setPaymentAccount(e.target.value)}>
                     <option value="">— select account —</option>
-                    {(accounts || []).map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
+                    {(accounts || []).filter(a => (a.currency || 'PKR') === 'PKR').map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
                   </select>
                 </div>
               )}

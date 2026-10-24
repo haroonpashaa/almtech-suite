@@ -1,3 +1,4 @@
+import { requireSupportedCurrency } from '../utils/currencyPolicy.js';
 import asyncHandler from 'express-async-handler';
 import mongoose from 'mongoose';
 import PartyEntry, { PartyEntryEvent } from '../models/PartyEntry.js';
@@ -55,6 +56,7 @@ async function operate(req, res, action) {
       const before = snapshot(entry);
       const currency = entry?.currency || req.body.currency || 'PKR';
       if (!['PKR', 'GBP'].includes(currency) || (entityType === 'customer' && currency !== 'PKR')) fail(400, 'Customers support PKR; supplier entries support PKR or GBP');
+      if (!['voided', 'payment_reversed'].includes(action)) requireSupportedCurrency(currency);
       const field = entityType === 'customer' ? 'balance' : currency === 'GBP' ? 'payableGBP' : 'payable';
       let transaction, eventDate = new Date();
       if (action === 'created' || action === 'corrected') {

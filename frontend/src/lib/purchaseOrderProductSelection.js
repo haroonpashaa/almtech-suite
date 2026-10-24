@@ -7,6 +7,8 @@ function lineFromProduct(product) {
     product: productId(product),
     name: product.name,
     sku: product.sku,
+    model: product.model || product.name,
+    displaySerials: (product.serials || []).map(item => item.serial).filter(Boolean),
     unitCost: product.purchasePrice || '',
     quantity: 1,
     received: 0,

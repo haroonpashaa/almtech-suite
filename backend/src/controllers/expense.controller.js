@@ -1,3 +1,4 @@
+import { requireSupportedCurrency } from '../utils/currencyPolicy.js';
 import asyncHandler from 'express-async-handler';
 import mongoose from 'mongoose';
 import Expense, { EXPENSE_CATEGORIES } from '../models/Expense.js';
@@ -71,6 +72,7 @@ export const getExpense = asyncHandler(async (req, res) => {
 });
 
 export const createExpense = asyncHandler(async (req, res) => {
+  requireSupportedCurrency(req.body.currency ?? 'PKR');
   const { amount, category, account: accountId, date, description, notes, reference, idempotencyKey, dealId, paymentSource = 'account' } = req.body;
   if (!['account', 'other'].includes(paymentSource)) {
     res.status(400);

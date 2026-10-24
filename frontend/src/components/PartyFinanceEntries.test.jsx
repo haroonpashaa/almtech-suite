@@ -113,3 +113,13 @@ it('keeps Admin editing and non-cash correction controls out of the Sales custom
   expect(container.querySelector('[aria-label="Manage receivable entries"]')).toBeNull();
   expect(button('Correct balance (non-cash)')).toBeUndefined();
 });
+
+
+it('keeps historical GBP entries labelled and disables new amounts and payments', async () => {
+  const post = vi.spyOn(api, 'post');
+  await mount(<PartyFinanceEntries category="payables" partyId="party-1" currency="GBP" entries={[{ ...entry, currency: 'GBP' }]} accounts={accounts} />);
+  expect(container.textContent).toContain('GBP 100.00');
+  for (const text of ['Add payable', 'Edit entry', 'Record payment']) expect(button(text).disabled).toBe(true);
+  expect(button('Void entry').disabled).toBe(false);
+  expect(post).not.toHaveBeenCalled();
+});

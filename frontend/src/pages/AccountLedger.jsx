@@ -120,8 +120,8 @@ export default function AccountLedger() {
     setSaving(true);
     try {
       await api.patch(`/accounts/${id}`, {
-        ...form,
-        openingBalance: Number(form.openingBalance) || 0,
+        ...Object.fromEntries(Object.entries(form).filter(([key]) => key !== 'openingBalance')),
+        ...(currency === 'PKR' ? { openingBalance: Number(form.openingBalance) || 0 } : {}),
       });
       toast.success('Account updated');
       setEditing(false);
@@ -165,8 +165,8 @@ export default function AccountLedger() {
           <>
             <Badge tone={data.reconciled ? 'success' : 'danger'} dot>{data.reconciled ? 'reconciled' : 'balance drift'}</Badge>
             <button className="btn-secondary" onClick={openEdit}>Edit</button>
-            <button className="btn-primary" onClick={() => setAdjustment({ direction: 'in', amount: '', reason: '', idempotencyKey: newIdempotencyKey() })}>Add / deduct</button>
-            <button className="btn-secondary" onClick={() => setTransfer({ destinationAccountId: '', amount: '', reason: '', idempotencyKey: newIdempotencyKey() })}>Transfer</button>
+            <button className="btn-primary" disabled={currency !== 'PKR'} onClick={() => setAdjustment({ direction: 'in', amount: '', reason: '', idempotencyKey: newIdempotencyKey() })}>Add / deduct</button>
+            <button className="btn-secondary" disabled={currency !== 'PKR'} onClick={() => setTransfer({ destinationAccountId: '', amount: '', reason: '', idempotencyKey: newIdempotencyKey() })}>Transfer</button>
             <DocumentActions path={`/accounts/${id}/statement/pdf`} filename={`statement-${data.account?.name || 'account'}`} label="Statement" />
           </>
         }
@@ -285,7 +285,7 @@ export default function AccountLedger() {
               </div>
               <div>
                 <label htmlFor="accountledger-edit-opening" className="label">Opening Balance</label>
-                <input id="accountledger-edit-opening" className="input num input-money" type="number" step="0.01" value={form.openingBalance} onChange={(e) => set('openingBalance', e.target.value)} />
+                <input id="accountledger-edit-opening" className="input num input-money" type="number" step="0.01" disabled={currency !== 'PKR'} value={form.openingBalance} onChange={(e) => set('openingBalance', e.target.value)} />
                 <p className="text-xs text-ink-400 mt-1">Current balance shifts by the same amount — ledger history is untouched.</p>
               </div>
             </div>

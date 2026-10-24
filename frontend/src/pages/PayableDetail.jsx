@@ -18,7 +18,7 @@ const statusTone = { received: 'success', partial: 'warning', ordered: 'info', c
 
 export default function PayableDetail() {
   const { id } = useParams();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const currency = ['GBP', 'PKR'].includes(searchParams.get('currency')) ? searchParams.get('currency') : 'PKR';
   const qc = useQueryClient();
   const [payTarget, setPayTarget] = useState(null);
@@ -44,11 +44,6 @@ export default function PayableDetail() {
   const { data: accounts } = useQuery({
     queryKey: ['accounts'],
     queryFn: async () => (await api.get('/accounts')).data,
-  });
-  const fxQuote = useQuery({
-    enabled: false,
-    queryKey: ['payable-current-fx', currency],
-    queryFn: async () => (await api.get('/finance/exchange-rate', { params: { from: currency, to: currency === 'GBP' ? 'PKR' : 'GBP' } })).data,
   });
 
   function openPay(po) {
@@ -148,12 +143,11 @@ export default function PayableDetail() {
         subtitle={data.supplier.contactPerson ? `Contact: ${data.supplier.contactPerson}` : 'Outstanding purchase orders'}
         actions={
           <>
-            <label className="sr-only" htmlFor="payable-detail-currency">Payable currency</label>
-            <select id="payable-detail-currency" className="select w-auto" value={currency} onChange={(e) => setSearchParams({ currency: e.target.value })}><option value="PKR">PKR payable</option><option value="GBP">GBP payable</option></select>
+            <span className="text-sm text-ink-500">{currency} payable{currency !== 'PKR' ? ' · Historical currency' : ''}</span>
             {data.oldestAgeDays > 0 && <Badge tone={data.oldestAgeDays > 60 ? 'danger' : 'warning'} dot>{data.oldestAgeDays} days old</Badge>}
             {/* This screen is admin-only, so supplier access is guaranteed. */}
             <Link to={`/suppliers/${data.supplier._id}?currency=${currency}`} className="btn-secondary">Supplier profile</Link>
-            <button className="btn-secondary" onClick={openAdjust}>Correct balance (non-cash)</button>
+            <button disabled={currency !== 'PKR'} className="btn-secondary" onClick={openAdjust}>Correct balance (non-cash)</button>
           </>
         }
       />
@@ -180,12 +174,7 @@ export default function PayableDetail() {
             )}
           </div>
         </div>
-        <div className="card p-4 flex flex-wrap items-center gap-3 text-sm">
-          <span className="font-medium text-ink-700">Converted display equivalent</span>
-          <button type="button" className="btn-sm btn-secondary" onClick={() => fxQuote.refetch()} disabled={fxQuote.isFetching}>Refresh rate</button>
-          {fxQuote.data && <span>{money(Math.round(data.outstanding * fxQuote.data.rate * 100) / 100, fxQuote.data.toCurrency)} at {fxQuote.data.rate} · effective {new Date(fxQuote.data.effectiveAt).toLocaleString()} · display only</span>}
-          {fxQuote.isError && <span role="alert" className="text-red-700">Current equivalent unavailable; saved payable amounts and historical snapshots remain unchanged.</span>}
-        </div>
+
 
         <p className="text-xs text-ink-500">Outstanding is recalculated from document balances ({money(data.documentOutstanding || 0, currency)}), opening balances / legacy corrections ({money(data.openingBalance || 0, currency)}) and standalone entries ({money(data.entryTotals?.outstanding || 0, currency)}).</p>
 
@@ -214,7 +203,7 @@ export default function PayableDetail() {
             { key: 'total', label: `Total (${currency})`, className: 'text-right num text-ink-600', render: (r) => <Money value={r.total} currency={currency} /> },
             { key: 'paid', label: `Paid (${currency})`, className: 'text-right num text-emerald-600', render: (r) => <Money value={r.paid} currency={currency} /> },
             { key: 'balance', label: `Balance (${currency})`, className: 'text-right num font-semibold text-amber-600', render: (r) => <Money value={r.balance} currency={currency} /> },
-            { key: 'savedEquivalent', label: 'Saved equivalent', render: (r) => r.fxSnapshot ? <span className="text-xs text-ink-500">{money(Math.round(r.balance * r.fxSnapshot.rate * 100) / 100, r.fxSnapshot.toCurrency)} · {new Date(r.fxSnapshot.effectiveAt).toLocaleString()}</span> : <span className="text-xs text-ink-400">No historical rate</span> },
+            { key: 'savedEquivalent', label: 'Historical snapshot', render: (r) => r.fxSnapshot ? <span className="text-xs text-ink-500">{money(r.fxSnapshot.originalAmount, r.fxSnapshot.fromCurrency)} = {money(r.fxSnapshot.equivalentAmount, r.fxSnapshot.toCurrency)} · {new Date(r.fxSnapshot.effectiveAt).toLocaleString()}</span> : <span className="text-xs text-ink-400">No historical rate</span> },
             {
               key: 'action',
               label: '',
@@ -226,7 +215,7 @@ export default function PayableDetail() {
                       Edit
                     </Link>
                   )}
-                  <button className="btn-sm bg-white border border-ink-200 text-ink-700 hover:bg-ink-50" onClick={() => openPay(r)}>
+                  <button className="btn-sm bg-white border border-ink-200 text-ink-700 hover:bg-ink-50" disabled={currency !== 'PKR'} onClick={() => openPay(r)}>
                     Record payment
                   </button>
                 </div>

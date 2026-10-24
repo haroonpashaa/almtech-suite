@@ -282,7 +282,7 @@ export default function Expenses() {
               <label htmlFor="expenses-payment-account-19" className="label">Payment Account <span className="text-red-500">*</span></label>
               <select id="expenses-payment-account-19" className="select" value={form.account} onChange={(e) => set('account', e.target.value)}>
                 <option value="">— select account —</option>
-                {(accounts || []).map((a) => <option key={a._id} value={a._id}>{a.name} · {a.currency || 'PKR'}</option>)}
+                {(accounts || []).filter(a => (a.currency || 'PKR') === 'PKR').map((a) => <option key={a._id} value={a._id}>{a.name} · {a.currency || 'PKR'}</option>)}
                 {has('admin') && <option value="other">Other</option>}
               </select>
             </div>

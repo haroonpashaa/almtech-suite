@@ -33,11 +33,11 @@ export const updateSettings = asyncHandler(async (req, res) => {
   const settings = await Settings.getSingleton();
   Object.assign(settings, pickWritableSettingsFields(req.body));
   // Customer receivables, invoice costs and several historic reports still have
-  // one PKR balance. GBP is supported on payable/account records only until those
-  // older ledgers gain currency buckets.
+  // one PKR balance. New entries stay PKR-only; historical currency buckets
+  // remain available for accurate reporting.
   if (settings.currency !== 'PKR') {
     res.status(400);
-    throw new Error('Application currency must remain PKR while customer balances and legacy reports use a single currency. GBP is available for supported payable and matching account workflows.');
+    throw new Error('Application currency must remain PKR while customer balances and legacy reports use a single currency. New financial entries support PKR only; historical currencies are preserved.');
   }
   await settings.save();
   await logActivity(req, 'settings_updated');
