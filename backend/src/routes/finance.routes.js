@@ -1,3 +1,4 @@
+import { createPartyEntry, correctPartyEntry, voidPartyEntry, payPartyEntry, reversePartyEntryPayment } from '../controllers/partyEntry.controller.js';
 import { Router } from 'express';
 import { protect, requireRole } from '../middleware/auth.js';
 import {
@@ -33,4 +34,9 @@ r.get('/payables/:id', requireRole('admin'), supplierPayable);
 // Manual balance correction — same admin-only policy as the rest of this router.
 r.post('/payables/:id/adjust', requireRole('admin'), adjustSupplierPayable);
 r.post('/receivables/:id/adjust', requireRole('admin'), adjustCustomerReceivable);
+r.post('/:category/:id/entries', requireRole('admin'), createPartyEntry);
+r.patch('/:category/:id/entries/:entryId', requireRole('admin'), correctPartyEntry);
+r.post('/:category/:id/entries/:entryId/void', requireRole('admin'), voidPartyEntry);
+r.post('/:category/:id/entries/:entryId/payments', requireRole('admin'), payPartyEntry);
+r.post('/:category/:id/entries/:entryId/payments/:paymentId/reverse', requireRole('admin'), reversePartyEntryPayment);
 export default r;

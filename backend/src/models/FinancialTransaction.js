@@ -46,6 +46,7 @@ const financialTransactionSchema = new mongoose.Schema(
     // Source document links — at most one of these is set for a given transaction.
     invoice: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
     purchaseOrder: { type: mongoose.Schema.Types.ObjectId, ref: 'PurchaseOrder' },
+    partyEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'PartyEntry' },
     expense: { type: mongoose.Schema.Types.ObjectId, ref: 'Expense' },
 
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer' },
@@ -81,6 +82,7 @@ financialTransactionSchema.index({ supplier: 1, date: -1 });
 financialTransactionSchema.index({ type: 1, date: -1 });
 financialTransactionSchema.index({ transferGroup: 1 });
 financialTransactionSchema.index({ expense: 1 });
+financialTransactionSchema.index({ partyEntry: 1 });
 financialTransactionSchema.index({ reversalOf: 1 });
 financialTransactionSchema.index(
   { idempotencyKey: 1 },

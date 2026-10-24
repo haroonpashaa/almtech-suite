@@ -1,3 +1,4 @@
+import PartyFinanceEntries from '../components/PartyFinanceEntries.jsx';
 import { useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -78,7 +79,10 @@ export default function PayableDetail() {
         expectedUpdatedAt: data.supplier.updatedAt,
         idempotencyKey: adjustKey,
       });
-      toast.success('Payable updated');
+      toast.success('Non-cash payable correction recorded');
+      qc.invalidateQueries({ queryKey: ['dashboard'] });
+      qc.invalidateQueries({ queryKey: ['supplier'] });
+      qc.invalidateQueries({ queryKey: ['supplier-ledger'] });
       setAdjusting(false);
       qc.invalidateQueries({ queryKey: ['payable', id] });
       qc.invalidateQueries({ queryKey: ['payables'] });
@@ -149,7 +153,7 @@ export default function PayableDetail() {
             {data.oldestAgeDays > 0 && <Badge tone={data.oldestAgeDays > 60 ? 'danger' : 'warning'} dot>{data.oldestAgeDays} days old</Badge>}
             {/* This screen is admin-only, so supplier access is guaranteed. */}
             <Link to={`/suppliers/${data.supplier._id}?currency=${currency}`} className="btn-secondary">Supplier profile</Link>
-            <button className="btn-secondary" onClick={openAdjust}>Edit Supplier Payable</button>
+            <button className="btn-secondary" onClick={openAdjust}>Correct balance (non-cash)</button>
           </>
         }
       />
@@ -160,7 +164,7 @@ export default function PayableDetail() {
             <div className="mt-2 fig-lg font-semibold num break-words text-amber-600 tracking-tight">{money(data.outstanding, currency)}</div>
           </div>
           <div className="card p-5">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Purchase Total</div>
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Purchases / other entries</div>
             <div className="mt-2 fig-md font-semibold num break-words text-ink-900">{money(data.total, currency)}</div>
           </div>
           <div className="card p-5">
@@ -170,6 +174,7 @@ export default function PayableDetail() {
           <div className="card p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Open POs</div>
             <div className="mt-2 fig-md font-semibold num break-words text-ink-900">{data.purchaseOrders.length}</div>
+            {data.entryTotals?.openCount > 0 && <p className="text-xs text-ink-500 mt-1">Plus {data.entryTotals.openCount} open standalone {data.entryTotals.openCount === 1 ? 'entry' : 'entries'}</p>}
             {!data.reconciled && (
               <div className="text-xs text-amber-600 mt-1">Stored payable {money(data.storedPayable, currency)}</div>
             )}
@@ -182,6 +187,8 @@ export default function PayableDetail() {
           {fxQuote.isError && <span role="alert" className="text-red-700">Current equivalent unavailable; saved payable amounts and historical snapshots remain unchanged.</span>}
         </div>
 
+        <p className="text-xs text-ink-500">Outstanding is recalculated from document balances ({money(data.documentOutstanding || 0, currency)}), opening balances / legacy corrections ({money(data.openingBalance || 0, currency)}) and standalone entries ({money(data.entryTotals?.outstanding || 0, currency)}).</p>
+
         <div className="space-y-2">
           <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
             <div className="section-title">Aging</div>
@@ -189,6 +196,8 @@ export default function PayableDetail() {
           </div>
           <AgingBuckets aging={data.aging} currency={currency} />
         </div>
+
+        <PartyFinanceEntries category="payables" partyId={id} currency={currency} entries={data.manualEntries || []} history={data.entryHistory || []} accounts={accounts || []} />
 
         <Table
           empty="No outstanding purchase orders for this supplier"

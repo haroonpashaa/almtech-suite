@@ -128,6 +128,25 @@ export async function postPaymentAtomically(entry, applyDocumentUpdates) {
   });
 }
 
+// Claim the party-side obligation before settling a document. A prior non-cash
+// correction must never be silently clamped to zero while a new payment posts.
+// The caller compensates this claim if its document claim fails on standalone DBs.
+export async function claimPartyBalanceForPayment(Model, id, field, amount, session) {
+  const result = await Model.updateOne(
+    { _id: id, [field]: { $gte: amount } },
+    [{ $set: { [field]: { $round: [{ $subtract: [`$${field}`, amount] }, 2] } } }],
+    session ? { session } : {}
+  );
+  if (!result.matchedCount) {
+    const error = new Error('The party balance is insufficient for this payment, possibly because of a non-cash correction or another payment. Reconcile the balance, refresh and retry.');
+    error.statusCode = 409;
+    throw error;
+  }
+  return async () => {
+    if (!session) await Model.updateOne({ _id: id }, { $inc: { [field]: amount } });
+  };
+}
+
 // Resolves and validates the account a payment is being made to/from.
 export async function resolveAccount(res, accountId) {
   if (!accountId) {

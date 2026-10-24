@@ -1,3 +1,5 @@
+import { partyEntryLedgerEvents } from '../services/partyFinance.js';
+import ReceivableAdjustment from '../models/ReceivableAdjustment.js';
 import asyncHandler from 'express-async-handler';
 import mongoose from 'mongoose';
 import Invoice from '../models/Invoice.js';
@@ -161,6 +163,9 @@ export const customerStatementPDF = asyncHandler(async (req, res) => {
     }
   }
 
+  events.push(...await partyEntryLedgerEvents('customer', customer._id, 'PKR', req.user?.role === 'admin'));
+  const corrections = await ReceivableAdjustment.find({ customer: customer._id }).sort('createdAt');
+  for (const correction of corrections) events.push({ date: correction.createdAt, type: 'correction', typeLabel: 'Non-cash correction', description: req.user?.role === 'admin' ? correction.reason : 'Non-cash balance correction', credit: Math.max(0, correction.delta), debit: Math.max(0, -correction.delta) });
   events.sort((a, b) => new Date(a.date) - new Date(b.date));
   let running = 0;
   const all = events.map((e) => {
@@ -253,6 +258,7 @@ export const supplierStatementPDF = asyncHandler(async (req, res) => {
     }
   }
 
+  events.push(...await partyEntryLedgerEvents('supplier', supplier._id, currency));
   events.sort((a, b) => new Date(a.date) - new Date(b.date));
   let running = 0;
   const all = events.map((e) => {

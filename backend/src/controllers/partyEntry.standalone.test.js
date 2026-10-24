@@ -1,0 +1,42 @@
+import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
+import mongoose from 'mongoose';
+import { MongoMemoryServer } from 'mongodb-memory-server';
+import { createPartyEntry } from './partyEntry.controller.js';
+import PartyEntry, { PartyEntryEvent } from '../models/PartyEntry.js';
+import Customer from '../models/Customer.js';
+import Supplier from '../models/Supplier.js';
+import Invoice from '../models/Invoice.js';
+import PurchaseOrder from '../models/PurchaseOrder.js';
+import Account from '../models/Account.js';
+import FinancialTransaction from '../models/FinancialTransaction.js';
+import { recordPayment } from './invoice.controller.js';
+import { recordSupplierPayment } from './purchaseOrder.controller.js';
+let memory;
+beforeAll(async () => { memory = await MongoMemoryServer.create(); await mongoose.connect(memory.getUri()); });
+afterEach(async () => { vi.restoreAllMocks(); for (const model of [Customer, Supplier, Invoice, PurchaseOrder, Account, FinancialTransaction]) await model.deleteMany({}); });
+afterAll(async () => { await mongoose.disconnect(); await memory.stop(); });
+it('fails closed on a standalone database before posting any financial records', async () => {
+  const customer = await Customer.create({ name: 'Standalone test customer' });
+  const req = { user: { _id: new mongoose.Types.ObjectId(), role: 'admin' }, params: { category: 'receivables', id: String(customer._id) }, body: { total: 100, date: '2026-10-24', description: 'Statement', reason: 'Test transaction requirement', idempotencyKey: 'standalone-create' } };
+  await expect(createPartyEntry(req, {})).rejects.toMatchObject({ statusCode: 503 });
+  expect(await PartyEntry.countDocuments()).toBe(0);
+  expect(await PartyEntryEvent.countDocuments()).toBe(0);
+  expect((await Customer.findById(customer._id)).balance).toBe(0);
+});
+
+it.each(['customer', 'supplier'])('compensates the %s party claim and account posting if the document claim loses on standalone MongoDB', async type => {
+  const Model = type === 'customer' ? Customer : Supplier;
+  const Document = type === 'customer' ? Invoice : PurchaseOrder;
+  const field = type === 'customer' ? 'balance' : 'payable';
+  const party = await Model.create({ name: 'Fallback claim test', [field]: 100 });
+  const account = await Account.create({ name: 'Fallback account', type: 'bank', currency: 'PKR', openingBalance: 1000, currentBalance: 1000 });
+  const document = await Document.create({ number: 'DOC-FALLBACK', [type]: party._id, items: [], subtotal: 100, total: 100, paid: 0, balance: 100, status: type === 'customer' ? 'open' : 'ordered' });
+  vi.spyOn(Document, 'updateOne').mockResolvedValueOnce({ matchedCount: 0 });
+  const controller = type === 'customer' ? recordPayment : recordSupplierPayment;
+  const res = { statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
+  await expect(controller({ params: { id: String(document._id) }, user: { _id: new mongoose.Types.ObjectId(), role: 'admin' }, body: { amount: 50, method: 'bank', account: String(account._id), idempotencyKey: 'fallback-doc-claim' } }, res)).rejects.toMatchObject({ statusCode: 409 });
+  expect((await Model.findById(party._id))[field]).toBe(100);
+  expect((await Account.findById(account._id)).currentBalance).toBe(1000);
+  expect((await Document.findById(document._id)).paid).toBe(0);
+  expect(await FinancialTransaction.countDocuments()).toBe(0);
+});
