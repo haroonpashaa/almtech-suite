@@ -1,3 +1,4 @@
+import { requireSupportedCurrency } from '../utils/currencyPolicy.js';
 import asyncHandler from 'express-async-handler';
 import mongoose from 'mongoose';
 import { randomUUID } from 'node:crypto';
@@ -32,7 +33,7 @@ export const createAccount = asyncHandler(async (req, res) => {
     res.status(400);
     throw new Error('Account name is required');
   }
-  if (!['GBP', 'PKR'].includes(currency)) { res.status(400); throw new Error('Account currency must be GBP or PKR'); }
+  requireSupportedCurrency(currency);
   const existing = await Account.findOne({ name: name.trim() });
   if (existing) {
     res.status(409);
@@ -65,11 +66,13 @@ export const updateAccount = asyncHandler(async (req, res) => {
     throw new Error('Account not found');
   }
   if (currency !== undefined && currency !== account.currency) {
+    requireSupportedCurrency(account.currency || 'PKR');
+    requireSupportedCurrency(currency);
     const hasLedger = await FinancialTransaction.exists({ account: account._id });
     if (hasLedger || account.openingBalance !== 0) { res.status(409); throw new Error('Account currency cannot change after a balance or ledger history exists'); }
-    if (!['GBP', 'PKR'].includes(currency)) { res.status(400); throw new Error('Account currency must be GBP or PKR'); }
     account.currency = currency;
   }
+  if (openingBalance !== undefined) requireSupportedCurrency(account.currency || 'PKR');
   if (name !== undefined) account.name = name.trim();
   if (type !== undefined) account.type = type;
   if (bankName !== undefined) account.bankName = bankName;
@@ -117,6 +120,7 @@ export const updateAccount = asyncHandler(async (req, res) => {
 });
 
 export const adjustAccountLedger = asyncHandler(async (req, res) => {
+  requireSupportedCurrency(req.body.currency ?? 'PKR');
   const { amount, direction, reason, idempotencyKey } = req.body || {};
   const note = typeof reason === 'string' ? reason.trim() : '';
   if (!note) { res.status(400); throw new Error('A reason is required for a ledger adjustment'); }
@@ -142,6 +146,7 @@ export const adjustAccountLedger = asyncHandler(async (req, res) => {
 // set/sharded-cluster transaction; a standalone server cannot guarantee that both
 // legs commit together, so the endpoint fails closed there.
 export const transferAccounts = asyncHandler(async (req, res) => {
+  requireSupportedCurrency(req.body.currency ?? 'PKR');
   const { sourceAccountId, destinationAccountId, amount, reason, idempotencyKey } = req.body || {};
   const note = typeof reason === 'string' ? reason.trim() : '';
   const key = typeof idempotencyKey === 'string' ? idempotencyKey.trim() : '';

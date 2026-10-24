@@ -23,7 +23,7 @@ const LEDGER_LABELS = {
 
 export default function SupplierDetail() {
   const { id } = useParams();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const currency = searchParams.get('currency') === 'GBP' ? 'GBP' : 'PKR';
   const { has } = useAuth();
   const qc = useQueryClient();
@@ -113,7 +113,7 @@ export default function SupplierDetail() {
             {canSeeLedger && (
               <DocumentActions path={`/suppliers/${id}/statement/pdf?currency=${currency}`} filename={`statement-${s.name}`} label="Statement" />
             )}
-            <select aria-label="Supplier payable currency" className="select w-auto" value={currency} onChange={(e) => setSearchParams(e.target.value === 'GBP' ? { currency: 'GBP' } : {})}><option value="PKR">PKR payable</option><option value="GBP">GBP payable</option></select>
+            <span className="text-sm text-ink-500">{currency} payable{currency !== 'PKR' ? ' · Historical currency' : ''}</span>
             {canManage && <button className="btn-secondary" onClick={openEdit}>Edit</button>}
             {canManage && s.active !== false && (
               <Link to="/purchase-orders/new" className="btn-primary">New Purchase Order</Link>

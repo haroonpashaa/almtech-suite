@@ -1,3 +1,4 @@
+import { requireSupportedCurrency } from '../utils/currencyPolicy.js';
 import asyncHandler from 'express-async-handler';
 import Quotation from '../models/Quotation.js';
 import Product from '../models/Product.js';
@@ -29,6 +30,7 @@ export const getQuotation = asyncHandler(async (req, res) => {
 });
 
 export const createQuotation = asyncHandler(async (req, res) => {
+  requireSupportedCurrency(req.body.currency ?? 'PKR');
   const { customer: customerId, items, discount = 0, taxRate = 0, validUntil, notes } = req.body;
   const customer = await Customer.findById(customerId);
   if (!customer) {

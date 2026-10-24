@@ -9,16 +9,17 @@ import Table from '../components/Table.jsx';
 import Money from '../components/Money.jsx';
 import { Badge } from '../components/ui.jsx';
 
-const CURRENCIES = ['PKR', 'GBP'];
+// PKR is always shown; foreign currencies appear only for actual historical amounts.
+const currencies = (rows, key) => ['PKR', ...new Set((rows || []).filter(row => row.currency !== 'PKR' && ((Number(row[key]) || 0) !== 0 || row.count > 0)).map(row => row.currency))];
 const statusTone = { draft: 'neutral', ordered: 'info', partial: 'warning', received: 'success', cancelled: 'neutral' };
 
 function byCurrency(rows, key) {
   const lookup = Object.fromEntries((rows || []).map((row) => [row.currency, row[key]]));
-  return CURRENCIES.map((currency) => money(lookup[currency] || 0, currency)).join(' · ');
+  return currencies(rows, key).map((currency) => money(lookup[currency] || 0, currency)).join(' · ');
 }
 
 function CurrencyBreakdown({ rows, valueKey }) {
-  return <div className="flex flex-wrap gap-x-4 gap-y-1">{CURRENCIES.map((currency) => {
+  return <div className="flex flex-wrap gap-x-4 gap-y-1">{currencies(rows, valueKey).map((currency) => {
     const value = rows?.find((row) => row.currency === currency)?.[valueKey] || 0;
     return <span key={currency}><span className="text-ink-400">{currency}</span> <span className="num font-medium">{moneyPlain(value)}</span></span>;
   })}</div>;
@@ -77,7 +78,7 @@ export default function PurchaseSummary() {
         <div className="p-4 font-semibold text-ink-900">Purchase orders by status</div>
         <Table rows={data?.statusBreakdown || []} loading={summary.isLoading} empty="No purchase orders match these filters" columns={[
           { key: 'status', label: 'Status', render: (row) => <Badge tone={statusTone[row.status]} dot>{row.status}</Badge> },
-          { key: 'count', label: 'Orders (PKR · GBP)', render: (row) => CURRENCIES.map((currency) => `${currency} ${row.currencies.find((item) => item.currency === currency)?.count || 0}`).join(' · ') },
+          { key: 'count', label: 'Orders by currency', render: (row) => currencies(row.currencies, 'count').map((currency) => `${currency} ${row.currencies.find((item) => item.currency === currency)?.count || 0}`).join(' · ') },
           { key: 'value', label: 'Order value by currency', render: (row) => <CurrencyBreakdown rows={row.currencies} valueKey="value" /> },
         ]} />
       </section>
@@ -117,7 +118,7 @@ export default function PurchaseSummary() {
           ]}
         />
       </section>
-      <p className="text-xs text-ink-400">Purchase date means the order date recorded by the existing system. Draft and cancelled orders appear in status and history views but are excluded from purchase value, payments and open PO balance. Amounts are never combined across GBP and PKR.</p>
+      <p className="text-xs text-ink-400">Purchase date means the order date recorded by the existing system. Draft and cancelled orders appear in status and history views but are excluded from purchase value, payments and open PO balance. Historical amounts retain their recorded currencies and are never combined.</p>
     </div>
   </div>;
 }

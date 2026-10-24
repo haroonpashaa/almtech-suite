@@ -67,7 +67,7 @@ export default function Accounts() {
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Total Funds</div>
             <div className="text-xs text-ink-400 mt-0.5">Across all active accounts</div>
           </div>
-            <div className="text-2xl font-semibold num text-ink-900 tracking-tight flex flex-wrap justify-end gap-x-4">{Object.entries(data?.totalsByCurrency || { [currency]: data?.total || 0 }).map(([code, total]) => <span key={code}>{money(total, code)}</span>)}</div>
+            <div className="text-2xl font-semibold num text-ink-900 tracking-tight flex flex-wrap justify-end gap-x-4">{Object.entries(data?.totalsByCurrency || { [currency]: data?.total || 0 }).filter(([code, total]) => code === 'PKR' || total !== 0).map(([code, total]) => <span key={code}>{money(total, code)}</span>)}</div>
         </div>
 
         <Table
@@ -121,7 +121,7 @@ export default function Accounts() {
             </div>
             <div>
               <label htmlFor="accounts-currency-5a" className="label">Currency</label>
-              <select id="accounts-currency-5a" className="select" value={form.currency} onChange={(e) => set('currency', e.target.value)}><option value="PKR">PKR</option><option value="GBP">GBP</option></select>
+              <select id="accounts-currency-5a" className="select" value={form.currency} onChange={(e) => set('currency', e.target.value)}><option value="PKR">PKR</option></select>
             </div>
             <div>
               <label htmlFor="accounts-opening-balance-6" className="label">Opening Balance ({form.currency})</label>

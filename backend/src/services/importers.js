@@ -1,3 +1,4 @@
+import { requireSupportedCurrency } from '../utils/currencyPolicy.js';
 import mongoose from 'mongoose';
 import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
@@ -1268,7 +1269,7 @@ const openingBalances = {
 
   async prepare(rows) {
     const [accounts, custs, supps] = await Promise.all([
-      Account.find().select('name active openingBalance currentBalance'),
+      Account.find().select('name active currency openingBalance currentBalance'),
       Customer.find().select('name phone email balance'),
       Supplier.find().select('name phone email payable'),
     ]);
@@ -1295,6 +1296,7 @@ const openingBalances = {
       if (type && name && maps[type]) {
         entity = maps[type].get(name.toLowerCase());
         if (!entity) err(row, 'Name', name, `${type} "${name}" not found`);
+        else if (type === 'account' && (entity.currency || 'PKR') !== 'PKR') err(row, 'Name', name, 'Only PKR accounts support new opening balances');
         else if (type === 'account' && !entity.active) err(row, 'Name', name, `account "${name}" is inactive`);
       }
 
@@ -1338,6 +1340,7 @@ const openingBalances = {
       const d = row.data;
       let record = null;
       try {
+        if (d.entityType === 'account') requireSupportedCurrency((await Account.findById(d.entity))?.currency || 'PKR');
         record = await OpeningBalance.create({ ...d, importBatch: ctx.batchId, createdBy: ctx.user._id });
         if (d.entityType === 'account') {
           // Same adjustment PATCH /accounts/:id performs: opening balance moves and

@@ -39,11 +39,6 @@ export default function PurchaseOrderDetail() {
     queryFn: async () => (await api.get('/accounts')).data,
   });
   const currency = po?.currency || 'PKR';
-  const fxQuote = useQuery({
-    enabled: false,
-    queryKey: ['po-current-fx', currency],
-    queryFn: async () => (await api.get('/finance/exchange-rate', { params: { from: currency, to: currency === 'GBP' ? 'PKR' : 'GBP' } })).data,
-  });
   const fxSnapshot = po?.fxSnapshots?.at(-1);
 
   async function doReceive() {
@@ -171,7 +166,7 @@ export default function PurchaseOrderDetail() {
                         {it.received === it.quantity ? <span className="text-emerald-600">{it.received}</span> : <span className="text-ink-700">{it.received}</span>}
                       </td>
                       <td className="td text-right">
-                        {has('admin', 'stock') && pending > 0 ? (
+                        {has('admin', 'stock') && currency === 'PKR' && pending > 0 ? (
                           <input
                             className="input input-sm w-20 text-right num"
                             type="number" min="0" max={pending}
@@ -215,7 +210,7 @@ export default function PurchaseOrderDetail() {
                       </div>
                     </div>
                     {po.bulkPurchaseTotal != null && <p className="mt-2 text-xs text-ink-500">Unit cost: {money(it.unitCost, currency)} · Bulk allocation: {money(it.bulkAllocatedTotal, currency)}</p>}
-                    {has('admin', 'stock') && pending > 0 ? (
+                    {has('admin', 'stock') && currency === 'PKR' && pending > 0 ? (
                       <div className="mt-2.5">
                         <label htmlFor={`recv-${i}`} className="t-meta block mb-1">Receive now (max {pending})</label>
                         <input
@@ -233,7 +228,7 @@ export default function PurchaseOrderDetail() {
                 );
               })}
             </ul>
-            {has('admin', 'stock') && po.status !== 'received' && po.status !== 'cancelled' && (
+            {has('admin', 'stock') && currency === 'PKR' && po.status !== 'received' && po.status !== 'cancelled' && (
               <div className="p-3 border-t border-ink-100 bg-ink-25 flex justify-end">
                 <button className="btn-primary" onClick={receive} disabled={receiving}>
                   {receiving ? <><Spinner className="w-4 h-4" /> Receiving…</> : 'Receive Selected'}
@@ -288,20 +283,16 @@ export default function PurchaseOrderDetail() {
             </div>
             {fxSnapshot ? (
               <div className="mt-3 rounded-md bg-ink-25 p-3 text-xs text-ink-600">
-                Saved equivalent: {money(Math.round(po.total * fxSnapshot.rate * 100) / 100, fxSnapshot.toCurrency)} at {fxSnapshot.rate} {fxSnapshot.toCurrency}/{fxSnapshot.fromCurrency} · effective {new Date(fxSnapshot.effectiveAt).toLocaleString()} ({fxSnapshot.source})
+                Historical snapshot: {money(fxSnapshot.originalAmount, fxSnapshot.fromCurrency)} = {money(fxSnapshot.equivalentAmount, fxSnapshot.toCurrency)} at {fxSnapshot.rate} {fxSnapshot.toCurrency}/{fxSnapshot.fromCurrency} · effective {new Date(fxSnapshot.effectiveAt).toLocaleString()} ({fxSnapshot.source})
               </div>
-            ) : <div className="mt-3 rounded-md bg-amber-50 p-3 text-xs text-amber-800">No historical exchange-rate snapshot is available for this legacy payable.</div>}
-            <div className="mt-2">
-              <button type="button" className="btn-sm btn-secondary" onClick={() => fxQuote.refetch()} disabled={fxQuote.isFetching}>Refresh displayed equivalent</button>
-              {fxQuote.data && <p className="mt-1 text-xs text-ink-600">Current estimate: {money(Math.round(po.total * fxQuote.data.rate * 100) / 100, fxQuote.data.toCurrency)} · effective {new Date(fxQuote.data.effectiveAt).toLocaleString()}; this does not change the saved snapshot.</p>}
-              {fxQuote.isError && <p role="alert" className="mt-1 text-xs text-red-700">Current equivalent unavailable: {errorMessage(fxQuote.error)}{fxSnapshot ? ' The saved historical snapshot remains shown above.' : ''}</p>}
-            </div>
+            ) : null}
+
             <div className="mt-3 pt-3 border-t border-ink-100 space-y-1.5">
               <div className="flex justify-between text-sm"><span className="text-ink-500">Paid</span><span className="num text-emerald-600">{money(po.paid, currency)}</span></div>
               <div className="flex justify-between text-sm"><span className="text-ink-500">Balance</span><span className={`num font-medium ${po.balance > 0 ? 'text-amber-600' : 'text-ink-400'}`}>{money(po.balance, currency)}</span></div>
             </div>
           </div>
-          {has('admin') && po.balance > 0 && (
+          {has('admin') && currency === 'PKR' && po.balance > 0 && (
             <div className="card p-5">
               <h3 className="text-sm font-semibold text-ink-900 mb-3">Record Payment</h3>
               <label htmlFor="purchaseorderdetail-amount-51" className="label">Amount ({currency})</label>

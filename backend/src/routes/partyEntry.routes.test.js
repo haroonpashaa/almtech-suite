@@ -273,16 +273,18 @@ describe.each(['receivables', 'payables'])('Admin standalone %s: HTTP regression
   });
 });
 
-it('keeps GBP supplier obligations and payments separate from PKR', async () => {
-  const ctx = await setup('payables', 'GBP');
-  expect((await pay(ctx, 40)).status).toBe(201);
-  const supplier = await Supplier.findById(ctx.party._id);
-  expect(supplier.payableGBP).toBe(60); expect(supplier.payable).toBe(0);
+it('rejects new GBP supplier entries and payments but preserves historical GBP obligations', async () => {
+  const party = await Supplier.create({ name: 'Historical supplier', payable: 0, payableGBP: 100 });
+  const account = await Account.create({ name: 'GBP bank', type: 'bank', currency: 'GBP', currentBalance: 100 });
+  const path = `/payables/${party._id}`;
+  const entry = await PartyEntry.create({ entityType: 'supplier', entity: party._id, currency: 'GBP', total: 100, balance: 100, date: new Date(), description: 'Historical obligation', createdBy: users.admin._id });
+  expect((await request(path + '/entries', 'POST', action({ ...editFields(), currency: 'GBP' }))).status).toBe(400);
+  expect((await pay({ party, account, path, entry }, 40)).status).toBe(400);
   const position = await request('/position');
-  expect(position.body.payablesByCurrency).toEqual({ PKR: 0, GBP: 60 });
-  expect(position.body.reconciled).toBe(true);
-  const profile = response(); await getSupplier({ params: { id: String(supplier._id) }, query: { currency: 'GBP' } }, profile);
-  expect(profile.body.summary).toMatchObject({ outstanding: 60, reconciled: true, standalone: { paid: 40 } });
+  expect(position.body.payablesByCurrency).toEqual({ PKR: 0, GBP: 100 });
+  expect((await Account.findById(account._id)).currentBalance).toBe(100);
+  expect(await FinancialTransaction.countDocuments()).toBe(0);
+  expect(await PartyEntry.countDocuments()).toBe(1);
 });
 it('refuses GBP customer entries and malformed dates', async () => {
   const ctx = await setup('receivables');

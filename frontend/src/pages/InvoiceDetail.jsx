@@ -42,7 +42,8 @@ export default function InvoiceDetail() {
     queryKey: ['accounts'],
     queryFn: async () => (await api.get('/accounts')).data,
   });
-  const currency = useCurrency();
+  const defaultCurrency = useCurrency();
+  const currency = invoice?.currency || defaultCurrency;
 
   async function doPay() {
     try {
@@ -178,9 +179,9 @@ export default function InvoiceDetail() {
                   },
                 },
                 { key: 'quantity', label: 'Qty', align: 'right', render: (it) => <span className="num">{it.quantity}</span> },
-                { key: 'unitPrice', label: `Price (${currency})`, align: 'right', render: (it) => <Money value={it.unitPrice} /> },
-                { key: 'discount', label: `Discount (${currency})`, align: 'right', render: (it) => <Money value={it.discount} tone="muted" /> },
-                { key: 'lineTotal', label: `Total (${currency})`, align: 'right', render: (it) => <Money value={it.lineTotal} className="font-medium text-ink-900" /> },
+                { key: 'unitPrice', label: `Price (${currency})`, align: 'right', render: (it) => <Money currency={currency} value={it.unitPrice} /> },
+                { key: 'discount', label: `Discount (${currency})`, align: 'right', render: (it) => <Money currency={currency} value={it.discount} tone="muted" /> },
+                { key: 'lineTotal', label: `Total (${currency})`, align: 'right', render: (it) => <Money currency={currency} value={it.lineTotal} className="font-medium text-ink-900" /> },
               ]}
             />
           </section>
@@ -201,8 +202,8 @@ export default function InvoiceDetail() {
                 {
                   key: 'amount', label: `Amount (${currency})`, align: 'right', priority: 'primary',
                   render: (p) => p.reversed
-                    ? <Money value={p.amount} tone="muted" className="line-through" />
-                    : <Money value={p.amount} tone="positive" className="font-medium" />,
+                    ? <Money currency={currency} value={p.amount} tone="muted" className="line-through" />
+                    : <Money currency={currency} value={p.amount} tone="positive" className="font-medium" />,
                 },
                 {
                   key: 'action', label: '', align: 'right',
@@ -235,7 +236,7 @@ export default function InvoiceDetail() {
             </div>
           </div>
 
-          {has('admin', 'sales') && invoice.balance > 0 && (
+          {has('admin', 'sales') && currency === 'PKR' && invoice.balance > 0 && (
             <div className="card p-5">
               <h3 className="text-sm font-semibold text-ink-900 mb-3">Record Payment</h3>
               <label htmlFor="invoicedetail-amount-24" className="label">Amount</label>
@@ -243,7 +244,7 @@ export default function InvoiceDetail() {
               <label className="label mt-3">Deposit To <span className="text-red-500">*</span></label>
               <select className="select" value={account} onChange={(e) => setAccount(e.target.value)}>
                 <option value="">— select account —</option>
-                {(accounts || []).map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
+                {(accounts || []).filter(a => (a.currency || 'PKR') === 'PKR').map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
               </select>
               <label className="label mt-3">Method</label>
               <select className="select" value={method} onChange={(e) => setMethod(e.target.value)}>

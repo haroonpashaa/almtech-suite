@@ -61,6 +61,13 @@ describe('Purchase Order editing (DB-backed)', () => {
   async function makeProduct(sku, purchasePrice = 0) {
     return Product.create({ sku, name: `Product ${sku}`, stock: 0, purchasePrice });
   }
+  async function historicalGBP(supplier, items) {
+    const lines = items.map(line => ({ ...line, name: 'Historical laptop', lineTotal: line.quantity * line.unitCost }));
+    const total = lines.reduce((sum, line) => sum + line.lineTotal, 0);
+    const po = await PurchaseOrder.create({ supplier: supplier._id, number: 'PO-HISTORY', items: lines, currency: 'GBP', subtotal: total, total, balance: total, status: 'ordered' });
+    await Supplier.updateOne({ _id: supplier._id }, { $inc: { payableGBP: total } });
+    return po;
+  }
   async function makeAccount() {
     return Account.create({ name: 'Test Cash', type: 'cash' });
   }
@@ -212,12 +219,10 @@ describe('Purchase Order editing (DB-backed)', () => {
       expect(await PurchaseOrder.countDocuments()).toBe(0);
       expect((await Supplier.findOne()).payable).toBe(0);
     });
-    it('keeps GBP payable separate and retains the existing receiving restriction', async () => {
-      const { po, supplier, a } = await createBulk({ currency: 'GBP' });
-      const fresh = await Supplier.findById(supplier._id);
-      expect(fresh.payableGBP).toBe(100);
-      expect(fresh.payable).toBe(0);
-      await expect(callReceive(po, [{ product: String(a._id), quantity: 1 }])).rejects.toThrow(/Receiving GBP/);
+    it('rejects GBP bulk purchases without posting any payable', async () => {
+      await expect(createBulk({ currency: 'GBP' })).rejects.toMatchObject({ statusCode: 400 });
+      expect(await PurchaseOrder.countDocuments()).toBe(0);
+      expect((await Supplier.findOne()).payableGBP).toBe(0);
     });
     it('uses bulk amounts in dashboard payables, purchase summary and financial series', async () => {
       const { po } = await createBulk({ taxRate: 10 });
@@ -271,27 +276,20 @@ describe('Purchase Order editing (DB-backed)', () => {
     expect(body.balance).toBe(1100);
   });
 
-  it('stores a GBP payable snapshot and retains prior snapshots when an eligible edit changes its amount', async () => {
-    const supplier = await makeSupplier();
-    const p1 = await makeProduct('SKU-GBP');
-    const po = await callCreatePO(supplier, [{ product: p1._id.toString(), quantity: 2, unitCost: 10.25 }], { currency: 'GBP' });
-    expect(po.currency).toBe('GBP');
-    expect(po.fxSnapshots).toHaveLength(1);
-    expect(po.fxSnapshots[0]).toMatchObject({ fromCurrency: 'GBP', toCurrency: 'PKR', originalAmount: 20.5, source: 'ExchangeRate-API' });
-    const original = po.fxSnapshots[0];
-    const { status, body } = await callUpdatePO(po, { items: [{ product: p1._id.toString(), quantity: 2, unitCost: 12 }] });
-    expect(status).toBe(200);
-    expect(body.fxSnapshots).toHaveLength(2);
-    expect(body.fxSnapshots[0].rate).toBe(original.rate);
-    expect(body.fxSnapshots[0].originalAmount).toBe(20.5);
-    expect(body.fxSnapshots[1].originalAmount).toBe(24);
-    expect((await Supplier.findById(supplier._id)).payableGBP).toBe(24);
+  it('blocks new GBP orders and financial conversion of historical GBP orders', async () => {
+    const supplier = await makeSupplier(); const p1 = await makeProduct('SKU-GBP');
+    const items = [{ product: String(p1._id), quantity: 2, unitCost: 10.25 }];
+    await expect(callCreatePO(supplier, items, { currency: 'GBP' })).rejects.toMatchObject({ statusCode: 400 });
+    const po = await historicalGBP(supplier, items);
+    for (const currency of ['GBP', 'PKR']) await expect(updatePO(req({ params: { id: String(po._id) }, body: { expectedUpdatedAt: po.updatedAt.toISOString(), items, currency } }), mockRes())).rejects.toMatchObject({ statusCode: 400 });
+    expect((await PurchaseOrder.findById(po._id)).toObject()).toMatchObject({ currency: 'GBP', total: 20.5 });
+    expect((await Supplier.findById(supplier._id)).payableGBP).toBe(20.5);
   });
 
   it('rejects a GBP payable payment from a PKR account without changing either balance', async () => {
     const supplier = await makeSupplier();
     const p1 = await makeProduct('SKU-GBP');
-    const po = await callCreatePO(supplier, [{ product: p1._id.toString(), quantity: 1, unitCost: 50 }], { currency: 'GBP' });
+    const po = await historicalGBP(supplier, [{ product: p1._id.toString(), quantity: 1, unitCost: 50 }]);
     const account = await Account.create({ name: 'PKR Cash', type: 'cash', currency: 'PKR', openingBalance: 100, currentBalance: 100 });
     const res = mockRes();
     await expect(recordSupplierPayment(req({ params: { id: po._id.toString() }, body: { amount: 10, account: account._id.toString() } }), res)).rejects.toThrow(/must be denominated in GBP/i);
@@ -300,28 +298,28 @@ describe('Purchase Order editing (DB-backed)', () => {
     expect((await Account.findById(account._id)).currentBalance).toBe(100);
   });
 
-  it('posts a GBP payable payment only to a GBP account and reconciles the GBP balance', async () => {
+  it('rejects new GBP payments even from matching accounts and preserves historical balances', async () => {
     const supplier = await makeSupplier();
     const p1 = await makeProduct('SKU-GBP');
-    const po = await callCreatePO(supplier, [{ product: p1._id.toString(), quantity: 1, unitCost: 50 }], { currency: 'GBP' });
+    const po = await historicalGBP(supplier, [{ product: p1._id.toString(), quantity: 1, unitCost: 50 }]);
     const account = await Account.create({ name: 'GBP Bank', type: 'bank', currency: 'GBP', openingBalance: 100, currentBalance: 100 });
     const res = mockRes();
-    await recordSupplierPayment(req({ params: { id: po._id.toString() }, body: { amount: 10, account: account._id.toString(), idempotencyKey: 'gbp-payment-test' } }), res);
+    await expect(recordSupplierPayment(req({ params: { id: po._id.toString() }, body: { amount: 10, account: account._id.toString(), idempotencyKey: 'gbp-payment-test' } }), res)).rejects.toMatchObject({ statusCode: 400 });
     const savedPO = await PurchaseOrder.findById(po._id);
     const savedSupplier = await Supplier.findById(supplier._id);
     const savedAccount = await Account.findById(account._id);
-    expect(savedPO.payments[0].currency).toBe('GBP');
-    expect(savedPO.balance).toBe(40);
-    expect(savedSupplier.payableGBP).toBe(40);
+    expect(savedPO.payments).toHaveLength(0);
+    expect(savedPO.balance).toBe(50);
+    expect(savedSupplier.payableGBP).toBe(50);
     expect(savedSupplier.payable).toBe(0);
-    expect(savedAccount.currentBalance).toBe(90);
-    expect(await FinancialTransaction.exists({ account: account._id, currency: 'GBP', amount: 10 })).toBeTruthy();
+    expect(savedAccount.currentBalance).toBe(100);
+    expect(await FinancialTransaction.exists({ account: account._id, currency: 'GBP', amount: 10 })).toBeFalsy();
   });
 
   it('does not receive GBP POs into currency-less product inventory costs', async () => {
     const supplier = await makeSupplier();
     const product = await makeProduct('SKU-GBP');
-    const po = await callCreatePO(supplier, [{ product: product._id.toString(), quantity: 1, unitCost: 50 }], { currency: 'GBP' });
+    const po = await historicalGBP(supplier, [{ product: product._id.toString(), quantity: 1, unitCost: 50 }]);
     await expect(callReceive(po, [{ product: product._id.toString(), quantity: 1 }])).rejects.toThrow(/Receiving GBP purchase orders is disabled/i);
     expect((await Product.findById(product._id)).stock).toBe(0);
     expect((await PurchaseOrder.findById(po._id)).items[0].received).toBe(0);

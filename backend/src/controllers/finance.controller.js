@@ -1,3 +1,4 @@
+import { requireSupportedCurrency } from '../utils/currencyPolicy.js';
 import PartyEntry from '../models/PartyEntry.js';
 import { partyEntryDetail, mergeOpenPartyEntries } from '../services/partyFinance.js';
 import asyncHandler from 'express-async-handler';
@@ -10,7 +11,7 @@ import OpeningBalance from '../models/OpeningBalance.js';
 import ReceivableAdjustment from '../models/ReceivableAdjustment.js';
 import { logActivity } from '../utils/activity.js';
 import { requireReason } from '../services/paymentReversal.js';
-import { createRateSnapshot, getCurrentRate, roundCurrency } from '../services/exchangeRate.service.js';
+import { roundCurrency } from '../services/exchangeRate.service.js';
 import { runAtomically, transactionsSupported } from '../utils/ledger.js';
 
 // ---------------------------------------------------------------------------
@@ -41,12 +42,7 @@ const OPEN_PO_MATCH = { status: { $nin: ['cancelled', 'draft'] }, balance: { $gt
 const payableField = (currency) => currency === 'GBP' ? 'payableGBP' : 'payable';
 
 export const exchangeRate = asyncHandler(async (req, res) => {
-  const { from, to } = req.query;
-  if (!['GBP', 'PKR'].includes(from) || !['GBP', 'PKR'].includes(to)) {
-    res.status(400); throw new Error('Exchange rate must be requested between GBP and PKR');
-  }
-  const quote = await getCurrentRate(from, to);
-  res.json({ ...quote, validUntil: new Date(quote.validUntil) });
+  res.status(410).json({ message: 'Currency conversion is temporarily unavailable. New financial entries support PKR only; historical snapshots are preserved.' });
 });
 
 const BUCKETS = ['current', 'd1_30', 'd31_60', 'd61_90', 'd90_plus'];
@@ -92,7 +88,6 @@ function dateMatch(field, from, to) {
   if (to) range.$lte = new Date(to);
   return { [field]: range };
 }
-
 
 // Opening balances migrated from the owner's spreadsheets have no invoice or purchase
 // order behind them, so they are merged into the rows, the aging buckets and the totals
@@ -381,6 +376,7 @@ export const customerReceivable = asyncHandler(async (req, res) => {
 // Multi-document transactions are required so the customer balance and immutable
 // audit row cannot be left apart by a failed or interrupted request.
 export const adjustCustomerReceivable = asyncHandler(async (req, res) => {
+  requireSupportedCurrency(req.body.currency ?? 'PKR');
   const { id } = req.params;
   if (!mongoose.isValidObjectId(id)) { res.status(400); throw new Error('Invalid customer id'); }
   if (!(await transactionsSupported())) {
@@ -674,7 +670,7 @@ export const adjustSupplierPayable = asyncHandler(async (req, res) => {
   }
   const note = requireReason(res, req.body?.note);
   const currency = req.body?.currency || 'PKR';
-  if (!['GBP', 'PKR'].includes(currency)) { res.status(400); throw new Error('Payable currency must be GBP or PKR'); }
+  requireSupportedCurrency(currency);
   const newTotal = Number(req.body?.amount);
   if (!Number.isFinite(newTotal) || newTotal < 0 || Math.abs(newTotal - roundCurrency(newTotal)) > 1e-8) {
     res.status(400);
@@ -698,12 +694,11 @@ export const adjustSupplierPayable = asyncHandler(async (req, res) => {
     throw new Error('The corrected amount matches the current payable — nothing to adjust');
   }
 
-  const fxSnapshot = await createRateSnapshot(newTotal, currency, currency === 'GBP' ? 'PKR' : 'GBP');
   let adjustment;
   try {
     adjustment = await OpeningBalance.create({
       entityType: 'supplier', entity: supplier._id, entityName: supplier.name,
-      amount: delta, currency, fxSnapshot, idempotencyKey,
+      amount: delta, currency, idempotencyKey,
       reference: `manual-adjust:${idempotencyKey}`, note, createdBy: req.user._id,
     });
   } catch (error) {

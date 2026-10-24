@@ -1,3 +1,4 @@
+import { requireSupportedCurrency } from './currencyPolicy.js';
 import mongoose from 'mongoose';
 import Account from '../models/Account.js';
 import FinancialTransaction, { IN_TYPES, OUT_TYPES } from '../models/FinancialTransaction.js';
@@ -88,6 +89,13 @@ export async function postTransaction(entry, session = null) {
     throw err;
   }
 
+  // Existing posted payments may still be reversed in their original currency.
+  // Require the exact original ledger leg; this is never a new GBP payment.
+  if (currency !== 'PKR') {
+    const original = entry.reversalOf && ['payment_reversal', 'expense_reversal'].includes(type)
+      ? await FinancialTransaction.findById(entry.reversalOf).session(session) : null;
+    if (!original || String(original.account) !== String(account) || original.currency !== currency || original.amount !== amount || original.direction === direction) requireSupportedCurrency(currency);
+  }
   const [txn] = await FinancialTransaction.create([{ ...entry, currency }], session ? { session } : {});
   await Account.updateOne(
     { _id: account },

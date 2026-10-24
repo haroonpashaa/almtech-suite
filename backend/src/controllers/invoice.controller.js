@@ -1,3 +1,4 @@
+import { requireSupportedCurrency } from '../utils/currencyPolicy.js';
 import asyncHandler from 'express-async-handler';
 import Invoice from '../models/Invoice.js';
 import Product from '../models/Product.js';
@@ -432,7 +433,9 @@ export async function commitInvoiceEffects({ session, invoiceFields, customerId,
 }
 
 export const createInvoice = asyncHandler(async (req, res) => {
+  requireSupportedCurrency(req.body.currency ?? 'PKR');
   const { customer: customerId, items, discount = 0, taxRate = 0, notes, initialPayment, dealId, bulkSellingTotal } = req.body;
+  requireSupportedCurrency(initialPayment?.currency ?? 'PKR');
   const isBulk = Object.hasOwn(req.body, 'bulkSellingTotal');
   if (isBulk && req.user.role !== 'admin') {
     res.status(403);
@@ -602,6 +605,7 @@ export const createInvoice = asyncHandler(async (req, res) => {
 });
 
 export const recordPayment = asyncHandler(async (req, res) => {
+  requireSupportedCurrency(req.body.currency ?? 'PKR');
   const { amount, method = 'cash', reference, account: accountId, idempotencyKey } = req.body;
   if (!(amount > 0)) {
     res.status(400);

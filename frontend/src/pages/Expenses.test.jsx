@@ -104,3 +104,14 @@ describe('Other expense payment source', () => {
     expect(container.textContent).not.toContain('Both the original and the reversing entry');
   });
 });
+
+
+it('excludes historical GBP accounts from new expense payments while keeping them in historical filters', async () => {
+  await mount();
+  await act(async () => client.setQueryData(['accounts'], [{ _id: 'cash-1', name: 'Cash', currency: 'PKR' }, { _id: 'old', name: 'Historical GBP bank', currency: 'GBP' }]));
+  await click('Add Expense');
+  const options = [...container.querySelector('#expenses-payment-account-19').options];
+  expect(options.some(option => option.value === 'old')).toBe(false);
+  expect(options.some(option => option.value === 'cash-1')).toBe(true);
+  expect(container.textContent).toContain('Historical GBP bank');
+});

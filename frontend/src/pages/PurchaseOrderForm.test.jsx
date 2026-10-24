@@ -119,3 +119,71 @@ describe('bulk purchase detail', () => {
     expect(container.textContent).toContain('Bulk payable before tax');
   });
 });
+
+
+describe('PO cart model filter', () => {
+  it('shows every matching serial separately, edits the original row and submits the entire cart', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ data: { _id: 'po1', number: 'PO-1' } });
+    await mount();
+    await act(async () => client.setQueryData(['products-po', ''], { items: [
+      { _id: 'x', name: 'Other laptop', model: 'EliteBook', sku: 'SN-X', purchasePrice: 50 },
+      { _id: 'a', name: 'Laptop A', model: 'ThinkPad T14', sku: 'SN-A', serials: [{ serial: 'SN-A' }], purchasePrice: 100 },
+      { _id: 'b', name: 'Laptop B', model: 'ThinkPad T14', sku: 'SN-B', serials: [{ serial: 'SN-B' }], purchasePrice: 250 },
+    ], total: 3 }));
+    await change(container.querySelector('[aria-label="Supplier"]'), 's1');
+    await click('Select All matching products');
+    await change(container.querySelector('#po-cart-model-filter'), 'thinkpad');
+    expect(container.querySelector('tbody').textContent).not.toContain('SN-X');
+    expect(container.querySelectorAll('tbody tr')).toHaveLength(2);
+    expect(container.querySelector('tbody').textContent).toContain('SN-A');
+    expect(container.querySelector('tbody').textContent).toContain('SN-B');
+    await change(container.querySelector('#po-line-cost-1'), '120');
+    expect(container.textContent).toContain('PKR 420.00');
+    await change(container.querySelector('#po-cart-model-filter'), 'missing');
+    expect(container.querySelectorAll('tbody tr')).toHaveLength(0);
+    expect(container.textContent).toContain('No cart items match');
+    await click('Clear cart filter');
+    expect(container.querySelectorAll('tbody tr')).toHaveLength(3);
+    await change(container.querySelector('#po-cart-model-filter'), 'thinkpad');
+    await click('Save Purchase Order');
+    expect(post).toHaveBeenCalledWith('/purchase-orders', expect.objectContaining({ items: [
+      { product: 'x', quantity: 1, unitCost: 50 }, { product: 'a', quantity: 1, unitCost: 120 }, { product: 'b', quantity: 1, unitCost: 250 },
+    ] }));
+  });
+  it('removes only the intended filtered row and preserves received lines', async () => {
+    await mount({ ...po, bulkPurchaseTotal: undefined, items: po.items.map((line, i) => ({ ...line, model: i === 0 ? 'EliteBook' : 'ThinkPad', received: i === 0 ? 1 : 0 })) });
+    await change(container.querySelector('#po-cart-model-filter'), 'ThinkPad');
+    await act(async () => container.querySelector('tbody button[aria-label="Remove"]').click());
+    await click('Clear cart filter');
+    expect(container.querySelectorAll('tbody tr')).toHaveLength(1);
+    expect(container.querySelector('tbody').textContent).toContain('Laptop A');
+    expect(container.querySelector('tbody button[aria-label="Remove"]')).toBeNull();
+  });
+});
+
+
+it('keeps bulk allocation indexed to the full cart when model filtering', async () => {
+  await mount({ ...po, items: po.items.map((line, i) => ({ ...line, model: i === 0 ? 'EliteBook' : 'ThinkPad' })) });
+  await change(container.querySelector('#po-cart-model-filter'), 'ThinkPad');
+  const row = container.querySelector('tbody tr');
+  expect(row.children[5].textContent).toBe('PKR 30.00');
+  expect(container.querySelector('#po-bulk-amount').value).toBe('90');
+  expect([...container.querySelectorAll('option')].some(option => option.value === 'GBP')).toBe(false);
+});
+it('preserves historical GBP PO amounts and allows only metadata editing', async () => {
+  const patch = vi.spyOn(api, 'patch').mockResolvedValue({ data: po });
+  await mount({ ...po, currency: 'GBP' });
+  expect(container.textContent).toContain('GBP 90.00');
+  expect(container.textContent).toContain('Historical foreign-currency financial details are read-only');
+  expect(container.querySelector('#po-line-cost-0')).toBeNull();
+  await click('Save Changes');
+  const payload = patch.mock.calls[0][1];
+  for (const field of ['currency', 'items', 'supplier', 'taxRate', 'bulkPurchaseTotal']) expect(payload).not.toHaveProperty(field);
+});
+
+
+it('shows the saved FX amount as historical, without recalculating against the current PO total', async () => {
+  await mount({ ...po, total: 90, subtotal: 90, balance: 90, fxSnapshots: [{ originalAmount: 350, fromCurrency: 'PKR', toCurrency: 'GBP', equivalentAmount: 0.97, rate: 1 / 360, effectiveAt: '2026-10-23T00:00:00Z', source: 'Historical' }] }, 'detail');
+  expect(container.textContent).toContain('Historical snapshot: PKR 350.00 = GBP 0.97');
+  expect(container.textContent).not.toContain('Refresh displayed equivalent');
+});

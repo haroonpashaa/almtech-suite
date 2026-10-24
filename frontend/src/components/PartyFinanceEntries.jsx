@@ -51,7 +51,7 @@ export default function PartyFinanceEntries({ category, partyId, currency = 'PKR
   return <section className="card p-4 space-y-4" aria-label={`Manage ${noun} entries`}>
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div><h2 className="section-title">Other {category} · Admin editing</h2><p className="mt-1 text-xs text-ink-500">Manage amounts owed without an invoice or PO. Totals and open counts recalculate automatically. These entries do not create stock, sales revenue, or purchase costs.</p></div>
-      <button type="button" className="btn-secondary" onClick={() => open('create')}>Add {noun}</button>
+      <button type="button" className="btn-secondary" disabled={currency !== 'PKR'} onClick={() => open('create')}>Add {noun}</button>
     </div>
     {!entries.length && <p className="text-sm text-ink-500">No standalone entries yet.</p>}
     <ul className="divide-y divide-ink-100">
@@ -61,8 +61,8 @@ export default function PartyFinanceEntries({ category, partyId, currency = 'PKR
           <div className="text-xs text-ink-500">Total {money(entry.total, currency)} · Paid {money(entry.paid, currency)} · <span className="font-semibold text-ink-900">Outstanding {money(entry.balance, currency)}</span></div>
         </div>
         {entry.status !== 'void' && <div className="flex flex-wrap gap-2">
-          <button type="button" className="btn-sm btn-secondary" onClick={() => open('edit', entry)}>Edit entry</button>
-          <button type="button" className="btn-sm btn-secondary" disabled={entry.balance <= 0} onClick={() => { open('pay', entry); setDialog(current => ({ ...current, date: today(), reference: '' })); }}>Record payment</button>
+          <button type="button" className="btn-sm btn-secondary" disabled={currency !== 'PKR'} onClick={() => open('edit', entry)}>Edit entry</button>
+          <button type="button" className="btn-sm btn-secondary" disabled={currency !== 'PKR' || entry.balance <= 0} onClick={() => { open('pay', entry); setDialog(current => ({ ...current, date: today(), reference: '' })); }}>Record payment</button>
           <button type="button" className="btn-sm btn-secondary" disabled={entry.paid > 0} title={entry.paid > 0 ? 'Reverse payments before voiding' : undefined} onClick={() => open('void', entry)}>Void entry</button>
         </div>}
         {entry.payments?.length > 0 && <ul className="pl-3 border-l border-ink-100 space-y-2">{entry.payments.map(payment => <li key={payment.transaction} className="flex flex-wrap items-center justify-between gap-2 text-xs text-ink-500">

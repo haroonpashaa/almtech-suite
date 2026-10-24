@@ -5,7 +5,7 @@ import Supplier from '../models/Supplier.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 import OpeningBalance from '../models/OpeningBalance.js';
 import { adjustSupplierPayable, payables } from './finance.controller.js';
-import { clearRateCacheForTests, createRateSnapshot } from '../services/exchangeRate.service.js';
+import { clearRateCacheForTests } from '../services/exchangeRate.service.js';
 
 describe('adjustSupplierPayable (DB-backed)', () => {
   let mem;
@@ -87,53 +87,21 @@ describe('adjustSupplierPayable (DB-backed)', () => {
     expect(ob.amount).toBe(-800);
   });
 
-  it('corrects GBP independently and stores the original amount with its immutable FX snapshot', async () => {
+  it('rejects new GBP corrections without changing historical balances or snapshots', async () => {
     const supplier = await Supplier.create({ name: 'GBP Supplier', payable: 1000, payableGBP: 10 });
-    const body = { ...adjustmentBody(supplier, { currency: 'GBP', amount: 12.5, note: 'Supplier statement correction' }) };
-    const res = mockRes();
-    await adjustSupplierPayable({ params: { id: supplier._id.toString() }, body, user: { _id: userId } }, res);
-    expect(res.body.supplier.payable).toBe(1000);
-    expect(res.body.supplier.payableGBP).toBe(12.5);
-    expect(res.body.adjustment.amount).toBe(2.5);
-    expect(res.body.adjustment.fxSnapshot).toMatchObject({ fromCurrency: 'GBP', toCurrency: 'PKR', originalAmount: 12.5, equivalentAmount: 4500, source: 'ExchangeRate-API' });
-    const saved = await OpeningBalance.findOne({ entityType: 'supplier', entity: supplier._id });
-    expect(saved.fxSnapshot).toMatchObject({
-      fromCurrency: 'GBP', toCurrency: 'PKR', rate: 360, originalAmount: 12.5,
-      equivalentAmount: 4500, source: 'ExchangeRate-API', sourceIdentifier: 'exchangerate-api:GBP',
-    });
-    expect(saved.fxSnapshot.effectiveAt).toBeInstanceOf(Date);
-    expect(saved.fxSnapshot.fetchedAt).toBeInstanceOf(Date);
-
-    // A later quote must not mutate the historical snapshot already recorded.
-    clearRateCacheForTests();
-    vi.stubGlobal('fetch', async (url) => {
-      const base = String(url).split('/').at(-1);
-      const time = Math.floor(Date.now() / 1000);
-      return { ok: true, json: async () => ({ result: 'success', base_code: base, conversion_rates: base === 'GBP' ? { GBP: 1, PKR: 400 } : { GBP: 1 / 400, PKR: 1 }, time_last_update_unix: time - 60, time_next_update_unix: time + 86400 }) };
-    });
-    const refreshedQuote = await createRateSnapshot(12.5, 'GBP', 'PKR');
-    expect(refreshedQuote.equivalentAmount).toBe(5000);
-    const persisted = await OpeningBalance.findById(saved._id);
-    expect(persisted.fxSnapshot.rate).toBe(360);
-    expect(persisted.fxSnapshot.equivalentAmount).toBe(4500);
+    const saved = await OpeningBalance.create({ entityType: 'supplier', entity: supplier._id, entityName: supplier.name, currency: 'GBP', amount: 10, fxSnapshot: { fromCurrency: 'GBP', toCurrency: 'PKR', rate: 360, originalAmount: 10, equivalentAmount: 3600, source: 'Historical', effectiveAt: new Date(), fetchedAt: new Date() } });
+    await expect(adjustSupplierPayable({ params: { id: String(supplier._id) }, body: adjustmentBody(supplier, { currency: 'GBP', amount: 12.5, note: 'Correction' }), user: { _id: userId } }, mockRes())).rejects.toMatchObject({ statusCode: 400 });
+    expect((await Supplier.findById(supplier._id)).toObject()).toMatchObject({ payable: 1000, payableGBP: 10 });
+    expect((await OpeningBalance.findById(saved._id)).fxSnapshot.equivalentAmount).toBe(3600);
+    expect(await OpeningBalance.countDocuments()).toBe(1);
   });
 
-  it('converts PKR payable snapshots to GBP using the mocked current provider quote', async () => {
-    const supplier = await Supplier.create({ name: 'PKR Supplier', payable: 1000, payableGBP: 0 });
-    const body = adjustmentBody(supplier, { amount: 1000.01, note: 'PKR payable snapshot check' });
-    const res = mockRes();
-    clearRateCacheForTests();
-
-    await adjustSupplierPayable({ params: { id: supplier._id.toString() }, body, user: { _id: userId } }, res);
-
-    expect(res.statusCode).toBe(201);
+  it('corrects PKR balances without creating a foreign-currency snapshot', async () => {
+    const supplier = await makeSupplier(1000); const res = mockRes();
+    await adjustSupplierPayable({ params: { id: String(supplier._id) }, body: adjustmentBody(supplier, { amount: 1000.01, note: 'PKR correction' }), user: { _id: userId } }, res);
     expect(res.body.supplier.payable).toBe(1000.01);
     expect(res.body.supplier.payableGBP).toBe(0);
-    expect(res.body.adjustment.fxSnapshot).toMatchObject({
-      fromCurrency: 'PKR', toCurrency: 'GBP', rate: 1 / 360,
-      originalAmount: 1000.01, equivalentAmount: 2.78, source: 'ExchangeRate-API',
-      sourceIdentifier: 'exchangerate-api:PKR',
-    });
+    expect(res.body.adjustment.fxSnapshot).toBeUndefined();
   });
 
   it('rejects a repeated or stale payable correction without duplicating its audit row', async () => {
@@ -146,46 +114,24 @@ describe('adjustSupplierPayable (DB-backed)', () => {
     expect((await Supplier.findById(supplier._id)).payable).toBe(1250);
   });
 
-  it('does not write a correction when the rate provider is unavailable', async () => {
-    const supplier = await makeSupplier(1000);
-    const body = adjustmentBody(supplier, { amount: 1200, note: 'Provider failure check' });
-    clearRateCacheForTests();
-    vi.stubGlobal('fetch', async () => ({ ok: false, json: async () => ({}) }));
-    await expect(adjustSupplierPayable({ params: { id: supplier._id.toString() }, body, user: { _id: userId } }, mockRes()))
-      .rejects.toMatchObject({ name: 'RateUnavailableError', statusCode: 503 });
-    expect((await Supplier.findById(supplier._id)).payable).toBe(1000);
-    expect(await OpeningBalance.countDocuments({ entity: supplier._id })).toBe(0);
-    vi.stubGlobal('fetch', async (url) => {
-      const base = String(url).split('/').at(-1);
-      const time = Math.floor(Date.now() / 1000);
-      return { ok: true, json: async () => ({ result: 'success', base_code: base, conversion_rates: base === 'GBP' ? { GBP: 1, PKR: 360 } : { GBP: 1 / 360, PKR: 1 }, time_last_update_unix: time - 60, time_next_update_unix: time + 86400 }) };
-    });
+  it('allows a PKR correction when the rate provider is unavailable without calling it', async () => {
+    const supplier = await makeSupplier(1000); const fetchSpy = vi.fn().mockRejectedValue(new Error('Offline'));
+    vi.stubGlobal('fetch', fetchSpy);
+    await adjustSupplierPayable({ params: { id: String(supplier._id) }, body: adjustmentBody(supplier, { amount: 1200, note: 'PKR correction' }), user: { _id: userId } }, mockRes());
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect((await Supplier.findById(supplier._id)).payable).toBe(1200);
+    expect(await OpeningBalance.countDocuments({ entity: supplier._id })).toBe(1);
   });
 
-  it('returns an explicit 503 and performs no write when the API key is missing', async () => {
-    const supplier = await makeSupplier(1000);
-    const body = adjustmentBody(supplier, { amount: 1200, note: 'Missing configuration check' });
-    const originalKey = process.env.EXCHANGE_RATE_API_KEY;
-    const fetchSpy = vi.fn();
+  it('allows PKR corrections without exchange-rate configuration', async () => {
+    const supplier = await makeSupplier(1000); const originalKey = process.env.EXCHANGE_RATE_API_KEY;
     delete process.env.EXCHANGE_RATE_API_KEY;
-    vi.stubGlobal('fetch', fetchSpy);
-    clearRateCacheForTests();
-
+    const fetchSpy = vi.fn(); vi.stubGlobal('fetch', fetchSpy);
     try {
-      await expect(adjustSupplierPayable({ params: { id: supplier._id.toString() }, body, user: { _id: userId } }, mockRes()))
-        .rejects.toMatchObject({ name: 'RateUnavailableError', statusCode: 503, message: 'Exchange-rate service is not configured. Contact an administrator.' });
+      await adjustSupplierPayable({ params: { id: String(supplier._id) }, body: adjustmentBody(supplier, { amount: 1200, note: 'PKR correction' }), user: { _id: userId } }, mockRes());
       expect(fetchSpy).not.toHaveBeenCalled();
-      expect((await Supplier.findById(supplier._id)).payable).toBe(1000);
-      expect(await OpeningBalance.countDocuments({ entity: supplier._id })).toBe(0);
-    } finally {
-      process.env.EXCHANGE_RATE_API_KEY = originalKey;
-      vi.stubGlobal('fetch', async (url) => {
-        const base = String(url).split('/').at(-1);
-        const time = Math.floor(Date.now() / 1000);
-        return { ok: true, json: async () => ({ result: 'success', base_code: base, conversion_rates: base === 'GBP' ? { GBP: 1, PKR: 360 } : { GBP: 1 / 360, PKR: 1 }, time_last_update_unix: time - 60, time_next_update_unix: time + 86400 }) };
-      });
-      clearRateCacheForTests();
-    }
+      expect((await Supplier.findById(supplier._id)).payable).toBe(1200);
+    } finally { process.env.EXCHANGE_RATE_API_KEY = originalKey; }
   });
 
   it('rejects an adjustment with no note', async () => {

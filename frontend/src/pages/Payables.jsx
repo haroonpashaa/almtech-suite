@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client.js';
 import { money, date as fmtDate } from '../lib/format.js';
@@ -20,7 +20,8 @@ export default function Payables() {
   const [to, setTo] = useState('');
   const [bucket, setBucket] = useState('');
   const [status, setStatus] = useState('');
-  const [currency, setCurrency] = useState('PKR');
+  const [searchParams] = useSearchParams();
+  const currency = searchParams.get('currency') === 'GBP' ? 'GBP' : 'PKR';
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['payables', q, from, to, bucket, status, currency],
@@ -47,7 +48,7 @@ export default function Payables() {
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="card p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">Total Payables</div>
-            <div className="mt-2 fig-lg font-semibold num text-ink-900 tracking-tight flex flex-wrap gap-x-3">{Object.entries(position?.payablesByCurrency || { PKR: position?.payables || 0 }).map(([code, amount]) => <span key={code}>{money(amount, code)}</span>)}</div>
+            <div className="mt-2 fig-lg font-semibold num text-ink-900 tracking-tight flex flex-wrap gap-x-3">{Object.entries(position?.payablesByCurrency || { PKR: position?.payables || 0 }).filter(([code, amount]) => code === 'PKR' || amount !== 0).map(([code, amount]) => <span key={code}>{money(amount, code)}</span>)}</div>
             <div className="text-xs text-ink-400 mt-1">Owed by us, grouped by original currency</div>
           </div>
           <div className="card p-5">
@@ -80,7 +81,7 @@ export default function Payables() {
         </div>
 
         <div className="flex flex-wrap items-end gap-3">
-          <div><label htmlFor="payables-currency" className="label">Currency</label><select id="payables-currency" className="select" value={currency} onChange={(e) => { setCurrency(e.target.value); setBucket(''); }}><option value="PKR">PKR</option><option value="GBP">GBP</option></select></div>
+          <div><label htmlFor="payables-currency" className="label">Currency</label><div id="payables-currency" className="input bg-ink-25">{currency}{currency !== 'PKR' ? ' · Historical' : ''}</div></div>
           <div className="field-search max-w-xs w-full">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
             <input className="input" placeholder="Search supplier, contact, phone…" value={q} onChange={(e) => setQ(e.target.value)} />

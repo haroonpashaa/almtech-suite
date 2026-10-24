@@ -1,3 +1,4 @@
+import { requireSupportedCurrency } from '../utils/currencyPolicy.js';
 import { allocateBulkPurchase } from '../utils/bulkPurchase.js';
 import asyncHandler from 'express-async-handler';
 import PurchaseOrder from '../models/PurchaseOrder.js';
@@ -12,7 +13,7 @@ import { resolvePaging, runPaged } from '../utils/pagination.js';
 import { requirePositiveWholeQuantity } from '../utils/quantity.js';
 import { safeFilterValue } from '../utils/safeFilterValue.js';
 import { claimDealForLink, requireDealTransactionSupport, validateDealId } from '../utils/dealLink.js';
-import { createRateSnapshot, roundCurrency } from '../services/exchangeRate.service.js';
+import { roundCurrency } from '../services/exchangeRate.service.js';
 
 // Notes are free-text metadata on the order (see updatePO's comment on "pure
 // metadata"), not something Sales is authorized to see. Sales cannot create, edit,
@@ -66,7 +67,12 @@ export const getPO = asyncHandler(async (req, res) => {
     res.status(404);
     throw new Error('Purchase order not found');
   }
-  res.json(withoutPONotes(req, po));
+  // Display-only enrichment; product references and persisted purchase costs stay intact.
+  const products = await Product.find({ _id: { $in: po.items.map(line => line.product) } }).select('model');
+  const models = new Map(products.map(product => [String(product._id), product.model]));
+  const result = withoutPONotes(req, po.toObject());
+  result.items = result.items.map(line => ({ ...line, model: models.get(String(line.product)) || line.name }));
+  res.json(result);
 });
 
 export const createPO = asyncHandler(async (req, res) => {
@@ -75,7 +81,7 @@ export const createPO = asyncHandler(async (req, res) => {
   if (bulkPurchaseTotal !== null && req.user?.role !== 'admin') { res.status(403); throw new Error('Only Admin can set a bulk purchase payable'); }
   if (!Array.isArray(items) || !items.length) { res.status(400); throw new Error('At least one item is required'); }
   if (!Number.isFinite(Number(taxRate)) || Number(taxRate) < 0) { res.status(400); throw new Error('Invalid tax rate'); }
-  if (!['GBP', 'PKR'].includes(currency)) { res.status(400); throw new Error('Payable currency must be GBP or PKR'); }
+  requireSupportedCurrency(currency);
   const deal = await validateDealId(res, dealId);
   await requireDealTransactionSupport(res, deal);
   const supplier = await Supplier.findById(supplierId);
@@ -120,7 +126,7 @@ export const createPO = asyncHandler(async (req, res) => {
   }
   const taxAmount = Math.round(subtotal * (taxRate / 100) * 100) / 100;
   const total = roundCurrency(subtotal + taxAmount);
-  const fxSnapshot = await createRateSnapshot(total, currency, currency === 'GBP' ? 'PKR' : 'GBP');
+
   const number = await nextNumber('po');
 
   // ALM-SEC-018 fix: PO creation and the supplier.payable increase are one
@@ -142,7 +148,7 @@ export const createPO = asyncHandler(async (req, res) => {
         supplier: supplier._id,
         deal,
         currency,
-        fxSnapshots: [fxSnapshot],
+        fxSnapshots: [],
         items: lines,
         subtotal,
         bulkPurchaseTotal: bulkPurchaseTotal === null ? null : subtotal,
@@ -287,7 +293,8 @@ export const updatePO = asyncHandler(async (req, res) => {
     res.status(409); throw new Error('Bulk purchase financial details cannot change after any stock has been received');
   }
   const newCurrency = req.body.currency ?? po.currency ?? 'PKR';
-  if (!['GBP', 'PKR'].includes(newCurrency)) { res.status(400); throw new Error('Payable currency must be GBP or PKR'); }
+  requireSupportedCurrency(po.currency || 'PKR');
+  requireSupportedCurrency(newCurrency);
   const currencyChanged = newCurrency !== (po.currency || 'PKR');
   const anyReceivedAnywhere = po.items.some((l) => l.received > 0);
   if (currencyChanged && anyReceivedAnywhere) {
@@ -390,7 +397,6 @@ export const updatePO = asyncHandler(async (req, res) => {
   const taxAmount = roundCurrency(subtotal * (taxRate / 100));
   const total = roundCurrency(subtotal + taxAmount);
   const oldTotal = po.total;
-  const fxSnapshot = await createRateSnapshot(total, newCurrency, newCurrency === 'GBP' ? 'PKR' : 'GBP');
 
   // Status follows the same derivation receiveItems uses — reducing an ordered
   // quantity down to exactly what's already received can legitimately close the
@@ -403,7 +409,7 @@ export const updatePO = asyncHandler(async (req, res) => {
     bulkPurchaseTotal: bulkPurchaseTotal === null ? null : subtotal,
     items: newLines, subtotal, taxRate, taxAmount, total, balance: total, status: newStatus,
     currency: newCurrency,
-    fxSnapshots: [...(po.fxSnapshots || []), fxSnapshot],
+    fxSnapshots: po.fxSnapshots || [],
   };
   if (supplierChanged) setFields.supplier = newSupplierId;
   if (notes !== undefined) setFields.notes = notes;
@@ -481,7 +487,7 @@ export const receiveItems = asyncHandler(async (req, res) => {
   }
   if ((po.currency || 'PKR') !== 'PKR') {
     res.status(400);
-    throw new Error('Receiving GBP purchase orders is disabled until inventory cost records support currency-specific costs. The PO and its GBP payable remain available for review and matching-currency payment.');
+    throw new Error('Receiving GBP purchase orders is disabled until inventory cost records support currency-specific costs. The PO and its GBP payable remain available for historical review; new postings are PKR-only.');
   }
   // Validate every receipt before touching any stock — a malformed quantity anywhere
   // in the batch rejects the whole request rather than silently skipping that one
@@ -614,6 +620,7 @@ export const receiveItems = asyncHandler(async (req, res) => {
 });
 
 export const recordSupplierPayment = asyncHandler(async (req, res) => {
+  requireSupportedCurrency(req.body.currency ?? 'PKR');
   const { amount, method = 'bank', reference, account: accountId, idempotencyKey } = req.body;
   if (!(amount > 0)) {
     res.status(400);

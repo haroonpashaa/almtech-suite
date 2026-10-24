@@ -42,6 +42,7 @@ export default function PurchaseOrderForm() {
   const [dealId, setDealId] = useState('');
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState([]);
+  const [cartModelFilter, setCartModelFilter] = useState('');
   const [taxRate, setTaxRate] = useState(0);
   const [expectedAt, setExpectedAt] = useState('');
   const [notes, setNotes] = useState('');
@@ -61,7 +62,8 @@ export default function PurchaseOrderForm() {
     setBulkAmount(po.bulkPurchaseTotal ?? '');
     setDealId(po.deal?._id || po.deal || '');
     setCart(po.items.map((l) => ({
-      product: l.product?._id || l.product, name: l.name, sku: l.sku,
+      product: l.product?._id || l.product, name: l.name, sku: l.sku, model: l.model || l.name,
+      displaySerials: l.serials || [],
       quantity: l.quantity, unitCost: l.unitCost, received: l.received || 0,
     })));
     setTaxRate(po.taxRate || 0);
@@ -92,11 +94,14 @@ export default function PurchaseOrderForm() {
   // mismatched balance. New (create) always allows full editing.
   const isEdit = !!id;
   const bulkLocked = po?.bulkPurchaseTotal != null && (!isAdmin || po.items.some(line => line.received > 0));
-  const canEditFinancials = !isEdit || (po && !bulkLocked && po.paid === 0 && po.status !== 'received' && po.status !== 'cancelled');
+  const canEditFinancials = !isEdit || (po && currency === 'PKR' && !bulkLocked && po.paid === 0 && po.status !== 'received' && po.status !== 'cancelled');
+  const filteredCart = cart.map((line, i) => ({ line, i })).filter(({ line }) =>
+    (line.model || line.name || '').toLocaleLowerCase().includes(cartModelFilter.trim().toLocaleLowerCase())
+  );
   const anyReceivedAnywhere = isEdit && cart.some((l) => l.received > 0);
   const canChangeSupplier = canEditFinancials && !anyReceivedAnywhere;
   const lockedReason = isEdit && po && !canEditFinancials
-    ? (bulkLocked ? 'Bulk purchase financial details are locked after receipt and for non-Admin users. Notes and expected delivery can still be changed.' : po.paid > 0
+    ? (currency !== 'PKR' ? 'Historical foreign-currency financial details are read-only. Notes and delivery may still be edited.' : bulkLocked ? 'Bulk purchase financial details are locked after receipt and for non-Admin users. Notes and expected delivery can still be changed.' : po.paid > 0
       ? 'This purchase order has payments recorded against it, so its items, supplier and cost details can no longer be edited. Only notes and expected delivery can still be changed.'
       : 'This purchase order has been fully received, so its items, supplier and cost details are locked. Only notes and expected delivery can still be changed.')
     : null;
@@ -246,6 +251,15 @@ export default function PurchaseOrderForm() {
             </div>
           )}
           <div className="card overflow-hidden">
+            {cart.length > 0 && <div className="p-4 border-b border-ink-100 flex flex-wrap items-end gap-3">
+              <div className="flex-1 min-w-48"><label htmlFor="po-cart-model-filter" className="label">Filter cart by model</label>
+                <input id="po-cart-model-filter" className="input" type="search" list="po-cart-models" placeholder="Search laptop model…" value={cartModelFilter} onChange={e => setCartModelFilter(e.target.value)} />
+                <datalist id="po-cart-models">{[...new Set(cart.map(line => line.model || line.name))].sort().map(model => <option key={model} value={model} />)}</datalist>
+              </div>
+              <button type="button" className="btn-secondary" disabled={!cartModelFilter} onClick={() => setCartModelFilter('')}>Clear cart filter</button>
+              <p role="status" className="text-xs text-ink-500 w-full">{filteredCart.length} of {cart.length} cart items shown. Totals include all items.</p>
+              {!filteredCart.length && <p className="text-sm text-ink-500">No cart items match this model.</p>}
+            </div>}
             {cart.length === 0 ? (
               <div className="text-center text-sm text-ink-400 py-12">No items yet — add products above.</div>
             ) : (
@@ -260,11 +274,11 @@ export default function PurchaseOrderForm() {
                   {canEditFinancials && <th className="w-10"></th>}
                 </tr></thead>
                 <tbody>
-                  {cart.map((line, i) => {
+                  {filteredCart.map(({ line, i }) => {
                     const costLocked = !canEditFinancials || line.received > 0;
                     return (
-                      <tr key={i} className="tr">
-                        <td className="td"><div className="font-medium text-ink-900">{line.name}</div><div className="t-meta font-mono">{line.sku}</div></td>
+                      <tr key={line.product} className="tr">
+                        <td className="td"><div className="font-medium text-ink-900">{line.name}</div><div className="t-meta font-mono">{line.sku}</div><div className="t-meta">{line.model || line.name}{line.displaySerials?.length > 0 ? ` · ${line.displaySerials.join(', ')}` : ''}</div></td>
                         {isEdit && <td className="td text-right num text-ink-700">{line.received}</td>}
                         <td className="td text-right">
                           {canEditFinancials ? (
@@ -301,14 +315,14 @@ export default function PurchaseOrderForm() {
                 sideways scrolling is not an acceptable substitute. */}
             {cart.length > 0 && (
               <ul className="sm:hidden divide-y divide-ink-100">
-                {cart.map((line, i) => {
+                {filteredCart.map(({ line, i }) => {
                   const costLocked = !canEditFinancials || line.received > 0;
                   return (
-                    <li key={i} className="p-3.5">
+                    <li key={line.product} className="p-3.5">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="font-medium text-ink-900 text-[13.5px] leading-snug">{line.name}</div>
-                          <div className="t-meta font-mono truncate">{line.sku}{isEdit ? ` · ${line.received} received` : ''}</div>
+                          <div className="t-meta font-mono truncate">{line.model || line.name} · {line.displaySerials?.join(', ') || line.sku}{isEdit ? ` · ${line.received} received` : ''}</div>
                         </div>
                         {canEditFinancials && line.received === 0 && (
                           <button className="btn-icon text-ink-300 hover:text-red-600 hover:bg-red-50 shrink-0 -mt-1 -mr-1"
@@ -376,7 +390,7 @@ export default function PurchaseOrderForm() {
                 )}
               </div>
               {canEditFinancials ? (
-                <div><label htmlFor="purchaseorderform-currency" className="label">Payable currency</label><select id="purchaseorderform-currency" className="select" value={currency} disabled={anyReceivedAnywhere} onChange={(e) => setCurrency(e.target.value)}><option value="PKR">PKR</option><option value="GBP">GBP</option></select>{anyReceivedAnywhere && <p className="text-xs text-ink-400 mt-1">Currency cannot change after receipt.</p>}</div>
+                <div><label htmlFor="purchaseorderform-currency" className="label">Payable currency</label><select id="purchaseorderform-currency" className="select" value={currency} disabled={anyReceivedAnywhere} onChange={(e) => setCurrency(e.target.value)}><option value="PKR">PKR</option></select>{anyReceivedAnywhere && <p className="text-xs text-ink-400 mt-1">Currency cannot change after receipt.</p>}</div>
               ) : (
                 <div><label className="label">Payable currency</label><div className="input bg-ink-25 text-ink-700">{po?.currency || 'PKR'}</div></div>
               )}
