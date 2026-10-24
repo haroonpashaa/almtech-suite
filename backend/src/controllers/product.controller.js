@@ -1,3 +1,5 @@
+import mongoose from 'mongoose';
+import { inventoryOperation, operationError } from '../utils/inventoryOperation.js';
 import asyncHandler from 'express-async-handler';
 import Product from '../models/Product.js';
 import StockMovement from '../models/StockMovement.js';
@@ -127,16 +129,18 @@ export const listProducts = asyncHandler(async (req, res) => {
     if (selectedModels.length) filter.model = { $in: selectedModels };
   }
   if (q) {
+    const search = String(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     // Specifications are part of the search because "16GB" or "i7" is how staff
     // actually look for a machine at the counter.
     filter.$or = [
-      { name: new RegExp(q, 'i') },
-      { sku: new RegExp(q, 'i') },
-      { brand: new RegExp(q, 'i') },
-      { model: new RegExp(q, 'i') },
-      { processor: new RegExp(q, 'i') },
-      { ram: new RegExp(q, 'i') },
-      { storage: new RegExp(q, 'i') },
+      { name: new RegExp(search, 'i') },
+      { sku: new RegExp(search, 'i') },
+      { brand: new RegExp(search, 'i') },
+      { model: new RegExp(search, 'i') },
+      { processor: new RegExp(search, 'i') },
+      { ram: new RegExp(search, 'i') },
+      { storage: new RegExp(search, 'i') },
+      { 'serials.serial': new RegExp(search, 'i') },
     ];
   }
   // Expressed as a query condition (not a post-fetch filter) so it composes correctly
@@ -347,6 +351,66 @@ export const adjustStock = asyncHandler(async (req, res) => {
   });
   await logActivity(req, 'stock_adjusted', { entity: 'Product', entityId: updated._id, meta: { quantity, note } });
   res.json(sanitizeProduct(req, updated));
+});
+
+// Removing physical stock is separate from deleting/deactivating a product.
+async function removeStockLine(req, res, session) {
+  const { quantity, reason, serials = [] } = req.body;
+  if (!Number.isSafeInteger(quantity) || quantity <= 0) {
+    res.status(400); throw new Error('Removal quantity must be a positive whole number');
+  }
+  if (typeof reason !== 'string' || !reason.trim()) {
+    res.status(400); throw new Error('A removal reason is required');
+  }
+  if (!Array.isArray(serials) || serials.some(s => typeof s !== 'string') || new Set(serials).size !== serials.length) {
+    res.status(400); throw new Error('Serial selections must be unique serial numbers');
+  }
+  const product = await Product.findById(req.params.id).session(session);
+  if (!product) { res.status(404); throw new Error('Product not found'); }
+  if (product.tracksSerials) {
+    if (serials.length !== quantity || serials.some(sn => !product.serials.some(s => s.serial === sn && s.status === 'in_stock' && !s.soldInvoice))) {
+      res.status(400); throw new Error('Select exactly one available in-stock serial per unit to remove');
+    }
+  } else if (serials.length) {
+    res.status(400); throw new Error('This product does not track serial numbers');
+  }
+  const mutation = { $inc: { stock: -quantity } };
+  if (product.tracksSerials) mutation.$pull = { serials: { serial: { $in: serials }, status: 'in_stock', soldInvoice: null } };
+  const changed = await Product.findOneAndUpdate(
+    { _id: product._id, stock: { $gte: quantity } }, mutation, { new: true, session }
+  );
+  if (!changed) { res.status(409); throw new Error('Insufficient available stock; refresh inventory before retrying'); }
+  await StockMovement.create([{
+    product: changed._id, type: 'adjustment', quantity: -quantity,
+    balanceAfter: changed.stock, refType: 'Adjustment', createdBy: req.user._id,
+    note: `Delete Stock: ${reason.trim()}${serials.length ? ` | Serials: ${JSON.stringify(serials)}` : ''}`,
+  }], { session });
+  return changed;
+}
+
+export const removeStock = asyncHandler(async (req, res) => {
+  const result = await inventoryOperation({ owner: req.user._id, kind: 'stock-removal', key: req.body.idempotencyKey, input: { product: req.params.id, quantity: req.body.quantity, reason: req.body.reason, serials: req.body.serials || [] } }, async session => {
+    const product = await removeStockLine(req, res, session);
+    return { productId: String(product._id) };
+  });
+  const updated = await Product.findById(result.productId);
+  await logActivity(req, 'stock_adjusted', { entity: 'Product', entityId: updated._id, meta: { quantity: -req.body.quantity, reason: req.body.reason, serials: req.body.serials || [] } });
+  res.json(sanitizeProduct(req, updated));
+});
+
+export const removeStockBulk = asyncHandler(async (req, res) => {
+  const { items, reason, idempotencyKey } = req.body;
+  if (!Array.isArray(items) || !items.length || items.length > 1000 || items.some(item => !item || !mongoose.isValidObjectId(item.product))) throw operationError('Select between 1 and 1000 valid products', 400);
+  if (new Set(items.map(item => String(item.product).toLowerCase())).size !== items.length) throw operationError('Each product may only appear once', 400);
+  const result = await inventoryOperation({ owner: req.user._id, kind: 'stock-removal', key: idempotencyKey, input: { items, reason } }, async session => {
+    const removed = [];
+    for (const item of items) {
+      const product = await removeStockLine({ ...req, params: { id: item.product }, body: { quantity: item.quantity, serials: item.serials || [], reason } }, res, session);
+      removed.push({ product: String(product._id), quantity: item.quantity, balanceAfter: product.stock });
+    }
+    return { removed };
+  });
+  res.json(result);
 });
 
 export const stockLedger = asyncHandler(async (req, res) => {

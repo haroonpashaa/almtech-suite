@@ -27,9 +27,13 @@ export function AuthProvider({ children }) {
     return r.data.user;
   }
 
-  function logout() {
+  async function logout() {
+    const detail = { tasks: [] };
+    window.dispatchEvent(new CustomEvent('erp:before-logout', { detail }));
+    try { await Promise.all(detail.tasks); } catch { return false; }
     localStorage.removeItem('token');
     setUser(null);
+    return true;
   }
 
   const has = (...roles) => !!user && roles.includes(user.role);

@@ -1,3 +1,4 @@
+import { useSaleDraft, SaleDraftPanel } from '../hooks/useSaleDraft.jsx';
 import { invalidateSale } from '../lib/invalidateInventory.js';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSubmit } from '../hooks/useSubmit.js';
@@ -61,6 +62,16 @@ export default function POS() {
   const [barcode, setBarcode] = useState('');
   const [scanning, setScanning] = useState(false);
   const barcodeRef = useRef(null);
+
+  const draft = useSaleDraft({ cart, customer, dealId, bulkMode, bulkAmount, discount, taxRate, paymentAmount, paymentMethod, paymentAccount, notes, payKey, stockSelection, selectedSerials }, state => {
+    setCart(state?.cart || []); setCustomer(state?.customer || ''); setDealId(state?.dealId || '');
+    setBulkMode(state?.bulkMode || false); setBulkAmount(state?.bulkAmount || '');
+    setDiscount(state?.discount || ''); setTaxRate(state?.taxRate || 0);
+    setPaymentAmount(state?.paymentAmount || ''); setPaymentMethod(state?.paymentMethod || 'cash');
+    setPaymentAccount(state?.paymentAccount || ''); setNotes(state?.notes || '');
+    setPayKey(state?.payKey || newIdempotencyKey());
+    setStockSelection(state?.stockSelection || {}); setSelectedSerials(state?.selectedSerials || {});
+  }, invoiceId => navigate(`/invoices/${invoiceId}`));
 
   const modelOptions = useQuery({
     queryKey: ['products-pos-models'],
@@ -261,13 +272,17 @@ export default function POS() {
             ? { amount: Number(paymentAmount), method: paymentMethod, account: paymentAccount, idempotencyKey: payKey }
             : undefined,
       };
-      const r = await api.post('/invoices', payload);
+      const savedDraft = await draft.flush();
+      draft.pause();
+      const r = await api.post('/invoices', { ...payload, idempotencyKey: payKey, draftId: savedDraft.id, draftVersion: savedDraft.revision });
+      draft.complete();
       invalidateSale(qc);
       toast.success(`Invoice ${r.data.number} created`);
       setPayKey(newIdempotencyKey());
       navigate(`/invoices/${r.data._id}`);
     } catch (e) {
-      // A timeout or failed initial payment may follow a committed invoice.
+      draft.resume();
+      // A lost response may follow a committed invoice; keep the same draft key.
       invalidateSale(qc);
       toast.error(errorMessage(e));
     } finally {
@@ -278,8 +293,10 @@ export default function POS() {
   // A sale posts money and moves stock; the control is latched while in flight.
   const { run: submit, pending: submitting } = useSubmit(doSubmit);
 
+  if (draft.loading) return <div className="page"><p>{draft.status || 'Loading Draft Sales…'}</p></div>;
+
   return (
-    <div className="pb-24 lg:pb-0">
+    <fieldset disabled={saving || draft.busy} className="min-w-0 pb-24 lg:pb-0">
       <PageHeader
         title="Point of Sale"
         subtitle="Create a new sale and invoice"
@@ -288,6 +305,7 @@ export default function POS() {
       <div className="page page-w grid grid-cols-1 lg:grid-cols-5 gap-6">
         {/* LEFT: catalog + cart */}
         <div className="lg:col-span-3 space-y-4">
+          <SaleDraftPanel draft={draft} disabled={saving} />
           {/* Barcode scan */}
           <div className="card p-4">
             {/* autoFocus is applied only on a pointer device: on a phone it would
@@ -682,6 +700,6 @@ export default function POS() {
           </div>
         </div>
       )}
-    </div>
+    </fieldset>
   );
 }

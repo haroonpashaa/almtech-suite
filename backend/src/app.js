@@ -19,6 +19,7 @@ import userRoutes from './routes/user.routes.js';
 import productRoutes from './routes/product.routes.js';
 import customerRoutes from './routes/customer.routes.js';
 import supplierRoutes from './routes/supplier.routes.js';
+import saleDraftRoutes from './routes/saleDraft.routes.js';
 import invoiceRoutes from './routes/invoice.routes.js';
 import quotationRoutes from './routes/quotation.routes.js';
 import purchaseOrderRoutes from './routes/purchaseOrder.routes.js';
@@ -131,6 +132,7 @@ export function createApp({ serveFrontend = true } = {}) {
   app.use('/api/customers', customerRoutes);
   app.use('/api/suppliers', supplierRoutes);
   app.use('/api/invoices', invoiceRoutes);
+  app.use('/api/sale-drafts', saleDraftRoutes);
   app.use('/api/quotations', quotationRoutes);
   app.use('/api/purchase-orders', purchaseOrderRoutes);
   app.use('/api/payments', paymentRoutes);

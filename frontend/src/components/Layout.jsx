@@ -205,9 +205,8 @@ export default function Layout() {
     }))
   );
 
-  function signOut() {
-    logout();
-    navigate('/login');
+  async function signOut() {
+    if (await logout() !== false) navigate('/login');
   }
 
   return (

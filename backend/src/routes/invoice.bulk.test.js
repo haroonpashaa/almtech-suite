@@ -48,6 +48,7 @@ afterAll(async () => {
   else process.env.JWT_SECRET = previousSecret;
 });
 async function post(body, role = 'admin', path = '') {
+  if (!path && !body.idempotencyKey) body = { ...body, idempotencyKey: new mongoose.Types.ObjectId().toString() };
   const response = await fetch(base + path, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(role ? { Authorization: `Bearer ${tokens[role]}` } : {}) }, body: JSON.stringify(body) });
   return { status: response.status, body: await response.json() };
 }

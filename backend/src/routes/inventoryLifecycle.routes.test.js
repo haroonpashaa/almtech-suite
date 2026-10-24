@@ -61,7 +61,7 @@ const receive = async (ctx, quantity) => {
   const latest = await PurchaseOrder.findById(ctx.po._id);
   return request(`/purchase-orders/${ctx.po._id}/receive`, 'POST', { receipts: [{ product: String(ctx.product._id), quantity }], expectedUpdatedAt: latest.updatedAt.toISOString(), expectedVersion: latest.__v });
 };
-const sell = (ctx, quantity, role = 'admin') => request('/invoices', 'POST', { customer: ctx.customer._id, items: [{ product: ctx.product._id, quantity, unitPrice: 150 }] }, role);
+const sell = (ctx, quantity, role = 'admin') => request('/invoices', 'POST', { idempotencyKey: new mongoose.Types.ObjectId().toString(), customer: ctx.customer._id, items: [{ product: ctx.product._id, quantity, unitPrice: 150 }] }, role);
 it('receives partially, caps repeated full receiving, then sells the same product and updates Low Stock at the exact threshold', async () => {
   const ctx = await fixture();
   expect((await request(`/products/${ctx.product._id}`)).body.stock).toBe(0);
@@ -130,7 +130,7 @@ it('rolls back receiving quantities, costs, stock and movements when a write fai
 it('sells 26 distinct selected laptops linked to a deal at an exact batch total, with one stock deduction per product', async () => {
   const customer = await Customer.create({ name: 'Bulk buyer' }); const deal = await Deal.create({ identifier: 'BULK-26' });
   const products = await Product.create(Array.from({ length: 26 }, (_, i) => ({ name: `Laptop ${i}`, model: 'EliteBook', sku: `SERIAL-${i}`, stock: 1, purchasePrice: 100 })));
-  const response = await request('/invoices', 'POST', { customer: customer._id, dealId: deal._id, bulkSellingTotal: 1000000, items: products.map(p => ({ product: p._id, quantity: 1 })) });
+  const response = await request('/invoices', 'POST', { idempotencyKey: 'bulk-26-laptops', customer: customer._id, dealId: deal._id, bulkSellingTotal: 1000000, items: products.map(p => ({ product: p._id, quantity: 1 })) });
   expect(response.status).toBe(201); expect(response.body.items).toHaveLength(26);
   expect(response.body.items.reduce((sum, line) => sum + Math.round(line.lineTotal * 100), 0)).toBe(100000000);
   expect(await Product.countDocuments({ stock: 0 })).toBe(26);

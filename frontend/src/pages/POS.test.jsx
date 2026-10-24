@@ -3,9 +3,11 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import POS from './POS.jsx';
 import { buildPosProductParams, emptyPosProductFilters } from '../lib/posProductSelection.js';
+
+vi.mock('../hooks/useSaleDraft.jsx', () => ({ useSaleDraft: () => ({ loading: false, flush: async () => ({ id: 'test-draft', revision: 1 }), complete: () => {}, pause: () => {}, resume: () => {} }), SaleDraftPanel: () => null }));
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 

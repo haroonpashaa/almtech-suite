@@ -8,6 +8,8 @@ import {
   updateProduct,
   deleteProduct,
   adjustStock,
+  removeStock,
+  removeStockBulk,
   stockLedger,
   importProducts,
   lookupByBarcode,
@@ -34,6 +36,8 @@ r.delete('/:id', requireRole('admin'), deleteProduct);
 // Sales adjusts stock too: recording that goods arrived is counter work, not an
 // administrative act. Every adjustment writes a StockMovement naming the user, so it
 // stays auditable. Creating and editing products, and bulk import, are unchanged.
+r.post('/remove-stock', requireRole('admin'), removeStockBulk);
+r.post('/:id/remove-stock', requireRole('admin'), removeStock);
 r.post('/:id/adjust', requireRole('admin', 'stock', 'sales'), adjustStock);
 r.post('/import', requireRole('admin', 'sales'), importProducts);
 export default r;

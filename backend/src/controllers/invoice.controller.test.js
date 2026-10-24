@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
 import Invoice from '../models/Invoice.js';
@@ -205,7 +205,7 @@ describe('createInvoice cart editing (DB-backed)', () => {
   const userId = new mongoose.Types.ObjectId();
 
   beforeAll(async () => {
-    mem = await MongoMemoryServer.create();
+    mem = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
     await mongoose.connect(mem.getUri());
   });
 
@@ -229,7 +229,7 @@ describe('createInvoice cart editing (DB-backed)', () => {
     return res;
   }
   function req(body) {
-    return { user: { _id: userId, role: 'sales' }, body };
+    return { user: { _id: userId, role: 'sales' }, body: { idempotencyKey: new mongoose.Types.ObjectId().toString(), ...body } };
   }
   async function makeCustomer() {
     return Customer.create({ name: 'Test Customer' });
@@ -371,17 +371,15 @@ describe('createInvoice cart editing (DB-backed)', () => {
     expect(await StockMovement.countDocuments()).toBe(0);
   });
 
-  it('clearly reports a saved invoice when its separate initial payment fails', async () => {
+  it('rolls back the invoice and stock when its initial payment fails', async () => {
     const customer = await makeCustomer(); const product = await makeProduct();
     const account = await Account.create({ name: 'Cash', type: 'cash', openingBalance: 1000, currentBalance: 1000 });
     vi.spyOn(FinancialTransaction, 'create').mockRejectedValueOnce(new Error('Injected payment failure'));
     const res = mockRes();
-    await expect(createInvoice(req({ customer: customer._id, items: [{ product: product._id, quantity: 1, unitPrice: 900 }], initialPayment: { amount: 100, account: account._id, idempotencyKey: 'isolated-initial-payment' } }), res)).rejects.toThrow(/was created and stock was deducted.*Do not submit the sale again/);
-    expect(res.statusCode).toBe(502);
-    expect(await Invoice.countDocuments()).toBe(1);
-    expect((await Invoice.findOne()).paid).toBe(0);
-    expect((await Product.findById(product._id)).stock).toBe(4);
-    expect((await Customer.findById(customer._id)).balance).toBe(900);
+    await expect(createInvoice(req({ customer: customer._id, items: [{ product: product._id, quantity: 1, unitPrice: 900 }], initialPayment: { amount: 100, account: account._id, idempotencyKey: 'isolated-initial-payment' } }), res)).rejects.toThrow('Injected payment failure');
+    expect(await Invoice.countDocuments()).toBe(0);
+    expect((await Product.findById(product._id)).stock).toBe(5);
+    expect((await Customer.findById(customer._id)).balance).toBe(0);
     expect((await Account.findById(account._id)).currentBalance).toBe(1000);
     expect(await FinancialTransaction.countDocuments()).toBe(0);
   });
@@ -492,7 +490,7 @@ describe('invoice correction actions (DB-backed)', () => {
   const userId = new mongoose.Types.ObjectId();
 
   beforeAll(async () => {
-    mem = await MongoMemoryServer.create();
+    mem = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
     await mongoose.connect(mem.getUri());
   });
 
@@ -585,7 +583,7 @@ describe('invoice correction actions (DB-backed)', () => {
 
 describe('historical invoice product/model filtering', () => {
   let memory;
-  beforeAll(async () => { memory = await MongoMemoryServer.create(); await mongoose.connect(memory.getUri()); });
+  beforeAll(async () => { memory = await MongoMemoryReplSet.create({ replSet: { count: 1 } }); await mongoose.connect(memory.getUri()); });
   afterEach(async () => { await Promise.all([Invoice.deleteMany({}), Product.deleteMany({}), Customer.deleteMany({})]); });
   afterAll(async () => { await mongoose.disconnect(); await memory.stop(); });
   const response = () => ({ statusCode: 200, status(code) { this.statusCode = code; return this; }, set() { return this; }, json(body) { this.body = body; return this; } });

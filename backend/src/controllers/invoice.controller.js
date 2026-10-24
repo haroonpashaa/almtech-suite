@@ -1,3 +1,6 @@
+import Activity from '../models/Activity.js';
+import SaleDraft from '../models/SaleDraft.js';
+import { inventoryOperation, operationError } from '../utils/inventoryOperation.js';
 import { requireSupportedCurrency } from '../utils/currencyPolicy.js';
 import asyncHandler from 'express-async-handler';
 import Invoice from '../models/Invoice.js';
@@ -26,7 +29,7 @@ import { claimDealForLink, requireDealTransactionSupport, validateDealId } from 
 // outstanding balance, paid/balance/status recomputed, customer receivable reduced.
 // What is new is that the same operation also posts a ledger row into the selected
 // financial account, and the two are tied together (payment line -> transaction).
-export async function applyInvoicePayment({ invoice, account, amount, method, reference, user, type, idempotencyKey }) {
+export async function applyInvoicePayment({ invoice, account, amount, method, reference, user, type, idempotencyKey, session: existingSession = null }) {
   if ((invoice.currency || 'PKR') !== (account.currency || 'PKR')) {
     const err = new Error(`Payment account currency ${account.currency || 'PKR'} must match invoice currency ${invoice.currency || 'PKR'}`);
     err.statusCode = 400;
@@ -110,7 +113,8 @@ export async function applyInvoicePayment({ invoice, account, amount, method, re
         err.statusCode = 409;
         throw err;
       }
-    }
+    },
+    existingSession
   );
 }
 
@@ -319,7 +323,7 @@ export async function buildLineFromProduct({ product, quantity, unitPrice, disco
 // to build totals, each carrying `product`, `quantity`, `name`, and
 // (optionally) `serials`.
 // ---------------------------------------------------------------------------
-export async function commitInvoiceEffects({ session, invoiceFields, customerId, balanceIncrease, userId }) {
+export async function commitInvoiceEffects({ session, invoiceFields, customerId, balanceIncrease, userId, creditLimitAllowance = 0 }) {
   const opts = session ? { session } : {};
 
   const [created] = await Invoice.create([invoiceFields], opts);
@@ -396,7 +400,7 @@ export async function commitInvoiceEffects({ session, invoiceFields, customerId,
           $expr: {
             $or: [
               { $lte: ['$creditLimit', 0] },
-              { $lte: [{ $add: ['$balance', balanceIncrease] }, '$creditLimit'] },
+              { $lte: [{ $add: ['$balance', balanceIncrease - creditLimitAllowance] }, '$creditLimit'] },
             ],
           },
         },
@@ -434,10 +438,12 @@ export async function commitInvoiceEffects({ session, invoiceFields, customerId,
   return created;
 }
 
-export const createInvoice = asyncHandler(async (req, res) => {
+async function createSale(req, res, existingSession) {
+  if (!existingSession) throw operationError('Sale finalization requires a database transaction', 503);
   requireSupportedCurrency(req.body.currency ?? 'PKR');
   const { customer: customerId, items, discount = 0, taxRate = 0, notes, initialPayment, dealId, bulkSellingTotal } = req.body;
   requireSupportedCurrency(initialPayment?.currency ?? 'PKR');
+  if (initialPayment && (typeof initialPayment !== 'object' || !Number.isFinite(Number(initialPayment.amount)) || Number(initialPayment.amount) < 0)) throw operationError('Enter a valid initial payment amount', 400);
   const isBulk = Object.hasOwn(req.body, 'bulkSellingTotal');
   if (isBulk && req.user.role !== 'admin') {
     res.status(403);
@@ -449,7 +455,7 @@ export const createInvoice = asyncHandler(async (req, res) => {
     res.status(400);
     throw new Error('At least one item is required');
   }
-  const customer = await Customer.findById(customerId);
+  const customer = await Customer.findById(customerId).session(existingSession);
   if (!customer) {
     res.status(404);
     throw new Error('Customer not found');
@@ -466,7 +472,7 @@ export const createInvoice = asyncHandler(async (req, res) => {
   // serial number cannot be claimed twice by two different lines in one request.
   const claimedSerials = new Set();
   for (const it of items) {
-    const product = await Product.findById(it.product);
+    const product = await Product.findById(it.product).session(existingSession);
     if (!product) {
       res.status(400);
       throw new Error(`Product not found: ${it.product}`);
@@ -476,7 +482,11 @@ export const createInvoice = asyncHandler(async (req, res) => {
       res.status(400);
       throw new Error(`Insufficient stock for ${product.name} (have ${product.stock}, need ${quantity})`);
     }
-    const serials = validateLineSerials({ product, quantity, serials: it.serials, claimedSerials });
+    const requestedSerials = existingSession && product.tracksSerials && !it.serials?.length
+      ? product.serials.filter(sn => sn.status === 'in_stock' && !sn.soldInvoice).slice(0, quantity).map(sn => sn.serial)
+      : it.serials;
+    if (existingSession && product.tracksSerials && !it.serials?.length && requestedSerials?.length !== quantity) throw operationError(`${product.name}: not enough available serial numbers`, 400);
+    const serials = validateLineSerials({ product, quantity, serials: requestedSerials, claimedSerials });
     const { unitPrice, discount: lineDiscount } = resolveLinePricing({
       role: req.user.role,
       product,
@@ -499,7 +509,7 @@ export const createInvoice = asyncHandler(async (req, res) => {
   // `initialPayment` is an object ({ amount, method, account }); subtracting it directly
   // produced NaN, so the comparison was always false and the limit was never enforced on
   // a POS sale that took money up front. creditLimit === 0 still means "no limit".
-  const upfront = Number(initialPayment?.amount) || 0;
+  const upfront = Math.min(total, Number(initialPayment?.amount) || 0);
   if (customer.creditLimit > 0 && customer.balance + total - upfront > customer.creditLimit) {
     res.status(400);
     throw new Error(`This sale would exceed the customer's credit limit of ${customer.creditLimit}`);
@@ -520,28 +530,9 @@ export const createInvoice = asyncHandler(async (req, res) => {
   const balance = total;
 
   // ---------------------------------------------------------------------------
-  // ALM-SEC-015 fix: invoice creation, every line's stock deduction, and the
-  // customer receivable bump are one logically atomic operation, exactly like
-  // applyInvoicePayment() above already treats a payment. On Atlas (a replica
-  // set) this runs as a real multi-document transaction via runAtomically(); on
-  // a standalone dev database (no transaction support) it falls back to ordered
-  // writes with an explicit compensating rollback on failure — the same
-  // architecture utils/ledger.js already uses everywhere else.
-  //
-  // Each line's stock is claimed with a single atomic conditional update
-  // (`stock: { $gte: quantity }` in the filter, `$inc` in the update), never a
-  // read-modify-write. The previous "read product.stock -> subtract in a JS
-  // variable -> product.save()" pattern lost concurrent decrements under load:
-  // ten simultaneous one-unit sales against a stock of 20 left stock at 13, not
-  // 10, because most writes clobbered each other's stale in-memory copy instead
-  // of composing — and the identical mistake on customer.balance silently lost
-  // most of the receivable the same way. The pre-flight checks above still run
-  // first (for a fast, friendly error on the overwhelmingly common
-  // non-concurrent case) but the atomic claim below is the real enforcement
-  // point: it is what actually prevents two concurrent requests from both
-  // believing they're selling the last unit.
-  // ---------------------------------------------------------------------------
-  const invoice = await runAtomically(async (session) => {
+  // The keyed operation owns one transaction for invoice, stock, receivable,
+  // initial payment and draft transition. Conditional stock claims prevent overselling.
+  const commit = async (session) => {
     if (deal) await claimDealForLink(session, deal);
     return commitInvoiceEffects({
       session,
@@ -566,14 +557,16 @@ export const createInvoice = asyncHandler(async (req, res) => {
       },
       customerId: customer._id,
       balanceIncrease: balance,
+      // This payment is in the same transaction, so the limit applies to net AR.
+      creditLimitAllowance: initialAccount ? upfront : 0,
       userId: req.user._id,
     });
-  });
+  };
+  const invoice = await commit(existingSession);
 
   // Apply the POS initial payment, if any, through the shared path above.
   if (initialAccount) {
-    try {
-      await applyInvoicePayment({
+    await applyInvoicePayment({
         invoice,
         account: initialAccount,
         amount: initialPayment.amount,
@@ -582,27 +575,59 @@ export const createInvoice = asyncHandler(async (req, res) => {
         user: req.user,
         type: 'sale_payment',
         idempotencyKey: initialPayment.idempotencyKey,
+        session: existingSession,
       });
-    } catch (e) {
-      // The invoice and its stock movements are already committed at this point.
-      // Rather than unwind a completed sale, leave it recorded as unpaid and say so —
-      // the payment can be retried from the invoice screen without re-selling stock.
-      res.status(502);
-      throw new Error(
-        `Invoice ${invoice.number} was created and stock was deducted, but the initial payment could not be posted. ` +
-          'The invoice is saved as unpaid — open the existing invoice to record payment. Do not submit the sale again.'
-      );
-    }
+
   }
 
-  await logActivity(req, 'invoice_created', {
-    entity: 'Invoice',
-    entityId: invoice._id,
-    meta: { number, total, customer: customer.name, ...(isBulk ? { bulkSellingTotal: subtotal } : {}) },
-  });
-  // Re-read for the same reason as recordPayment: a POS initial payment is applied
-  // by a conditional update, so the in-memory copy would still say unpaid.
-  res.status(201).json(initialAccount ? await Invoice.findById(invoice._id) : invoice);
+  return initialAccount ? await Invoice.findById(invoice._id).session(existingSession) : invoice;
+}
+
+function payloadFromDraft(state) {
+  if (!state.bulkMode && state.cart.some(line => line.unitPrice === '' || line.unitPrice == null || !Number.isFinite(Number(line.unitPrice)) || Number(line.unitPrice) < 0)) throw operationError('Enter a valid selling price for every draft line', 400);
+  return {
+    customer: state.customer, dealId: state.dealId || undefined,
+    ...(state.bulkMode ? { bulkSellingTotal: state.bulkAmount } : {}),
+    items: state.cart.map(line => ({ ...line, quantity: Number(line.quantity), unitPrice: Number(line.unitPrice), discount: Number(line.discount || 0), serials: (line.serials || []).filter(Boolean) })),
+    discount: Number(state.discount || 0), taxRate: Number(state.taxRate || 0), notes: state.notes,
+    initialPayment: Number(state.paymentAmount) > 0 ? { amount: Number(state.paymentAmount), method: state.paymentMethod, account: state.paymentAccount, idempotencyKey: state.payKey } : undefined,
+  };
+}
+
+async function recordSaleActivity(req, invoice, session = null) {
+  const customer = await Customer.findById(invoice.customer).select('name').session(session);
+  const meta = { number: invoice.number, total: invoice.total, customer: customer?.name, ...(invoice.bulkSellingTotal != null ? { bulkSellingTotal: invoice.bulkSellingTotal } : {}) };
+  if (session) {
+    await Activity.create([{ user: req.user._id, userName: req.user.name, action: 'invoice_created', entity: 'Invoice', entityId: String(invoice._id), meta }], { session });
+  } else await logActivity(req, 'invoice_created', { entity: 'Invoice', entityId: invoice._id, meta });
+}
+
+export const createInvoice = asyncHandler(async (req, res) => {
+  requireSupportedCurrency(req.body.currency ?? 'PKR');
+  requireSupportedCurrency(req.body.initialPayment?.currency ?? 'PKR');
+  const { draftId, draftVersion } = req.body;
+  const idempotencyKey = req.body.idempotencyKey || req.body.initialPayment?.idempotencyKey;
+  if (!draftId && !idempotencyKey) throw operationError('A sale operation key is required. Reload New Sale before submitting.', 400);
+  if (draftId && (typeof draftId !== 'string' || !Number.isSafeInteger(draftVersion) || draftVersion < 1)) throw operationError('Invalid draft finalization', 400);
+  let invoice;
+  if (idempotencyKey || draftId) {
+    const result = await inventoryOperation({ owner: req.user._id, kind: 'sale', key: draftId ? `draft:${draftId}` : idempotencyKey, input: draftId ? { draftId, draftVersion } : req.body }, async session => {
+      let body = req.body;
+      if (draftId) {
+        const draft = await SaleDraft.findOne({ _id: draftId, owner: req.user._id, status: 'active', revision: draftVersion }).session(session);
+        if (!draft) throw operationError('Draft changed or is no longer available. Reopen it before finalizing.');
+        body = payloadFromDraft(draft.state);
+        await SaleDraft.updateOne({ _id: draft._id }, { $set: { status: 'finalized' }, $inc: { revision: 1 } }, { session });
+      }
+      const saved = await createSale({ ...req, body }, res, session);
+      if (draftId) await SaleDraft.updateOne({ _id: draftId }, { $set: { invoice: saved._id } }, { session });
+      await recordSaleActivity(req, saved, session);
+      return { invoiceId: String(saved._id) };
+    });
+    invoice = await Invoice.findById(result.invoiceId);
+    if (!invoice) throw operationError('The saved invoice is unavailable. Contact an administrator.');
+  }
+  res.status(201).json(invoice);
 });
 
 export const recordPayment = asyncHandler(async (req, res) => {

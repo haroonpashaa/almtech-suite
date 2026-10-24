@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import express from 'express';
 import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import routes from './product.routes.js';
 import invoiceRoutes from './invoice.routes.js';
 import { errorHandler } from '../middleware/error.js';
@@ -23,7 +23,7 @@ const previousSecret = process.env.JWT_SECRET;
 
 beforeAll(async () => {
   process.env.JWT_SECRET = 'isolated-product-route-regression-secret';
-  memory = await MongoMemoryServer.create();
+  memory = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await mongoose.connect(memory.getUri());
   await Product.init();
   for (const role of roles) {
@@ -137,7 +137,7 @@ it('preserves inventory changed by a sale after the product form was loaded', as
   const stale = await Product.findById(product._id).lean();
   const customer = await Customer.create({ name: 'Test customer' });
   const sale = await request('admin', 'POST', '/invoices', {
-    customer: String(customer._id), items: [{ product: String(product._id), quantity: 1, unitPrice: 800, serials: ['SN-1'] }],
+    idempotencyKey: 'stale-product-sale', customer: String(customer._id), items: [{ product: String(product._id), quantity: 1, unitPrice: 800, serials: ['SN-1'] }],
   });
   expect(sale.status).toBe(201);
   const inventoryAfterSale = await Product.findById(product._id).lean();

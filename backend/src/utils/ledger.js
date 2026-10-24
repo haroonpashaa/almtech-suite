@@ -123,8 +123,8 @@ export async function reverseTransaction(txn) {
 //
 // `applyDocumentUpdates(session, txn)` must perform the invoice/PO/customer/
 // supplier writes and pass `session` through to every one of them.
-export async function postPaymentAtomically(entry, applyDocumentUpdates) {
-  return runAtomically(async (session) => {
+export async function postPaymentAtomically(entry, applyDocumentUpdates, existingSession = null) {
+  const work = async (session) => {
     const txn = await postTransaction(entry, session);
     try {
       await applyDocumentUpdates(session, txn);
@@ -133,7 +133,8 @@ export async function postPaymentAtomically(entry, applyDocumentUpdates) {
       throw e;
     }
     return txn;
-  });
+  };
+  return existingSession ? work(existingSession) : runAtomically(work);
 }
 
 // Claim the party-side obligation before settling a document. A prior non-cash

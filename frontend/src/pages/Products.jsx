@@ -1,5 +1,7 @@
+import { newIdempotencyKey } from '../lib/idempotency.js';
 import { invalidateInventory } from '../lib/invalidateInventory.js';
 import { useState } from 'react';
+import { useSubmit } from '../hooks/useSubmit.js';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
@@ -32,6 +34,44 @@ export default function Products() {
   const [delta, setDelta] = useState('');
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
+
+  const [removalKey, setRemovalKey] = useState(newIdempotencyKey);
+  const [bulkSelection, setBulkSelection] = useState({});
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkReason, setBulkReason] = useState('');
+  const [bulkReviewed, setBulkReviewed] = useState(false);
+  const [bulkKey, setBulkKey] = useState(newIdempotencyKey);
+  const [removing, setRemoving] = useState(null);
+  const [removeQty, setRemoveQty] = useState('');
+  const [removeReason, setRemoveReason] = useState('');
+  const [removeSerials, setRemoveSerials] = useState([]);
+  const removalValid = removing && Number.isSafeInteger(Number(removeQty)) && Number(removeQty) > 0 && Number(removeQty) <= removing.stock && removeReason.trim() && (!removing.tracksSerials || removeSerials.length === Number(removeQty));
+  async function confirmRemoval() {
+    if (!removalValid) return;
+    try {
+      await api.post(`/products/${removing._id}/remove-stock`, { quantity: Number(removeQty), reason: removeReason.trim(), serials: removeSerials, idempotencyKey: removalKey });
+      toast.success(`${removing.name}: removed ${removeQty} units from stock`);
+      setRemoving(null);
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      invalidateInventory(qc);
+    }
+  }
+
+  const { run: submitRemoval, pending: removingBusy } = useSubmit(confirmRemoval);
+
+  const bulkRows = Object.values(bulkSelection);
+  const bulkValid = bulkRows.length > 0 && bulkReason.trim() && bulkRows.every(row => Number.isSafeInteger(Number(row.quantity)) && Number(row.quantity) > 0 && Number(row.quantity) <= row.product.stock && (!row.product.tracksSerials || row.serials.length === Number(row.quantity)));
+  function updateBulk(id, changes) { setBulkReviewed(false); setBulkSelection(rows => ({ ...rows, [id]: { ...rows[id], ...changes } })); }
+  const { pending: bulkBusy, run: removeBulk } = useSubmit(async () => {
+    if (!bulkValid || !bulkReviewed) return;
+    try {
+      await api.post('/products/remove-stock', { idempotencyKey: bulkKey, reason: bulkReason.trim(), items: bulkRows.map(row => ({ product: row.product._id, quantity: Number(row.quantity), serials: row.serials })) });
+      toast.success('Selected stock removed'); setBulkSelection({}); setBulkOpen(false);
+    } catch (error) { toast.error(errorMessage(error)); }
+    finally { invalidateInventory(qc); }
+  });
 
   const canAdjustStock = has('admin', 'stock', 'sales');
 
@@ -105,10 +145,16 @@ export default function Products() {
           error={modelOptions.isError}
           total={list.total}
         />
+        {has('admin') && <div className="flex gap-2 mb-4 items-center">
+          <span>{bulkRows.length} products selected for removal</span>
+          <button type="button" className="btn-secondary" disabled={!bulkRows.length} onClick={() => { setBulkKey(newIdempotencyKey()); setBulkReason(''); setBulkReviewed(false); setBulkOpen(true); }}>Review selected stock</button>
+          <button type="button" className="btn-secondary" disabled={!bulkRows.length} onClick={() => setBulkSelection({})}>Clear selection</button>
+        </div>}
         <Table
           {...list.tableProps}
           empty="No products match your filters"
           columns={[
+            ...(has('admin') ? [{ key: 'select-removal', label: 'Select', render: p => <input type="checkbox" aria-label={`Select ${p.name} ${p.sku} for removal`} disabled={p.stock <= 0} checked={!!bulkSelection[p._id]} onChange={e => setBulkSelection(rows => { const next = { ...rows }; if (e.target.checked) next[p._id] = { product: p, quantity: 1, serials: [] }; else delete next[p._id]; return next; })} /> }] : []),
             { key: 'name', label: 'Product Name', render: (p) => (
               <span className="block">
                 {has('admin', 'stock', 'sales') ? (
@@ -149,9 +195,38 @@ export default function Products() {
                 </button>
               ),
             }] : []),
+            ...(has('admin') ? [{ key: 'remove-stock', label: 'Delete Stock', render: (p) => (
+              <button type="button" className="btn-secondary" disabled={p.stock <= 0} onClick={() => { setRemovalKey(newIdempotencyKey()); setRemoving(p); setRemoveQty(''); setRemoveReason(''); setRemoveSerials([]); }}>Delete Stock</button>
+            ) }] : []),
           ]}
         />
       </div>
+
+      <Modal open={bulkOpen} onClose={() => { if (!bulkBusy) setBulkOpen(false); }} title={bulkReviewed ? 'Confirm bulk stock removal' : 'Review selected stock'}
+        footer={<><button className="btn-secondary" disabled={bulkBusy} onClick={() => bulkReviewed ? setBulkReviewed(false) : setBulkOpen(false)}>{bulkReviewed ? 'Back' : 'Cancel'}</button><button className="btn-primary" disabled={!bulkValid || bulkBusy} onClick={() => bulkReviewed ? removeBulk() : setBulkReviewed(true)}>{bulkBusy ? 'Removing…' : bulkReviewed ? 'Confirm bulk removal' : 'Review removal'}</button></>}>
+        <p className="t-meta">Products and historical transactions will remain. Selections stay across search results and pages.</p>
+        {bulkRows.map(row => <fieldset key={row.product._id} className="border-b py-3 space-y-2" disabled={bulkBusy || bulkReviewed}>
+          <legend className="font-semibold">{row.product.name} · {row.product.model || row.product.sku}</legend>
+          <p>Available: {row.product.stock} · Removal: {row.quantity}</p>
+          <label className="label">Quantity to remove<input className="input" aria-label={`Removal quantity ${row.product.sku}`} type="number" min="1" max={row.product.stock} step="1" value={row.quantity} onChange={e => updateBulk(row.product._id, { quantity: e.target.value })} /></label>
+          {row.product.tracksSerials && (row.product.serials || []).filter(sn => sn.status === 'in_stock' && !sn.soldInvoice).map(sn => <label className="block" key={sn.serial}><input type="checkbox" checked={row.serials.includes(sn.serial)} onChange={e => updateBulk(row.product._id, { serials: e.target.checked ? [...row.serials, sn.serial] : row.serials.filter(s => s !== sn.serial) })} /> {sn.serial}</label>)}
+          {bulkReviewed && row.serials.length > 0 && <p>Selected serials: {row.serials.join(', ')}</p>}
+        </fieldset>)}
+        <label className="label" htmlFor="bulk-removal-reason">Reason (required)</label><input id="bulk-removal-reason" className="input" disabled={bulkBusy || bulkReviewed} value={bulkReason} onChange={e => { setBulkReason(e.target.value); setBulkReviewed(false); }} />
+        {bulkReviewed && <p>Reason: {bulkReason} · Total removal: {bulkRows.reduce((sum, row) => sum + Number(row.quantity), 0)} units</p>}
+      </Modal>
+
+      <Modal open={!!removing} onClose={() => { if (!removingBusy) setRemoving(null); }} title="Delete Stock" size="sm"
+        subtitle={removing ? `${removing.name} · ${removing.model || removing.sku} · Available: ${removing.stock}` : ''}
+        footer={<><button className="btn-secondary" disabled={removingBusy} onClick={() => setRemoving(null)}>Cancel</button><button className="btn-primary" disabled={!removalValid || removingBusy} onClick={submitRemoval}>{removingBusy ? 'Removing…' : 'Confirm stock removal'}</button></>}>
+        <p className="t-meta">Remove units from inventory. The product and historical transactions will remain.</p>
+        <label className="label" htmlFor="remove-stock-qty">Quantity to remove</label>
+        <input id="remove-stock-qty" className="input" type="number" min="1" max={removing?.stock} step="1" value={removeQty} onChange={e => setRemoveQty(e.target.value)} disabled={removingBusy} />
+        {removing?.tracksSerials && <fieldset><legend className="label">Select the serials being removed</legend>{(removing.serials || []).filter(s => s.status === 'in_stock' && !s.soldInvoice).map(s => <label key={s.serial} className="block"><input type="checkbox" disabled={removingBusy} checked={removeSerials.includes(s.serial)} onChange={e => setRemoveSerials(current => e.target.checked ? [...current, s.serial] : current.filter(sn => sn !== s.serial))} /> {s.serial}</label>)}</fieldset>}
+        <label className="label" htmlFor="remove-stock-reason">Reason (required)</label>
+        <input id="remove-stock-reason" className="input" value={removeReason} onChange={e => setRemoveReason(e.target.value)} disabled={removingBusy} />
+        <p className="t-meta">Confirm removal of {removeQty || 0} units from {removing?.name}.</p>
+      </Modal>
 
       <Modal
         open={!!adjusting}

@@ -10,6 +10,7 @@ import { buildPosProductParams, emptyPosProductFilters } from '../lib/posProduct
 
 const auth = vi.hoisted(() => ({ role: 'admin' }));
 vi.mock('../context/AuthContext.jsx', () => ({ useAuth: () => ({ has: (...roles) => roles.includes(auth.role) }) }));
+vi.mock('../hooks/useSaleDraft.jsx', () => ({ useSaleDraft: () => ({ loading: false, flush: async () => ({ id: 'test-draft', revision: 1 }), complete: () => {}, pause: () => {}, resume: () => {} }), SaleDraftPanel: () => null }));
 vi.mock('../api/client.js', () => ({ api: { get: vi.fn(), post: vi.fn() } }));
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 let container, root, client;
