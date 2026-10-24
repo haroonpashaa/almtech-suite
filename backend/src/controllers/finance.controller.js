@@ -1,3 +1,5 @@
+import PartyEntry from '../models/PartyEntry.js';
+import { partyEntryDetail, mergeOpenPartyEntries } from '../services/partyFinance.js';
 import asyncHandler from 'express-async-handler';
 import mongoose from 'mongoose';
 import Invoice from '../models/Invoice.js';
@@ -15,8 +17,8 @@ import { runAtomically, transactionsSupported } from '../utils/ledger.js';
 // Receivables & Payables
 //
 // Nothing here stores a balance. Customer.balance and Supplier.payable remain the
-// source of truth and are still mutated only by the existing invoice / purchase-order
-// payment flows. These endpoints are a *view*: they aggregate the open invoices and
+// source of truth. Document flows, audited corrections and standalone-entry
+// operations update them through their validated posting paths. These endpoints are a *view*: they aggregate the open invoices and
 // open purchase orders that already exist, and report the stored balance alongside the
 // derived one so any divergence is visible rather than silently papered over.
 //
@@ -255,6 +257,17 @@ export const receivables = asyncHandler(async (req, res) => {
       delete row.adjustmentCount;
     }
   }
+  rows = await mergeOpenPartyEntries(rows, 'customer', Customer, req.query, now);
+  // Admin must also be able to add an entry for a customer with no invoice.
+  if (req.user?.role === 'admin' && !from && !to && !status) {
+    const parties = await Customer.find({ active: true }).select('name company phone balance');
+    const rx = q ? new RegExp(String(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
+    for (const party of parties) {
+      if (rows.some(row => String(row.customerId) === String(party._id))) continue;
+      if (rx && ![party.name, party.company, party.phone].some(v => rx.test(String(v || '')))) continue;
+      rows.push({ customerId: party._id, name: party.name, company: party.company, phone: party.phone, storedBalance: party.balance, total: 0, paid: 0, outstanding: 0, invoiceCount: 0, oldestDate: null, oldestAgeDays: 0, aging: emptyAging() });
+    }
+  }
   // Bucket filter runs last so it applies to opening-balance rows as well.
   if (bucket && BUCKETS.includes(bucket)) rows = rows.filter((r) => (r.aging?.[bucket] || 0) > 0);
   rows.sort((a, b) => b.outstanding - a.outstanding);
@@ -335,7 +348,15 @@ export const customerReceivable = asyncHandler(async (req, res) => {
   const adjustments = await ReceivableAdjustment.find({ customer: customer._id })
     .populate('createdBy', 'name').sort({ createdAt: -1 });
   const adjustmentTotal = adjustments.reduce((sum, row) => sum + row.delta, 0);
-  const totalOutstanding = outstanding + adjustmentTotal;
+  const manual = await partyEntryDetail('customer', customer._id, 'PKR', req.user?.role === 'admin');
+  const [documentTotals] = await Invoice.aggregate([
+    { $match: { customer: customer._id, status: { $nin: ['cancelled', 'returned', 'draft'] } } },
+    { $group: { _id: null, total: { $sum: '$total' }, paid: { $sum: '$paid' } } },
+  ]);
+  const totalOutstanding = outstanding + adjustmentTotal + manual.entryTotals.outstanding;
+  const manualAging = await mergeOpenPartyEntries([], 'customer', Customer, {}, now, 'PKR', customer._id);
+  const ownAging = manualAging.find(row => String(row.customerId) === String(customer._id));
+  if (ownAging) for (const key of BUCKETS) aging[key] += ownAging.aging[key];
 
   res.json({
     agingBasis: 'transaction_date',
@@ -343,8 +364,10 @@ export const customerReceivable = asyncHandler(async (req, res) => {
     invoices: rows,
     openingBalance,
     ...(req.user?.role === 'admin' ? { adjustments, adjustmentTotal } : {}),
-    total: rows.reduce((s, r) => s + r.total, 0),
-    paid: rows.reduce((s, r) => s + r.paid, 0),
+    ...manual,
+    total: (documentTotals?.total || 0) + manual.entryTotals.total,
+    paid: (documentTotals?.paid || 0) + manual.entryTotals.paid,
+    documentOutstanding: outstanding - openingBalance,
     outstanding: totalOutstanding,
     storedBalance: customer.balance,
     reconciled: Math.abs(totalOutstanding - customer.balance) < 0.005,
@@ -385,12 +408,13 @@ export const adjustCustomerReceivable = asyncHandler(async (req, res) => {
       if (!customer) { res.status(404); throw new Error('Customer not found'); }
       if (customer.balance !== expectedBalance) { res.status(409); throw new Error('Customer balance changed since it was loaded. Refresh and retry.'); }
 
-      const [invoiceAgg, openingAgg, adjustmentAgg] = await Promise.all([
+      const [invoiceAgg, openingAgg, adjustmentAgg, entryAgg] = await Promise.all([
         Invoice.aggregate([{ $match: { customer: customer._id, ...OPEN_INVOICE_MATCH } }, { $group: { _id: null, total: { $sum: '$balance' } } }]).session(session),
         OpeningBalance.aggregate([{ $match: { entityType: 'customer', entity: customer._id } }, { $group: { _id: null, total: { $sum: '$amount' } } }]).session(session),
         ReceivableAdjustment.aggregate([{ $match: { customer: customer._id } }, { $group: { _id: null, total: { $sum: '$delta' } } }]).session(session),
+        PartyEntry.aggregate([{ $match: { entityType: 'customer', entity: customer._id, status: 'active' } }, { $group: { _id: null, total: { $sum: '$balance' } } }]).session(session),
       ]);
-      const currentDerived = (invoiceAgg[0]?.total || 0) + (openingAgg[0]?.total || 0) + (adjustmentAgg[0]?.total || 0);
+      const currentDerived = (invoiceAgg[0]?.total || 0) + (openingAgg[0]?.total || 0) + (adjustmentAgg[0]?.total || 0) + (entryAgg[0]?.total || 0);
       const delta = direction === 'increase' ? amount : -amount;
       if (currentDerived + delta < -0.005 || customer.balance + delta < -0.005) { res.status(400); throw new Error('A correction cannot reduce receivables below zero'); }
       const balanceAfter = Math.round((customer.balance + delta) * 100) / 100;
@@ -528,6 +552,7 @@ export const payables = asyncHandler(async (req, res) => {
     });
   }
 
+  rows = await mergeOpenPartyEntries(rows, 'supplier', Supplier, req.query, now, currency);
   if (bucket && BUCKETS.includes(bucket)) rows = rows.filter((r) => (r.aging?.[bucket] || 0) > 0);
   rows.sort((a, b) => b.outstanding - a.outstanding);
 
@@ -604,17 +629,27 @@ export const supplierPayable = asyncHandler(async (req, res) => {
   }
   const outstanding = rows.reduce((s, r) => s + r.balance, 0) + openingBalance;
 
+  const manual = await partyEntryDetail('supplier', supplier._id, currency, true);
+  const [documentTotals] = await PurchaseOrder.aggregate([
+    { $match: { supplier: supplier._id, status: { $nin: ['cancelled', 'draft'] }, $expr: { $eq: [{ $ifNull: ['$currency', 'PKR'] }, currency] } } },
+    { $group: { _id: null, total: { $sum: '$total' }, paid: { $sum: '$paid' } } },
+  ]);
+  const manualAging = await mergeOpenPartyEntries([], 'supplier', Supplier, {}, now, currency, supplier._id);
+  const ownAging = manualAging.find(row => String(row.supplierId) === String(supplier._id));
+  if (ownAging) for (const key of BUCKETS) aging[key] += ownAging.aging[key];
   res.json({
     agingBasis: 'transaction_date',
     currency,
     supplier,
     purchaseOrders: rows,
     openingBalance,
-    total: rows.reduce((s, r) => s + r.total, 0),
-    paid: rows.reduce((s, r) => s + r.paid, 0),
-    outstanding,
+    ...manual,
+    total: (documentTotals?.total || 0) + manual.entryTotals.total,
+    paid: (documentTotals?.paid || 0) + manual.entryTotals.paid,
+    documentOutstanding: outstanding - openingBalance,
+    outstanding: outstanding + manual.entryTotals.outstanding,
     storedPayable: supplier[field] || 0,
-    reconciled: Math.abs(outstanding - (supplier[field] || 0)) < 0.005,
+    reconciled: Math.abs(outstanding + manual.entryTotals.outstanding - (supplier[field] || 0)) < 0.005,
     aging,
     oldestAgeDays: Math.max(openingAgeDays, ...rows.map((r) => r.ageDays), 0),
   });
@@ -716,10 +751,15 @@ export const position = asyncHandler(async (_req, res) => {
     OpeningBalance.aggregate([{ $match: { entityType: 'customer' } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
     OpeningBalance.aggregate([{ $match: { entityType: 'supplier' } }, { $group: { _id: { $ifNull: ['$currency', 'PKR'] }, total: { $sum: '$amount' } } }]),
   ]);
-  const receivablesTotal = (recAgg[0]?.total || 0) + (openRec[0]?.total || 0) + (adjustmentAgg[0]?.total || 0);
+  const entries = await PartyEntry.aggregate([
+    { $match: { status: 'active' } },
+    { $group: { _id: { entityType: '$entityType', currency: '$currency' }, total: { $sum: '$balance' } } },
+  ]);
+  const receivablesTotal = (recAgg[0]?.total || 0) + (openRec[0]?.total || 0) + (adjustmentAgg[0]?.total || 0) + (entries.find(row => row._id.entityType === 'customer')?.total || 0);
   const payablesByCurrency = { PKR: 0, GBP: 0 };
   for (const row of payAgg) payablesByCurrency[row._id] += row.total;
   for (const row of openPay) if (payablesByCurrency[row._id] !== undefined) payablesByCurrency[row._id] += row.total;
+  for (const row of entries) if (row._id.entityType === 'supplier') payablesByCurrency[row._id.currency] += row.total;
   const storedPayablesByCurrency = { PKR: storedPay[0]?.PKR || 0, GBP: storedPay[0]?.GBP || 0 };
   const payablesTotal = payablesByCurrency.PKR;
 

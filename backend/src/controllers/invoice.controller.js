@@ -10,7 +10,7 @@ import { computeItemTotals, applyTax } from '../utils/totals.js';
 import { allocateBulkPrice } from '../utils/bulkPricing.js';
 import { logActivity } from '../utils/activity.js';
 import { streamInvoicePDF } from '../utils/pdf.js';
-import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting, runAtomically, reverseTransaction } from '../utils/ledger.js';
+import { claimPartyBalanceForPayment, postPaymentAtomically, resolveAccount, rethrowDuplicatePosting, runAtomically, reverseTransaction } from '../utils/ledger.js';
 import { resolvePayment, requireReason, assertReversible, postReversal } from '../services/paymentReversal.js';
 import { resolvePaging, runPaged } from '../utils/pagination.js';
 import { requirePositiveWholeQuantity } from '../utils/quantity.js';
@@ -65,6 +65,7 @@ export async function applyInvoicePayment({ invoice, account, amount, method, re
       // applies. The loser matches nothing and throws, and postPaymentAtomically
       // reverses the ledger entry it had already written — so a rejected request
       // leaves no partial accounting state at all.
+      const undoPartyClaim = await claimPartyBalanceForPayment(Customer, invoice.customer, 'balance', cappedAmount, session);
       const claim = await Invoice.updateOne(
         { _id: invoice._id, balance: { $gte: cappedAmount } },
         [
@@ -95,23 +96,19 @@ export async function applyInvoicePayment({ invoice, account, amount, method, re
           { $set: { status: { $cond: [{ $lte: ['$balance', 0] }, 'paid', 'partial'] } } },
         ],
         session ? { session } : {}
-      );
+      ).catch(async (error) => {
+        await undoPartyClaim();
+        throw error;
+      });
 
       if (claim.matchedCount === 0) {
+        await undoPartyClaim();
         const err = new Error(
           'This payment could not be applied because the invoice balance changed — it may have just been paid by another request. Reload the invoice and try again.'
         );
         err.statusCode = 409;
         throw err;
       }
-
-      // Receivable lives on Customer.balance, as before — no second balance system.
-      // Already a conditional pipeline update, so it was never part of the race.
-      await Customer.updateOne(
-        { _id: invoice.customer },
-        [{ $set: { balance: { $max: [0, { $subtract: ['$balance', cappedAmount] }] } } }],
-        session ? { session } : {}
-      );
     }
   );
 }

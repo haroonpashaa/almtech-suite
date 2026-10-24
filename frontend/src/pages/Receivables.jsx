@@ -144,10 +144,10 @@ export default function Receivables() {
                 </Link>
               ),
             },
-            { key: 'invoiceCount', label: 'Invoices', className: 'text-right num text-ink-500', render: (r) => r.invoiceCount },
+            { key: 'invoiceCount', label: 'Invoices', className: 'text-right num text-ink-500', render: (r) => <span>{r.invoiceCount}{r.manualEntryCount ? ` + ${r.manualEntryCount} other` : ''}</span> },
             { key: 'oldestDate', label: 'Oldest', render: (r) => <span className="text-ink-500 whitespace-nowrap">{fmtDate(r.oldestDate)}</span> },
             { key: 'oldestAgeDays', label: 'Overdue', render: (r) => <OverdueBadge days={r.oldestAgeDays} /> },
-            { key: 'total', label: `Total Deal (${currency})`, className: 'text-right num text-ink-600', render: (r) => <Money value={r.total} /> },
+            { key: 'total', label: `Documents / other (${currency})`, className: 'text-right num text-ink-600', render: (r) => <Money value={r.total} /> },
             { key: 'paid', label: `Paid (${currency})`, className: 'text-right num text-emerald-600', render: (r) => <Money value={r.paid} /> },
             {
               key: 'outstanding',

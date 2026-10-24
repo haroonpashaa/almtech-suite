@@ -128,10 +128,10 @@ export default function Payables() {
                 </Link>
               ),
             },
-            { key: 'poCount', label: 'POs', className: 'text-right num text-ink-500', render: (r) => r.poCount },
+            { key: 'poCount', label: 'POs', className: 'text-right num text-ink-500', render: (r) => <span>{r.poCount}{r.manualEntryCount ? ` + ${r.manualEntryCount} other` : ''}</span> },
             { key: 'oldestDate', label: 'Oldest', render: (r) => <span className="text-ink-500 whitespace-nowrap">{fmtDate(r.oldestDate)}</span> },
             { key: 'oldestAgeDays', label: 'Age', render: (r) => <OverdueBadge days={r.oldestAgeDays} /> },
-            { key: 'total', label: `Purchase Total (${currency})`, className: 'text-right num text-ink-600', render: (r) => <Money value={r.total} currency={currency} /> },
+            { key: 'total', label: `Purchases / other (${currency})`, className: 'text-right num text-ink-600', render: (r) => <Money value={r.total} currency={currency} /> },
             { key: 'paid', label: `Paid (${currency})`, className: 'text-right num text-emerald-600', render: (r) => <Money value={r.paid} currency={currency} /> },
             { key: 'outstanding', label: `Outstanding (${currency})`, className: 'text-right num font-semibold', render: (r) => <Money value={r.outstanding} currency={currency} tone="due" /> },
             {

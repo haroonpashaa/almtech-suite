@@ -59,6 +59,7 @@ export const recentPayments = asyncHandler(async (req, res) => {
     po: t.purchaseOrder?.number,
     purchaseOrderId: t.purchaseOrder?._id,
     user: t.createdBy?.name,
+    partyEntryId: t.partyEntry || null,
     legacy: false,
   }));
 

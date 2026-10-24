@@ -6,7 +6,7 @@ import Supplier from '../models/Supplier.js';
 import StockMovement from '../models/StockMovement.js';
 import { nextNumber } from '../utils/numbering.js';
 import { logActivity } from '../utils/activity.js';
-import { postPaymentAtomically, resolveAccount, rethrowDuplicatePosting, runAtomically } from '../utils/ledger.js';
+import { claimPartyBalanceForPayment, postPaymentAtomically, resolveAccount, rethrowDuplicatePosting, runAtomically } from '../utils/ledger.js';
 import { resolvePayment, requireReason, assertReversible, postReversal } from '../services/paymentReversal.js';
 import { resolvePaging, runPaged } from '../utils/pagination.js';
 import { requirePositiveWholeQuantity } from '../utils/quantity.js';
@@ -660,6 +660,8 @@ export const recordSupplierPayment = asyncHandler(async (req, res) => {
         // balance, so two concurrent supplier payments cannot both bank the same
         // remaining amount. A loser matches nothing, throws, and has its ledger
         // entry reversed by postPaymentAtomically — leaving no partial state.
+        const payableField = payableCurrency === 'GBP' ? 'payableGBP' : 'payable';
+        const undoPartyClaim = await claimPartyBalanceForPayment(Supplier, po.supplier, payableField, cappedAmount, session);
         const claim = await PurchaseOrder.updateOne(
           { _id: po._id, balance: { $gte: cappedAmount } },
           [
@@ -687,21 +689,18 @@ export const recordSupplierPayment = asyncHandler(async (req, res) => {
             },
           ],
           session ? { session } : {}
-        );
+        ).catch(async (error) => {
+          await undoPartyClaim();
+          throw error;
+        });
         if (!claim.matchedCount) {
+          await undoPartyClaim();
           const err = new Error(
             'This payment could not be applied because the purchase-order balance changed — it may have just been paid by another request. Reload and try again.'
           );
           err.statusCode = 409;
           throw err;
         }
-
-        const payableField = payableCurrency === 'GBP' ? 'payableGBP' : 'payable';
-        await Supplier.updateOne(
-          { _id: po.supplier },
-          [{ $set: { [payableField]: { $max: [0, { $subtract: [`$${payableField}`, cappedAmount] }] } } }],
-          session ? { session } : {}
-        );
       }
     );
   } catch (e) {

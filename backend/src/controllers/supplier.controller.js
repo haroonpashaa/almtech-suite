@@ -1,3 +1,4 @@
+import { partyEntryLedgerEvents, partyEntryTotals } from '../services/partyFinance.js';
 import asyncHandler from 'express-async-handler';
 import mongoose from 'mongoose';
 import Supplier from '../models/Supplier.js';
@@ -119,7 +120,8 @@ export const getSupplier = asyncHandler(async (req, res) => {
 
   const r = rollup[0] || {};
   const openingBalance = openingAgg[0]?.total || 0;
-  const derivedOutstanding = (r.outstanding || 0) + openingBalance;
+  const standalone = await partyEntryTotals('supplier', supplier._id, currency);
+  const derivedOutstanding = (r.outstanding || 0) + openingBalance + standalone.outstanding;
 
   res.json({
     supplier,
@@ -128,6 +130,7 @@ export const getSupplier = asyncHandler(async (req, res) => {
       totalPurchases: r.totalPurchases || 0,
       totalPaid: r.totalPaid || 0,
       openingBalance,
+      standalone,
       outstanding: derivedOutstanding,
       // The authoritative figure, plus whether the derivation agrees with it.
       currency,
@@ -266,6 +269,7 @@ export const supplierLedger = asyncHandler(async (req, res) => {
     }
   }
 
+  events.push(...await partyEntryLedgerEvents('supplier', supplier._id, currency));
   events.sort((a, b) => new Date(a.date) - new Date(b.date));
 
   let running = 0;

@@ -1,3 +1,6 @@
+import { partyEntryLedgerEvents } from '../services/partyFinance.js';
+import OpeningBalance from '../models/OpeningBalance.js';
+import ReceivableAdjustment from '../models/ReceivableAdjustment.js';
 import asyncHandler from 'express-async-handler';
 import Customer from '../models/Customer.js';
 import Invoice from '../models/Invoice.js';
@@ -82,31 +85,25 @@ export const customerLedger = asyncHandler(async (req, res) => {
     res.status(404);
     throw new Error('Customer not found');
   }
-  const invoices = await Invoice.find({ customer: customer._id }).sort('-issuedAt');
+  const invoices = await Invoice.find({ customer: customer._id, status: { $nin: ['cancelled', 'draft'] } }).sort('issuedAt');
   const entries = [];
-  let running = 0;
-  for (const inv of invoices.slice().reverse()) {
-    running += inv.total;
-    entries.push({
-      date: inv.issuedAt,
-      type: 'invoice',
-      reference: inv.number,
-      debit: inv.total,
-      credit: 0,
-      balance: running,
-    });
-    for (const p of inv.payments) {
-      running -= p.amount;
-      entries.push({
-        date: p.date,
-        type: 'payment',
-        reference: `${inv.number} (${p.method})`,
-        debit: 0,
-        credit: p.amount,
-        balance: running,
-      });
+  for (const invoice of invoices) {
+    entries.push({ date: invoice.issuedAt, type: 'invoice', reference: invoice.number, debit: invoice.total, credit: 0 });
+    for (const payment of invoice.payments) {
+      entries.push({ date: payment.date, type: 'payment', reference: payment.reference || invoice.number, debit: 0, credit: payment.amount });
+      if (payment.reversed) entries.push({ date: payment.reversedAt || payment.date, type: 'payment_reversal', reference: invoice.number, debit: payment.amount, credit: 0 });
     }
+    if (invoice.status === 'returned') entries.push({ date: invoice.updatedAt, type: 'return', reference: invoice.number, debit: 0, credit: invoice.total });
   }
-  entries.sort((a, b) => new Date(b.date) - new Date(a.date));
-  res.json({ customer, balance: customer.balance, entries });
+  const openings = await OpeningBalance.find({ entityType: 'customer', entity: customer._id });
+  for (const entry of openings) entries.push({ date: entry.asOf, type: 'opening_balance', reference: entry.reference, debit: Math.max(0, entry.amount), credit: Math.max(0, -entry.amount) });
+  const corrections = await ReceivableAdjustment.find({ customer: customer._id });
+  for (const entry of corrections) entries.push({ date: entry.createdAt, type: 'correction', debit: Math.max(0, entry.delta), credit: Math.max(0, -entry.delta) });
+  const standalone = await partyEntryLedgerEvents('customer', customer._id, 'PKR', req.user?.role === 'admin');
+  // Customer JSON ledger uses debit for amounts owed; PDF statements use credit.
+  for (const entry of standalone) entries.push({ ...entry, debit: entry.credit, credit: entry.debit });
+  entries.sort((a, b) => new Date(a.date) - new Date(b.date));
+  let running = 0;
+  for (const entry of entries) { running = Math.round((running + entry.debit - entry.credit) * 100) / 100; entry.balance = running; }
+  res.json({ customer, balance: customer.balance, closingBalance: running, reconciled: Math.abs(customer.balance - running) < 0.005, entries: entries.reverse() });
 });
